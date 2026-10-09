@@ -1,0 +1,9 @@
+{
+  "name": "partner-test",
+  "version": "0.3.0",
+  "title": "Partner test",
+  "author": "Tartaluga",
+  "description": "Тестовый мод стенда factorio-partner: тестовый /partner (замеры RCON и обзора), если настоящий мод выключен. Только для копии сейва.",
+  "factorio_version": "2.0",
+  "dependencies": ["base >= 2.0.0"]
+}

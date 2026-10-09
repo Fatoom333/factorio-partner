@@ -1,0 +1,59 @@
+# Как проверяем
+
+## 1. Юнит-тесты Lua (без игры) — инфраструктура потока A
+- `mod/tests/*.lua` под `lupa`; раннер `python tools/run_lua_tests.py` (зависимость `lupa` в
+  `tools/requirements-dev.txt`, ставить в venv).
+- **Версия Lua как в Factorio — 5.2**: раннер берёт `lupa.lua52`; если в сборке lupa её нет —
+  `lupa.lua53` и тест-проверка, что код не зависит от целочисленного подтипа
+  (`math.type`, `tostring(3.0)`, `//`).
+- Раннер ставит `package.path = "<mod>/?.lua;<mod>/?/init.lua;mod/tests/?.lua"` и загрузчик,
+  который превращает `scripts.core.err` в `scripts/core/err.lua`.
+- Заглушки в `mod/tests/stubs.lua` (A): `game`, `storage`, `defines` (нужные константы),
+  `prototypes`, `script` (`on_event` с фильтрами, `on_nth_tick`, `on_init`, `on_load`,
+  `register_on_object_destroyed`, `raise_event`), `commands.add_command` (хранит обработчик; тест
+  вызывает его с `{name, tick, player_index=nil, parameter=json}`), `rcon.print` (пишет в буфер),
+  `helpers.table_to_json`/`json_to_table` (через Python `json`), `serpent.line/block`, `log`,
+  `settings.global`. Фабрики фейковых `LuaEntity`/`LuaSurface`/`LuaForce` — там же.
+- Другие потоки дополняют заглушки только в своих файлах `mod/tests/stubs_<поток>.lua`.
+- Тест — файл, который `error()` при провале; раннер печатает итог и код выхода.
+
+## 2. Юнит-тесты Python — поток D
+- `server/tests/` под `pytest` (+ `pytest-asyncio`), фейковый RCON-сервер
+  `server/tests/fake_rcon.py`: отвечает заготовленными конвертами, умеет терять ответ,
+  отвечать вразнобой, задерживаться (для проверки повторов по `id`).
+
+## 3. Живые тесты на ПК — поток E
+- `tools/pc/run-live.ps1 -Slot N -Scenario <имя>` — запускать **из PowerShell** (Windows OpenSSH):
+  ssh из Git Bash не видит ssh-agent Windows (ключи из менеджера паролей) и получает `Permission denied`.
+  1. собирает zip модов, которые объявил сценарий (`MODS = [...]`, по умолчанию
+     `["factorio-partner"]`; ключ `-Mods` сильнее);
+  2. по SSH (`pc`) разворачивает во временной `D:\Temp\fp-live-<N>` сервер без окна на **копии**
+     (`Copy-Item`, не жёсткая ссылка) тестового сейва `Vulkan-Start-test.zip` (рабочий
+     `Vulkan-Start.zip` стенд не трогает даже на чтение; другой — ключом `-Save`); жёсткие ссылки
+     на моды, `auto_pause:false`, всё на `127.0.0.1`, RCON `27100+N`, игра `34200+N`;
+  3. запускает сценарий на ПК через `tools/pc/live_client.py`;
+  4. `/quit`, забирает `results-<N>.json` и журнал, удаляет папку.
+- **Пароль RCON** генерируется на ПК в файл слота (одна строка без пробелов), в git и `results`
+  не попадает. Factorio печатает его в `factorio-current.log` (`Program arguments`), поэтому журнал
+  выносится и печатается только вычищенным (`Copy-RedactedLog`). Известное ограничение: пока сервер
+  работает, пароль виден в командной строке `factorio.exe` локальным процессам ПК (передать файлом
+  нельзя); смягчение — одноразовый пароль, только `127.0.0.1`, сервер живёт минуты на копии сейва.
+- Тестовый мод `mod/partner-test` (поток E) регистрирует свой `/partner` с операциями `hello` и
+  `e_*` **только когда `factorio-partner` выключен** (две регистрации одного имени конфликтуют).
+  Операции `e_*` — только для стенда; сценарии `e_*` объявляют `MODS = ["partner-test"]`.
+- **`live_client.py` — единственная точка отправки**: принимает только конверт (dict), сам
+  добавляет префикс `/partner `; строки, начинающиеся с `/`, отвергает (исключение — отдельная
+  функция `quit()`). `/c`, `/sc`, `/silent-command` в стенде запрещены.
+- Слоты: координатор — 0, потоки волны — 1..9.
+- Сценарий — `tools/pc/scenarios/<имя>.py` с функцией `run(client) -> dict` (`{"ok": bool, ...}`); файлы `_*`
+  загрузчик пропускает (общие помощники сценариев). Офлайн-тесты сценария потока X —
+  `tools/pc/tests/test_<префикс потока>_*.py`, владеет ими поток X. В ответах сценарии считают `{}` и `[]` равными.
+- Первые задачи E сделаны 08.10 ([research/live-e-2026-10-08.md](../research/live-e-2026-10-08.md)):
+  команда до 1 МБ проходит; `force.chart` без игроков работает для силы игрока, не для силы из
+  `create_force` — сценарий `e_chart` переделать на силу игрока (образец — `e_chart_probe`).
+- Подробности и грабли — память проекта `pc-headless-test-server`.
+
+## 4. Сквозной (поток K) и финал с игроком
+- «Поставь добычу»: (а) чертёж из `partner_plan`; (б) призраки уже стоят (имитация MPP) → `build_ghosts`.
+- Финал: игрок хостит `Vulkan-Start-test` из меню, в конце один `/c` — должно быть предупреждение
+  о достижениях (метод — [research/achievements-2026-10-08.md](../research/achievements-2026-10-08.md)).
