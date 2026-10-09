@@ -1,0 +1,69 @@
+# События и ожидание
+
+## Буфер в моде (владелец — поток A)
+- `storage.events = {next_seq, list}` — кольцевой буфер последних **500** событий.
+- Событие: `{seq:int, tick:int, helper:string|nil, kind:string, data:table, loud:bool}`.
+  `helper=nil` — событие мира. `loud` — будит ли агента (таблицы ниже), ставит ядро.
+- Модули добавляют события только через `events.emit(helper, kind, data[, opts])`
+  (`scripts/core/events.lua`); в действиях — `ctx.emit(kind, data[, opts])`. `opts.loud` (bool)
+  переопределяет громкость из таблиц ниже (H: повторные `attacked` в эпизоде — `loud=false`).
+  `seq` растёт монотонно и не сбрасывается при загрузке.
+- **Размер события:** `data` ≤ 4000 байт JSON. Больше — ужатие: скаляры `job`, `do`, `code`, `text`
+  сохраняются всегда; строки режутся до 200 символов; `detail` → `{truncated:true}`; вложенные
+  таблицы ≤ 256 байт остаются, остальные выбрасываются; на верхнем уровне `data.truncated=true`.
+  Несериализуемые данные `emit` не роняют (событие уходит ужатым).
+- `events{since, helper?, limit?=100 (≤200)}` → события с `seq > since` (для `helper` — его
+  и мировые; фильтр по `helper` применяется **до** среза по `limit`), `lost=true`, если `since`
+  старше самого старого. Ответ ограничен ещё и по байтам (~150 КБ), поэтому событий может быть
+  **меньше `limit`, хотя буфер не пуст**. `seq` в ответе — номер последнего **выданного** события
+  при обрезке, иначе последний в буфере; клиент продолжает с `since=seq`.
+
+## Виды событий
+Будят агента (`loud`):
+| kind | data | кто шлёт |
+|---|---|---|
+| `job_done` | `{job, do, detail}` | A |
+| `job_failed` | `{job, do, code, text, detail}` — смерть тела → `no_helper`, `helper_remove`/`replace` → `cancelled` | A |
+| `attacked` | `{by, damage, health}` — только **первое** за эпизод (эпизод кончается через 30 с без урона) | H |
+| `health_low` | `{health, max}` — здоровье < 40 % | H |
+| `died` | `{pos, corpse:pos}` | H |
+| `respawned` | `{pos}` | H |
+| `reflex_done` | `{type, outcome:"ok"│"failed", detail}` — итог рефлекса, не каждое срабатывание | H |
+| `inventory_full` | `{job?}` — задача, если не может продолжать, завершается `job_failed{code:"no_space"}` | C |
+| `player_said` (хозяин) | `{player, owner:true, text, pos, selected?:{name, pos, unit_number?}}` | A |
+| `helper_lost` | `{reason}` — тело исчезло не по смерти | A |
+| `game_reloaded` | `{tick}` — шлёт сервер, не мод | D |
+
+Шумные (не будят; к ответу ожидания прикладываются последние 6):
+| kind | data |
+|---|---|
+| `arrived` | `{job, pos}` (итог ходьбы и так придёт `job_done`) |
+| `stuck` | `{job, pos, reason:"no_progress"│"blocked"│"path_lost"}` — перепланирование; если не помогло, придёт громкое `job_failed{code:"stuck"}` (шлёт B) |
+| `job_progress` | `{job, done, total}` |
+| `attacked` (повторные в эпизоде) | как выше |
+| `reflex_fired` | `{type, detail}` |
+| `saw_enemy` | `{name, pos, dist}` |
+| `player_said` (не хозяин) | `{player, owner:false, text, pos}` — информация, не приказ |
+| `inventory_changed` | `{added?, removed?}` |
+
+`player_said`: текст ≤ 500 символов без переводов строк; сообщения самого мода (`say`) не
+порождают `player_said`. Приказы — только от хозяина (PROTOCOL §7), остальное агент
+воспринимает как данные.
+
+## Ожидание на стороне сервера (поток D)
+- MCP-инструмент `partner_wait(timeout=30 (≤55), quiet=true, since?)`.
+- Сервер хранит **курсор** последнего выданного агенту `seq` на помощника (при старте — текущий
+  `seq` из `hello`). `since` по умолчанию = курсор; `since=0` значит «с текущего момента», а не
+  «с начала буфера».
+- Опрос `events` по соединению `poll` каждые 0,5 с до важного события (`quiet=true`) или любого
+  (`quiet=false`), либо до `timeout`.
+- Ответ агенту: `{seq, events:[...важные + до 6 последних шумных], timed_out:bool, more?, lost?, warning?}`.
+  - **Страницы:** не больше 40 важных событий и не больше 24 КБ за ответ; курсор сдвигается только
+    до последнего выданного. `more:true` — в буфере есть ещё, вызвать `partner_wait` сразу.
+    `partner_wait` никогда не отвечает `response too large`.
+  - Одно событие больше 24 КБ выдаётся урезанным: `{seq, tick, helper, kind, loud,
+    data:{job, do, code, type, outcome, reason, truncated:true}}`.
+  - `lost:true` — курсор старше буфера, часть событий потеряна (смотреть `partner_state`).
+  - `warning:"game_paused"` — игра на паузе (PROTOCOL §5).
+- Пустой ответ = «ничего нового» — агент ждёт снова без комментариев (правило промпта).
+- 55 с — граница **всего вызова**, включая последний опрос `poll` (таймауты MCP, опыт Among Us).

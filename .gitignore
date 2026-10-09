@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.pytest_cache/
+# сборки и локальное
+*.zip
+dist/
+build/
+# секреты и логи времени выполнения
+*.pw
+rcon*.txt
+helpers.json
+server/logs/
+logs/
+.env
+
+# worktree агентов workflow
+
+# личное окружение автора

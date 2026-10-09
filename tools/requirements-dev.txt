@@ -1,0 +1,3 @@
+# Зависимости для юнит-тестов Lua мода (docs/TESTING.md §1). Ставить только в venv:
+#   python -m venv <tmp>/venv && <tmp>/venv/Scripts/python -m pip install -r tools/requirements-dev.txt
+lupa==2.8

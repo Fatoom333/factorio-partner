@@ -1,0 +1,132 @@
+# Что видит агент (операции чтения)
+
+Ответы — компактный JSON, координаты округлены до 0.1, качество только `normal`.
+Два уровня обзора (PROTOCOL §6.7): **статичное** — в открытых (`is_chunk_charted`) чанках,
+**живое** (враги, содержимое контейнеров/машин, предметы на земле) — только в видимых
+(`is_chunk_visible`). Каждая операция — `M.ops.<op>` в `scripts/perception/<файл>.lua`,
+`ctx = {helper_id?, entity?}`. Центр по умолчанию — **помощник**; `near:"player"` — хозяин
+(`physical_position`, иначе `no_player`). Владелец — поток G, кроме `rates` (L).
+
+## `state` (h)
+```json
+{"helper":"h1","surface":"vulcanus","pos":{"x":52.4,"y":93.4},"health":250,"max_health":250,
+ "reach":{"build":10,"reach":10,"resource":2.7,"pickup":1},
+ "inv":{"iron-plate":40,"coal":12},"inv_free":72,"armor":"power-armor-mk2",
+ "robots":{"construction":10,"available":9},
+ "job":{"job":57,"do":"walk","progress":[12,40]},"queue":2,
+ "players":[{"name":"Tartaluga","owner":true,"online":true,"surface":"vulcanus","pos":{"x":48,"y":90},"dist":4.2}],
+ "near":{"enemies":[],"containers":3},"vision":true,"tick":4109766,"seq":812}
+```
+`near.enemies` — только в видимых чанках, радиус 32 клетки, до 20 ближайших; враги — сила
+`enemy`, типы `unit`, `unit-spawner`, `turret`, `spider-unit`, `segmented-unit`. `job` берётся из
+`jobs.active(helper)` ядра (ACTIONS.md).
+
+## `map` (h?, `center?│near?:"player"`, `radius?=16` (≤ 32), `types?`, `names?`)
+```json
+{"bbox":{"x0":44,"y0":85,"x1":60,"y1":101},
+ "axis":"x: 44...|50.......|60",
+ "rows":["...ccc....D......", "..."],
+ "legend":{".":"земля","~":"вода/лава","#":"утёс/скала","?":"не открыто","@":"помощник","P":"игрок",
+           "D":"бур","F":"печь","A":"сборщик","B":"лента","I":"манипулятор","C":"сундук","E":"столб",
+           "g":"призрак","c":"руда: calcite","w":"руда: tungsten-ore","k":"руда: coal"},
+ "entities":[{"c":"D","name":"electric-mining-drill","pos":{"x":55.5,"y":90.5},"dir":0}],
+ "truncated":false}
+```
+- Строки сверху вниз (север → юг), слева направо. `bbox` — координаты крайних клеток,
+  `axis` — подпись столбцов (метка каждые 5 клеток), чтобы не считать символы.
+- `map` **никогда** не отдаёт `not_charted`: неоткрытое рисуется `?`.
+- Руды — свои строчные буквы, назначаются по первой свободной букве имени; легенда в ответе
+  всегда полная для того, что нарисовано. Сущности — `bounding_box` закрашивается на всю площадь.
+- В ответе ещё `surface`. Постоянные символы легенды сверх примера: `H` другой помощник,
+  `L` труба, `T` дерево, `X` враг, `O` другая своя постройка.
+- `entities` — до 100; по умолчанию только свои постройки (без лент, труб и столбов — их много),
+  призраки и видимые враги; нейтральное (деревья, камни, руда) — только при явном `types?`/`names?`.
+  Поля: `c, name, pos, dir, unit` (unit_number), у призрака `ghost:true` и `name` = имя внутренней
+  сущности. `dir` — `defines.direction` 2.0: **16 направлений**, север 0, восток 4, юг 8, запад 12.
+  Враги — только в видимых чанках.
+- Как считать (2.0): тайлы — одним `surface.find_tiles_filtered{area}`; `~` если в
+  `tile.prototype.collision_mask.layers` есть `water_tile` или `lava_tile`; `#` — `cliff` и
+  `simple-entity` с `prototype.count_as_rock_for_filtered_deconstruction`; `?` — по
+  `force.is_chunk_charted(surface, chunk)`; сущности — `find_entities_filtered{area,
+  force={own, "neutral", "enemy"}}`.
+- Образец рисования — forge `experiments/2026-09-26-sand/asciimap.py` (читает экспорт, не API —
+  брать только идею).
+
+## `resources` (h?, `center?│near?`, `radius ≤ 128`, `name?`)
+```json
+{"patches":[{"name":"calcite","center":{"x":120,"y":40},"area":{"left_top":{"x":100,"y":28},"right_bottom":{"x":141,"y":55}},
+  "tiles":612,"amount":3400000,"dist":70.2}],"truncated":false}
+```
+Пятна — кластеризация ресурсов по имени и соседству (8-связность), только открытые чанки,
+не больше 20 пятен (ближайшие). `dist` — до центра пятна; пятна обрезаются кругом поиска.
+Неизвестное или не-ресурсное `name` → `bad_args`. Радиус 128 — дорогой режим (256×256 клеток,
+десятки тысяч сущностей): агенту начинать с 32–64.
+
+## `stock` (h?, `center?│near?`, `radius?=64 (≤128)`, `items?` — массив имён или `{name:count}`, `limit?=50 (≤200)`)
+```json
+{"containers":[{"unit":123,"name":"steel-chest","pos":{"x":10.5,"y":4.5},"dist":12.0,"items":{"iron-plate":800}}],
+ "total":{"iron-plate":800},"hidden":2,"truncated":false}
+```
+Склады = контейнеры и логистические сундуки своей силы. Содержимое — только в видимых
+чанках; невидимые считаются в `hidden`. Машины не считаются. Пустые (или без нужных `items`)
+сундуки в `containers` не попадают; `truncated` — про список, `total` и `hidden` — по всем сундукам.
+
+## `ghosts` (h?, `area?│radius?=64`, `center?│near?`)
+```json
+{"count":24,"by_name":{"electric-mining-drill":16,"transport-belt":120},
+ "need":{"electric-mining-drill":16,"transport-belt":120},
+ "have":{"helper":{"transport-belt":40},"stock":{"electric-mining-drill":30,"transport-belt":500}},
+ "missing":{},"blocked":[{"name":"transport-belt","pos":{"x":3.5,"y":7.5}}],"area":{...}}
+```
+`blocked` — призраки, у которых `ghost_revive`-проверка = false (PROTOCOL §6.5), список до 50;
+`blocked_total` — сколько всего. При > 1000 призраков проверяются не все: `blocked_partial:true`,
+`blocked_total` — нижняя оценка. `need` включает `item_requests` призрака (модули). Призраки
+плиток (`tile-ghost`) не считаются. `have.stock` — по складам в радиусе 64 от центра (видимые).
+
+## `rates` (поток L; `top` ≤ 100, `items` ≤ 100; h?, `scope`, `area?`, `surface?`, `period`, `items?`, `top?=20`)
+- `scope:"surface"` (по умолчанию поверхность помощника; в 2.0 статистика только по поверхности):
+  `stats = force.get_item_production_statistics(surface)` (и `get_fluid_production_statistics`);
+  made = `stats.get_flow_count{name, category="input", precision_index=<период>, count=true}`,
+  used — то же с `"output"` (в API 2.0 `input` — произведено, левая колонка окна статистики;
+  `output` — потреблено); имена — из `stats.input_counts`/`output_counts`.
+  `period`: `1m` → `defines.flow_precision_index.one_minute`, `10m` → `ten_minutes`,
+  `1h` → `one_hour`. Значения — **сумма за период** (не в минуту). Вернуть `top` по обороту
+  (общий для предметов и жидкостей) или только `items`.
+```json
+{"scope":"surface","surface":"vulcanus","period":"1m",
+ "items":{"iron-plate":{"made":1200,"used":950}},"fluids":{"water":{"made":36000,"used":35000}},"truncated":true}
+```
+- `scope:"area"` — **номинальная** оценка по машинам в `area` (`nominal:true`, машина может
+  простаивать), **в минуту**:
+  - циклов/мин = `crafting_speed / recipe.energy × 60` (`crafting_speed` в 2.0 уже с модулями и
+    маяками); `in` = ингредиенты × циклы (**без** продуктивности); `out` = Σ (ожидаемое количество с
+    `probability`, `amount_min/max`, `extra_count_fraction` + часть сверх `ignored_by_productivity`
+    × `productivity_bonus`) × циклы; бонус ограничен `maximum_productivity` рецепта;
+  - буры: `mining_speed × (1 + speed_bonus) / mining_time × 60` по `mining_target`; жидкость
+    `required_fluid` — `fluid_amount / 10` на цикл; бесконечные ресурсы × `amount / normal_resource_amount`;
+  - печь без текущего рецепта — по `previous_recipe`.
+  Ответ: `{"scope","surface","area","per":"1m","machines":[{"name","recipe","count","in":{...},"out":{...}}],
+  "net":{...},"nominal":true,"hidden":N,"idle":N,"truncated":bool}` — `hidden` машины в невидимых
+  чанках (живые данные — только видимые), `idle` — без рецепта/цели или не-`normal` качества,
+  `machines` до 100 групп. Сторона `area` ≤ 128.
+- Машины `scope:"area"`: `assembling-machine`, `furnace`, `rocket-silo`, `mining-drill`; предел
+  продуктивности — `maximum_productivity` рецепта (по умолчанию 3, т.е. +300 %).
+- Без помощника поверхность/сила — хозяина (PROTOCOL §4 «h? без помощника»; хозяин офлайн и нет
+  `surface` → `no_player`); явный `surface` сильнее. Ошибки: `bad_args`, `limit`, `not_found`
+  (нет поверхности), `no_player`, `internal` (сбой `get_flow_count` — не пустой ответ).
+
+## `recipes` (h, `filter?`)
+Перебор `force.recipes`: `enabled`, не `hidden`, категория ∈
+`prototypes.entity["character"].crafting_categories`; значение —
+`entity.get_craftable_count(name)`, нули не выводить; `filter` — подстрока имени (`""` — без фильтра).
+`{"craftable":{"iron-gear-wheel":20,"pipe":40}}`.
+
+## `vision` (h, `on`) — обзор помощника
+Раз в 60 тиков для каждого живого помощника с `on`: чанки в радиусе 2 чанков от тела, которые
+сгенерированы (`surface.is_chunk_generated`) и либо не открыты, либо открывались ≥ 10 с назад
+(`storage.vision.charted[key]`); не больше 8 чанков за итерацию; `force.chart(surface, area)`
+по границам чанков (лимит 8 — на каждого помощника). Хранение: `storage.vision = {on={[helper]=
+{on, unit}}, charted={["<surface_index>:<cx>:<cy>"]=tick}}`. Нет записи — значит `on=true`
+(ядро при `helper_spawn` ничего не пишет); запись с другим `unit_number` (новое тело после spawn
+или возрождения) считается устаревшей → обзор снова включён. Мёртвый или удалённый помощник
+(`storage.helpers[id].state ~= "alive"`) обзор не ведёт.
