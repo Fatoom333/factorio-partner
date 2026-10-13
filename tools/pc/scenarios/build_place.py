@@ -1,0 +1,177 @@
+"""Живой сценарий потока F «Стройка»: поставить сундук из инвентаря помощника (act place).
+
+Ход (сервер без окна, хозяин офлайн, PROTOCOL §4 helper_spawn):
+1. `hello`, `helper_spawn` помощника HELPER (пустой инвентарь).
+2. Сундук берётся честно: `stock` по складам хозяина → `act collect {items:{<сундук>:1}}`.
+   Сундуков на складах нет — запасной путь: `collect` пластин или дерева и `act craft`.
+3. `act place {item, pos}` рядом с помощником; `cannot_place` — следующее место из списка.
+4. Сверка: job_done с unit_number; у помощника стало на 1 предмет меньше; `map` видит сундук на месте.
+Остальные сценарии build_* берут отсюда `prepare()` и `place_near()` (загрузка по пути, как _hands).
+Запускать после слияния потоков B, C и X (подход, collect, обзор помощника для stock).
+Только конверты `/partner <JSON>` через live_client (TESTING.md §3).
+"""
+from __future__ import annotations
+
+import importlib.util
+import os
+
+
+def _load(name):
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), name + ".py")
+    spec = importlib.util.spec_from_file_location("fp_scenario_" + name, path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
+
+
+H = _load("_hands")
+HELPER = "build"
+JOB_TIMEOUT_S = 150.0
+VISIBLE_WAIT_S = 15.0
+CHESTS = ("wooden-chest", "iron-chest", "steel-chest")
+# запасной путь: из чего скрафтить сундук руками
+CRAFT = (("iron-chest", "iron-plate", 8), ("wooden-chest", "wood", 2))
+OFFSETS = ((3, 0), (0, 3), (-3, 0), (0, -3), (4, 4), (-4, 4), (4, -4), (-4, -4), (6, 0), (0, 6), (-6, 0), (0, -6))
+
+
+def act(client, do, args, timeout=JOB_TIMEOUT_S):
+    return H.act(client, do, args, timeout, HELPER)
+
+
+def code_of(r):
+    return ((r or {}).get("data") or {}).get("code")
+
+
+def detail_of(r):
+    return ((r or {}).get("data") or {}).get("detail") or {}
+
+
+def brief(r):
+    return {"job": r["job"], "seconds": r["seconds"], "kind": r["kind"], "data": r["data"]}
+
+
+def helper_state(client):
+    return client.call_ok("state", {}, HELPER)
+
+
+def helper_count(client, item):
+    return (helper_state(client).get("inv") or {}).get(item, 0)
+
+
+def _stock_total(client, items, result):
+    """Сколько каждого предмета на видимых складах хозяина: {item: n}, радиус."""
+    for radius in (64, 128):
+        def look():
+            data = client.call_ok("stock", {"radius": radius, "items": list(items), "limit": 50}, HELPER)
+            look.last = data
+            return data.get("total") or {}
+        look.last = {}
+        total = client.poll(look, VISIBLE_WAIT_S, 1.0)
+        result.setdefault("scan", []).append(
+            {"radius": radius, "total": total, "hidden": look.last.get("hidden", 0)})
+        if total:
+            return total, radius
+    return {}, 128
+
+
+def get_chests(client, result, count=1):
+    """Честно добыть count одинаковых сундуков в инвентарь помощника. → имя предмета | None."""
+    total, radius = _stock_total(client, CHESTS, result)
+    for item in CHESTS:
+        if total.get(item, 0) >= count:
+            r = act(client, "collect", {"items": {item: count}, "radius": radius})
+            result["collect"] = brief(r)
+            if r["kind"] == "job_done" and (detail_of(r).get("collected") or {}).get(item, 0) >= count:
+                return item
+    # запасной путь: сырьё со склада и ручной крафт
+    raw_total, radius = _stock_total(client, [c[1] for c in CRAFT], result)
+    for item, raw, per in CRAFT:
+        need = per * count
+        if raw_total.get(raw, 0) < need:
+            continue
+        r = act(client, "collect", {"items": {raw: need}, "radius": radius})
+        result["collect_raw"] = brief(r)
+        if r["kind"] != "job_done":
+            continue
+        r = act(client, "craft", {"recipe": item, "count": count})
+        result["craft"] = brief(r)
+        if r["kind"] == "job_done" and helper_count(client, item) >= count:
+            return item
+    return None
+
+
+def prepare(client, result, count=1):
+    """hello + спавн + count сундуков в инвентаре. → имя предмета | None (ошибка — в result)."""
+    hello = client.call_ok("hello")
+    result.update(mod=str(hello.get("mod", "")), players_online=hello.get("players_online"))
+    if not H.check_mod(hello, result):
+        return None
+    if not H.spawn(client, result, HELPER):
+        result["ok"] = False
+        return None
+    item = get_chests(client, result, count)
+    if item is None:
+        result.update(ok=False, error={"kind": "setup", "text": "на видимых складах хозяина нет ни сундуков, ни сырья для них"})
+        return None
+    result["item"] = item
+    return item
+
+
+def cell_center(pos, dx=0, dy=0):
+    """Центр клетки рядом с pos (постройка 1×1 стоит в центре клетки)."""
+    return {"x": int(pos["x"] // 1) + dx + 0.5, "y": int(pos["y"] // 1) + dy + 0.5}
+
+
+def place_near(client, item, result, key="place"):
+    """`act place` на первом свободном месте рядом с помощником. → (pos, итог) | (None, итог)."""
+    base = helper_state(client)["pos"]
+    tries = []
+    last = None
+    for dx, dy in OFFSETS:
+        pos = cell_center(base, dx, dy)
+        last = act(client, "place", {"item": item, "pos": pos})
+        tries.append({"pos": pos, "kind": last["kind"], "code": code_of(last)})
+        if last["kind"] == "job_done":
+            result[key] = dict(brief(last), pos=pos, tries=tries)
+            return pos, last
+        if code_of(last) != "cannot_place":
+            break
+    result[key] = dict(brief(last), tries=tries) if last else {"tries": tries}
+    return None, last
+
+
+def entities_at(client, item, pos, radius=2):
+    """Постройки item в радиусе 0.6 от pos по `map` (свои постройки — статичное, видно всегда)."""
+    data = client.call_ok("map", {"center": pos, "radius": radius, "names": [item]}, HELPER)
+    return [e for e in data.get("entities", [])
+            if e.get("name") == item and not e.get("ghost")
+            and abs(e["pos"]["x"] - pos["x"]) <= 0.6 and abs(e["pos"]["y"] - pos["y"]) <= 0.6]
+
+
+def run(client) -> dict:
+    result = {}
+    item = prepare(client, result)
+    if item is None:
+        return result
+    before = helper_count(client, item)
+    pos, last = place_near(client, item, result)
+    reasons = []
+    if pos is None:
+        reasons.append(f"place не done: {result.get('place')}")
+    else:
+        detail = detail_of(last)
+        if not isinstance(detail.get("unit_number"), int):
+            reasons.append(f"в detail нет unit_number: {detail}")
+        after = helper_count(client, item)
+        result["inventory"] = {"before": before, "after": after}
+        if before - after != 1:
+            reasons.append(f"у помощника убыло {before - after}, а не 1")
+        found = entities_at(client, item, pos)
+        result["on_map"] = len(found)
+        if len(found) != 1:
+            reasons.append(f"на карте в точке {pos} построек {item}: {len(found)}")
+    result["ok"] = not reasons
+    if reasons:
+        result["reasons"] = reasons
+    return result
