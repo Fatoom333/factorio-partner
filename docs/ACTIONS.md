@@ -31,7 +31,7 @@
 ## Подход (единое правило)
 Все действия, которым нужна цель рядом, **сами подходят** к ней через `ctx.approach`
 (до нужной дистанции), а не падают `not_reachable`. Дистанции:
-`mine` (ресурс) — `resource_reach_distance` (2.7); `mine`/`deconstruct` (постройка),
+`mine` (ресурс, **а также деревья и камни** — и в `deconstruct`, замер волны 3) — `resource_reach_distance` (2.7); `mine`/`deconstruct` (постройка),
 `insert`, `extract`, `collect` — `reach_distance` (10); `place`, ручная стройка — `build_distance` (10);
 `pickup` — `item_pickup_distance` / труп — `reach_distance`. Цель на другой поверхности →
 `not_reachable`; путь не найден → `path_failed`; в неоткрытых чанках → `not_charted`.
@@ -93,12 +93,12 @@ return M                          --   и снять своё: mining_state, cra
 | `insert` | `target, items` | `{inserted: items}` | C |
 | `extract` | `target, items?` (нет → всё), `equip?:bool` | `{extracted: items}` | C |
 | `collect` | `items, center?│near?:"player", radius?=64` | `{collected: items, missing: items, from:[unit]}` | C |
-| `pickup` | `target?` (труп) │ `area?` (предметы на земле) | `{picked: items}` | C |
+| `pickup` | `target?` (труп: `{name:"character-corpse", pos}`) │ `area?` (предметы на земле) | `{picked: items}` | C |
 | `place` | `item, pos, direction?:0..15, recipe?` | `{unit_number, name, pos}` | F |
-| `build_blueprint` | `blob, anchor:pos, direction?:0│4│8│12, mode?="auto", force?="forced", dry_run?:bool` | `{ghosts:int, skipped:[...], skipped_total, tiles_skipped, missing: items}` + поля `build_ghosts` | F |
-| `build_ghosts` | `area?│radius?=64, mode?="auto"` | `{built:int, left:int, blocked:[...], blocked_total, missing: items}` | F |
+| `build_blueprint` | `blob, anchor:pos, direction?:0│4│8│12, mode?="auto", force?="forced", dry_run?:bool` | `{ghosts:int, tiles:int, skipped:[...], skipped_total, tiles_skipped, on_liquid:int, to_remove?, to_remove_total?, missing: items}` + поля `build_ghosts` | F |
+| `build_ghosts` | `area?│radius?=64, mode?="auto"` | `{built:int, tiles_built:int, left:int, removed:int, not_removed:int, blocked:[...], blocked_total, missing: items}` | F |
 | `deconstruct` | `target│area, filter?:[name]` | `{removed:int, got: items}` (`removed` — только разобранное самим помощником) | F |
-| `plan_mining` | `resource?:string, area│near:pos, layout?="simple", direction?="north", miner?, belt?, pole?, pipe?, options?:object, dry_run?:bool` | `{ghosts:int, area, need: items, layout, warnings:[...]}` | M |
+| `plan_mining` | `resource?:string, area│near:pos, layout?="simple", direction?="north", miner?, belt?, pole?, pipe?, options?:object, dry_run?:bool` | `{ghosts:int, drills:int, tiles:int, skipped:int, area, need: items, layout, chosen:{miner, belt│chest, pole, pipe?}, warnings:[...], dry_run?}` | M |
 | `wait` | `seconds:1..600` | `{}` — пауза в очереди, никогда не заменяет её | A |
 
 Отдельных подробностей требуют:
@@ -112,18 +112,28 @@ direction, build_mode=defines.build_mode.normal, skip_fog_of_war=false}` соз�
 `anchor` — **центр чертежа** (как `position` у `LuaItemStack.build_blueprint`), `direction` —
 `defines.direction` (0..15). `dry_run=true` — только проверки, без призраков: вернуть
 `{ghosts, skipped, missing}`.
-**Режим постановки `force`** — те же три режима, что у игрока (`defines.build_mode`):
-`"normal"` (клик) — помеха на месте постройки → она в `skipped`; `"forced"` (Shift, **по умолчанию**) —
-деревья и камни на пути движок помечает к сносу, под постройками на воде и лаве ставит призраки
-плиток (отсыпка, на лаве — фундамент); `"superforced"` (Ctrl+Shift) — ещё и пометка к сносу
-**построек игрока** на пути, подземные конвейеры при пересечении лент (поведение режимов — со слов
-игрока 13.10, сверить живьём на 2.0.77).
+**Режим постановки `force`** — те же три режима, что у игрока (`defines.build_mode`); поведение
+сверено живьём на 2.0.77 (волна 3, Вулканус), кроме отмеченного:
+- `"normal"` (клик) — любая помеха (дерево, камень, своя постройка, жидкость) → клетка в `skipped`,
+  ничего не помечается.
+- `"forced"` (Shift, **по умолчанию**) — деревья и камни (и соседний камень, задетый местом постройки)
+  помечаются к сносу; свои постройки не трогаются, призрак над ними не ставится.
+- `"superforced"` (Ctrl+Shift) — то же и пометка к сносу **построек своей силы** на пути. Чужая сила
+  не трогается ни в одном режиме. Подземные конвейеры при пересечении лент — не проверено.
+- **Жидкость (вода, лава, мазут, аммиак).** Подложку (отсыпка, на лаве — фундамент) под постройку
+  ставит сам движок в `forced`/`superforced`, и **только если эта плитка открыта силе**. Фундамент
+  открывается в конце игры, поэтому обычный случай — подложки нет: такие клетки идут в `skipped` с
+  `reason:"liquid"`, их число — `on_liquid`; чертёж при этом **не падает целиком**, остальное ставится.
+  `dry_run` показывает то же самое, и агент обязан сказать хозяину, сколько клеток попало на жидкость,
+  прежде чем строить обрезанный чертёж. Вода с отсыпкой живьём не проверена (на Вулканусе воды нет).
 `"superforced"` агент выбирает только по прямой просьбе хозяина или
 после `dry_run`, показав ему, что будет снесено (`detail.to_remove:[{name,pos}]` ≤ 20, `to_remove_total`).
 Помеченное к сносу в области чертежа помощник разбирает сам (как `deconstruct`) **до** стройки,
-плитки кладёт до построек.
-Уточнения v1: `direction` — только 0/4/8/12 (иначе `bad_args`); чертёж ≤ 1000 сущностей и сторона ≤ 128
-(`limit`); **плитки** (отсыпка, бетон, фундамент) ставятся призраками плиток и строятся **раньше**
+плитки кладёт до построек. **Пометки, которые поставила сама задача**, она снимает при `failed`,
+`cancel` и `stuck` (`cancel_deconstruction`): иначе дроны хозяина снесут помеченное без замены.
+Список `to_remove` в `dry_run` для `superforced` — оценка (движок решает при постановке).
+Уточнения v1: `direction` — только 0/4/8/12 (иначе `bad_args`); чертёж ≤ 1000 сущностей, ≤ 4000 плиток и сторона ≤ 128
+(`limit`); чертёж только из плиток допустим; уже стоящая такая же постройка — `skipped` с `reason:"exists"`; **плитки** (отсыпка, бетон, фундамент) ставятся призраками плиток и строятся **раньше**
 сущностей (иначе постройки на воде не встанут); `tiles_skipped` — сколько плиток поставить нельзя; `import_stack` = -1 (часть сущностей
 отброшена, например мод выключен) принимается, отброшенное попадает в `skipped` с `reason:"unknown"`;
 ни одного призрака не встало → `failed{cannot_place}` с `skipped`. Проверка `manual_ghost` решает только,
@@ -150,7 +160,10 @@ P.U.M.P., чертёж, или `build_blueprint`). Перед стартом: с
 призраки сущностей (предмет плитки из инвентаря, `revive`), и всегда первыми; сущность, чей призрак
 ждёт плитку под собой, не считается `blocked`, пока плитка не построена. Сущности своей силы и
 `neutral`, **помеченные к сносу** (`to_be_deconstructed`) и мешающие призраку области, задача разбирает
-сама перед стройкой (игрок поставил чертёж с Shift / Ctrl+Shift); остальные помеченные не трогает.
+сама перед стройкой (игрок поставил чертёж с Shift / Ctrl+Shift); остальные помеченные не трогает
+(`removed` — сколько разобрала, `not_removed` — сколько не смогла). Причины в `blocked`: `obstacle`
+(мешает непомеченное), `tile` (нет плитки под призраком), `liquid` (под призраком жидкость без подложки).
+Режим `robots` с настоящими дронами живьём не проверен (финал с игроком).
 
 **`extract` / перенос предметов с данными** — броня (`is_armor`, сетка), чертежи и книги,
 `is_item_with_entity_data` переносятся только целым стаком `LuaItemStack.transfer_stack` /
@@ -167,17 +180,29 @@ P.U.M.P., чертёж, или `build_blueprint`). Перед стартом: с
 **`plan_mining`** — разметка рудного пятна призраками по алгоритму мода Mining Patch Planner (MIT,
 автор rimbas; код раскладок берётся из мода с сохранением лицензии — `scripts/vendor/mpp/`, а не
 пишется заново). Сам мод MPP вызвать нельзя: он работает только от рамки в руках игрока.
-- Пятно: `area` либо `near` (всё связное пятно руды `resource` вокруг точки, ≤ 128×128); только
-  открытые чанки.
+- Пятно: `area` либо `near` (всё связное пятно руды `resource` вокруг точки); итоговая область с
+  полями ≤ 128×128, иначе `limit` (размечать частями через `area`); только открытые чанки
+  (`not_charted`). `near` берёт пятно целиком, даже если `resources` показал его обрезанным.
 - `layout` — режимы MPP: `simple`, `compact`, `super_compact`, `sparse`, `logistics`,
   `compact_logistics`, `sparse_logistics`; `direction` — куда выходит лента; `miner`, `belt`, `pole`,
-  `pipe` — имена построек (по умолчанию лучшее из **открытого исследованиями** и того, что есть на
-  складах базы); `options` — флаги MPP (лампы, трубы для руды с жидкостью, покрытие, отсыпка и т.п.),
-  неизвестный флаг → `bad_args`.
+  `pipe` — имена построек; по умолчанию — лучшее из **открытого исследованиями** (склады не
+  учитываются: что выбрано, видно в `chosen`, а хватает ли предметов — агент сверяет `need` со `stock`
+  и при нехватке задаёт имена сам). `options` — плоский объект флагов MPP: `lamps`, `coverage`,
+  `landfill`, `avoid_water`, `avoid_cliffs`, `deconstruct`, `force_pipes`, `belt_merge`, `chest`;
+  неизвестный флаг → `bad_args`. `avoid_water` (по умолчанию **true**) означает любую жидкость, включая
+  лаву: буры и ленты на неё не ставятся. Модули в буры в v1 не кладутся.
 - Итог — **призраки силы хозяина** (то же, что сделал бы игрок рамкой MPP) и список нужных предметов
   `need`; стройка — отдельно, `build_ghosts` по `area`. `dry_run=true` — только посчитать (`ghosts`,
   `need`), ничего не ставить. Призраки ставятся с проверкой `manual_ghost` (PROTOCOL §6.5).
 - Ошибки: руды нет → `not_found`; раскладка не подходит буру/руде (например `super_compact` для
-  большого бура) → `bad_args` с текстом от MPP; пятно больше лимита → `limit`.
+  большого бура, или сундук для `logistics` не исследован) → `bad_args` с текстом от MPP; пятно больше
+  лимита → `limit`; ни один призрак не встал (например, участок уже размечен) → `cannot_place`.
+- `warnings`: `marked_for_deconstruction:N` (деревья и камни помечены к сносу — их уберёт `build_ghosts`),
+  `on_liquid:N` (клеток пятна под жидкостью, пропущены), `narrow_access` / `enclosed` (по операции
+  `access`, STATE.md: у участка узкий выход или его нет; разметка при этом **ставится**, решение —
+  за агентом и хозяином), `access_side:<сторона>` — с какой стороны широкий выход (туда и вести ленту,
+  если `direction` не задан явно хозяином).
+- Живьём проверены `simple`, `compact`, `super_compact`, `sparse`; три `logistics`-режима, трубы, лампы
+  и буры 5×5 — только юнит-тестами.
 
 Прогресс долгих задач — шумное `job_progress{job, done, total}` не чаще раза в 5 с.

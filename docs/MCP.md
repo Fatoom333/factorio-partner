@@ -25,9 +25,10 @@
   `helper` + `key`, сравнение `hmac.compare_digest`, любая ошибка доступа — один текст
   `access denied`. Ключ выдаёт оркестр только своему агенту. Риск «ключ виден в контексте и
   транскриптах» принят: всё локально, защищаемся от путаницы помощников, а не от взлома.
-- `FP_FORGE` — путь к checkout forge (пакет `factorio-forge`),
-  `FP_FORGE_PROFILE` — профиль сейва (по умолчанию — активный профиль forge), `FACTORIO_FORGE_HOME` —
-  дом forge (профили, `notes.md`), если не стандартный. Сервер **никогда не активирует** профиль:
+- Три разные настройки forge: `FP_FORGE` — папка **с кодом** forge (checkout пакета `factorio-forge`);
+  `FACTORIO_FORGE_HOME` — папка **данных** forge (профили, `notes.md`), если не стандартная;
+  `FP_FORGE_PROFILE` — имя профиля сейва (по умолчанию — активный профиль forge). В конфиге стенда
+  им соответствуют ключи `forge`, `forge_home`, `forge_profile` (TESTING.md). Сервер **никогда не активирует** профиль:
   активный профиль — общее состояние venv forge и решение хозяина. Задан `FP_FORGE_PROFILE`, а
   активен другой → `partner_plan` отвечает `{supported:false, reason}`.
 - Процесс сервера для агентов запускается **без** `--admin` (служебные `admin_*` ключа не требуют).
@@ -39,12 +40,13 @@
 (код `limit`, как у мода — PROTOCOL §3).
 | tool | аргументы | что делает |
 |---|---|---|
-| `partner_brief` | — | правила, `notes.md` профиля сейва forge, стиль; вызвать первым |
+| `partner_brief` | — | правила честности (коротко; полные правила работы — в промпте агента `partner.md`, при расхождении верен он), `notes.md` профиля сейва forge, стиль; вызвать первым |
 | `partner_state` | — | op `state` |
 | `partner_map` | `radius?=16 (≤32), center?│near?, types?, names?` | op `map` |
 | `partner_resources` | `radius?, name?, center?│near?` | op `resources` |
 | `partner_stock` | `radius?, items?, limit?, center?│near?` | op `stock` |
 | `partner_find` | `item, kinds?, surface?, limit?` | op `find` — где по всей базе делают, тратят, хранят предмет |
+| `partner_access` | `area? │ radius?, center?│near?` | op `access` — суша, жидкость и выходы с участка (вызвать перед разметкой и стройкой у лавы или воды) |
 | `partner_ghosts` | `radius?│area?, center?│near?` | op `ghosts` |
 | `partner_rates` | `scope?, period?, area?, surface?, items? (≤100), top? (1..100)` | op `rates` (`surface` — статистика другой планеты) |
 | `partner_recipes` | `filter?` | op `recipes` — что помощник может скрафтить из своего инвентаря |
@@ -56,13 +58,23 @@
 | `partner_plan` | см. ниже | (поток I) спроектировать через forge |
 
 Служебные (только оркестр/отладка, включаются флагом `--admin`): `admin_hello`,
-`admin_spawn(helper)`, `admin_remove(helper)`, `admin_raw_events(since)`.
+`admin_spawn(helper)`, `admin_remove(helper)`, `admin_raw_events(since)`, `admin_limit(max)` (op
+`helper_limit`), `admin_attach(helper, player)` (op `helper_attach`).
+Запуск напарника (`agents/launch.py`): флаги `--helpers N` (спросить у игрока, шлёт `helper_limit`),
+`--body character│player` (по умолчанию `character`), `--helper <id>`, `--player <имя второго клиента>`
+(обязателен при `--body player`). Скрипт ходит через те же `admin_*` функции `core.py`, а не мимо них.
 
 ## `partner_plan` (поток I)
 Вход: `{task:"mining", resource:{name, area} │ patch (из partner_resources), options?:{drill?, belt?, direction?}}`.
 Выход: `{plan, anchor:pos, direction, items, size:{w,h}, summary}` — `plan` — id, по которому
 сервер хранит строку чертежа в `FP_HOME/plans/` (агенту строка не показывается); дальше
 `partner_act("build_blueprint", {plan, anchor, direction})`.
+В v1 `task` — только `"mining"`. Forge раскладывает буры по прямоугольнику пятна, а движок ставит
+призрак электрического бура только на руду, которую он добывает: крайние буры без руды попадут в
+`skipped` при `dry_run` — это ожидаемо, не ошибка. Для добычи обычно лучше `plan_mining` (раскладка по
+форме пятна).
+Старый forge без нужных команд (`notes`, профили) → `{supported:false, reason:"forge_too_old"}`, а
+`partner_brief` отдаёт пустые заметки с тем же `reason` — сырой вывод forge агенту не показывается.
 Если forge не умеет нужное → `{supported:false, reason}`: тогда агент просит хозяина поставить
 призраки (MPP / P.U.M.P. / чертёж) и строит `build_ghosts`.
 
