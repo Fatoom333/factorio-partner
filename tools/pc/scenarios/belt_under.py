@@ -55,7 +55,14 @@ def crossing(client, t, origin, result, reasons):
     if len(line1) != SQUARE:
         reasons.append(f"первая лента: {len(line1)} призраков вместо {SQUARE}")
 
-    second = B.act(client, "plan_belt", {"from": B.center(left), "to": B.center(right)})
+    args2 = {"from": B.center(left), "to": B.center(right)}
+    # В копии сейва подземный конвейер лучшей ленты может быть не исследован: тогда `auto` его не берёт
+    # (так и задумано), и проход под лентой проверяем режимом `prefer` (он ставит призраки с предупреждением).
+    probe = B.act(client, "plan_belt", dict(args2, dry_run=True))
+    if probe["kind"] == "job_done" and not (B.detail_of(probe).get("chosen") or {}).get("underground"):
+        args2["underground"] = "prefer"
+        result["second_mode"] = "prefer (подземный конвейер не исследован, auto его не берёт)"
+    second = B.act(client, "plan_belt", args2)
     result["second"] = B.brief(second)
     if second["kind"] != "job_done":
         reasons.append(f"вторая лента не done: {B.code_of(second)} {B.text_of(second)}")

@@ -242,7 +242,10 @@ function M.cell(env, x, y)
   elseif tile_flags(env, x, y) then
     c = M.TILE
   elseif can_place(env, W.belt, x, y, false) then
-    c = M.FREE
+    -- can_place_entity(manual_ghost) разрешает «поставить» ленту поверх призрака или ленты
+    -- (поворот / замена), а проложить поверх чужой ленты нельзя: смотрим, нет ли в клетке помехи.
+    local _, all_natural = blockers(env, x, y)
+    c = all_natural and M.FREE or M.ENTITY
   else
     local found, all_natural = blockers(env, x, y)
     if #found == 0 then
