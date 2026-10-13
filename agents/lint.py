@@ -1,0 +1,366 @@
+"""Проверка агентского слоя без игры: формат агента, имена инструментов, вызовы в примерах.
+
+    python agents/lint.py          # код выхода 0 — чисто, 1 — есть замечания
+
+Сверяет с контрактами (docs/MCP.md, ACTIONS.md, EVENTS.md, PROTOCOL.md) и с сервером
+(server/factorio_partner/server.py разбирается как текст через ``ast``, без импорта).
+Вызовы инструментов в файлах агентов пишутся блоками::
+
+    ```call
+    partner_act {"do":"collect","args":{"items":{"transport-belt":120}}}
+    ```
+
+``helper`` и ``key`` в блоках не пишутся (агент добавляет их сам).
+"""
+from __future__ import annotations
+
+import ast
+import json
+import re
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+AGENT_FILE = ROOT / ".claude" / "agents" / "partner.md"
+AGENTS_DIR = ROOT / "agents"
+SERVER_FILE = ROOT / "server" / "factorio_partner" / "server.py"
+DOCS = ROOT / "docs"
+
+TOOL_PREFIX = "mcp__partner__"
+# инструменты из docs/MCP.md, которые добавляет другой поток той же волны (сервер может отставать)
+PENDING_TOOLS = {"partner_find"}
+# аргументы partner_plan описаны в MCP.md отдельным разделом, а не в таблице
+PLAN_ARGS = {"task", "resource", "patch", "options"}
+# MCP.md: для build_blueprint вместо blob можно plan
+EXTRA_ACT_ARGS = {"build_blueprint": {"plan"}}
+SERVER_ERRORS = ("access denied", "transport_timeout", "game_paused", "repeated_failure",
+                 "response too large")
+LAYOUTS = ("simple", "compact", "super_compact", "sparse", "logistics", "compact_logistics",
+           "sparse_logistics")
+# что обязано быть в промпте (задача потока J); строка или набор вариантов
+REQUIRED = (
+    "owner:true", "owner:false", "partner_brief", "partner_state", "partner_map", "partner_find",
+    "partner_stock", "partner_rates", "partner_wait", "partner_say", "collect", "timed_out",
+    "flee", "watch", "module_errors", "superforced", "dry_run", "to_remove", "build_ghosts",
+    "plan_mining", "partner_plan", "build_blueprint", "supported:false", "notes", "style",
+)
+_U = "U" + "sers"
+PRIVATE_RE = re.compile(
+    r"(?<![\w)\]*])[A-Za-z]:[\\/](?![\\/])\w"  # путь с буквой диска
+    r"|[\\/]" + _U + r"[\\/]|[\\/]home[\\/]\w"  # домашние папки
+    r"|\b(?!127\.0\.0\.1\b)(?:\d{1,3}\.){3}\d{1,3}\b")  # адреса, кроме локального
+CONSOLE_RE = re.compile(r"""["'`]/(?:c|sc|silent-command|command)\b""")
+TEXT_SUFFIXES = {".md", ".py", ".js", ".json", ".txt"}
+
+
+# ---------------------------------------------------------------- разбор контрактов
+def _cells(line: str) -> list[str]:
+    return [c.strip() for c in line.strip().strip("|").split("|")]
+
+
+def _table_rows(text: str, header_first: str) -> list[list[str]]:
+    """Строки markdown-таблицы, первая ячейка заголовка которой равна ``header_first``."""
+    rows: list[list[str]] = []
+    inside = False
+    for line in text.splitlines():
+        if not line.lstrip().startswith("|"):
+            if inside:
+                break
+            continue
+        cells = _cells(line.replace("\\|", "│"))
+        if not inside:
+            inside = cells[0] == header_first
+            continue
+        if set(cells[0]) <= set("-: "):
+            continue
+        rows.append(cells)
+    return rows
+
+
+def _arg_names(cell: str) -> set[str]:
+    """Имена аргументов из ячейки вида ``to:pos│"player", radius?=1`` (скобки-пояснения убираются)."""
+    cell = re.sub(r"\([^)]*\)", " ", cell.replace("`", ""))
+    names: set[str] = set()
+    for piece in cell.split(","):
+        for alt in piece.split("│"):
+            m = re.match(r"\s*([a-z][a-z_]*)\s*(?:[?:=≤]|$)", alt)
+            if m:
+                names.add(m.group(1))
+    return names
+
+
+def server_tools(path: Path = SERVER_FILE) -> tuple[set[str], set[str]]:
+    """(инструменты агента, служебные) — функции с ``@mcp.tool()`` в ``build_server``."""
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    agent: set[str] = set()
+    admin: set[str] = set()
+
+    def is_tool(fn) -> bool:
+        return any(isinstance(d, ast.Call) and isinstance(d.func, ast.Attribute)
+                   and d.func.attr == "tool" for d in fn.decorator_list)
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == "build_server":
+            for stmt in node.body:
+                if isinstance(stmt, (ast.AsyncFunctionDef, ast.FunctionDef)) and is_tool(stmt):
+                    agent.add(stmt.name)
+                elif isinstance(stmt, ast.If):
+                    for sub in ast.walk(stmt):
+                        if isinstance(sub, (ast.AsyncFunctionDef, ast.FunctionDef)) and is_tool(sub):
+                            admin.add(sub.name)
+    return agent, admin
+
+
+def mcp_tools(docs: Path = DOCS) -> dict[str, set[str]]:
+    """Инструменты агента из таблицы docs/MCP.md: имя → допустимые аргументы."""
+    out: dict[str, set[str]] = {}
+    for cells in _table_rows((docs / "MCP.md").read_text(encoding="utf-8"), "tool"):
+        name = cells[0].strip("`")
+        out[name] = PLAN_ARGS.copy() if name == "partner_plan" else _arg_names(cells[1])
+    return out
+
+
+def actions(docs: Path = DOCS) -> dict[str, set[str]]:
+    """Действия из «Список v1» docs/ACTIONS.md: ``do`` → допустимые аргументы."""
+    out: dict[str, set[str]] = {}
+    for cells in _table_rows((docs / "ACTIONS.md").read_text(encoding="utf-8"), "do"):
+        name = cells[0].strip("`")
+        out[name] = _arg_names(cells[1]) | EXTRA_ACT_ARGS.get(name, set())
+    return out
+
+
+def error_codes(docs: Path = DOCS) -> list[str]:
+    """Коды ошибок мода из PROTOCOL §3."""
+    return [c[0].strip("`") for c in _table_rows((docs / "PROTOCOL.md").read_text(encoding="utf-8"), "code")]
+
+
+def loud_events(docs: Path = DOCS) -> list[str]:
+    """Важные (будящие) события из EVENTS.md."""
+    rows = _table_rows((docs / "EVENTS.md").read_text(encoding="utf-8"), "kind")
+    return [re.match(r"`([a-z_]+)`", c[0]).group(1) for c in rows if re.match(r"`[a-z_]+`", c[0])]
+
+
+def reflex_types(docs: Path = DOCS) -> dict[str, dict[str, tuple[float, float] | None]]:
+    """Рефлексы v1 из EVENTS.md: тип → {параметр: (мин, макс) или None, если границ нет}."""
+    out: dict[str, dict[str, tuple[float, float] | None]] = {}
+    for cells in _table_rows((docs / "EVENTS.md").read_text(encoding="utf-8"), "type"):
+        params: dict[str, tuple[float, float] | None] = {}
+        for piece in cells[1].split(", "):
+            m = re.match(r"\s*`([a-z_]+)`(?:\s+([\d.]+)\.\.([\d.]+))?", piece)
+            if m:
+                params[m.group(1)] = (float(m.group(2)), float(m.group(3))) if m.group(2) else None
+        out[cells[0].strip("`")] = params
+    return out
+
+
+# ---------------------------------------------------------------- агент
+def parse_agent(text: str) -> tuple[dict[str, str], str]:
+    """Frontmatter (простые ``ключ: значение``) и тело. Ошибка формата — ``ValueError``."""
+    if not text.startswith("---\n"):
+        raise ValueError("файл агента должен начинаться с frontmatter (---)")
+    end = text.find("\n---\n", 4)
+    if end < 0:
+        raise ValueError("frontmatter не закрыт (---)")
+    meta: dict[str, str] = {}
+    for line in text[4:end].splitlines():
+        if not line.strip():
+            continue
+        m = re.match(r"^([A-Za-z][A-Za-z0-9_-]*):\s*(.*)$", line)
+        if not m:
+            raise ValueError(f"строка frontmatter не вида «ключ: значение»: {line[:40]!r}")
+        if m.group(1) in meta:
+            raise ValueError(f"ключ frontmatter повторяется: {m.group(1)}")
+        meta[m.group(1)] = m.group(2).strip()
+    return meta, text[end + 5:]
+
+
+def agent_tools(meta: dict[str, str]) -> list[str]:
+    return [t.strip() for t in meta.get("tools", "").split(",") if t.strip()]
+
+
+def call_blocks(text: str) -> list[tuple[str, str]]:
+    """Строки ``инструмент {json}`` из блоков ```call."""
+    out: list[tuple[str, str]] = []
+    for block in re.findall(r"```call\n(.*?)```", text, flags=re.S):
+        for line in block.splitlines():
+            if line.strip():
+                tool, _, rest = line.strip().partition(" ")
+                out.append((tool, rest.strip()))
+    return out
+
+
+def check_reflex_set(items, types: dict) -> list[str]:
+    problems: list[str] = []
+    if not isinstance(items, list) or len(items) > 16:
+        return ["partner_reflex: set должен быть списком до 16 записей"]
+    for item in items:
+        kind = item.get("type") if isinstance(item, dict) else None
+        if kind not in types:
+            problems.append(f"partner_reflex: неизвестный тип рефлекса {kind!r}")
+            continue
+        for name, value in item.items():
+            if name == "type":
+                continue
+            if name not in types[kind]:
+                problems.append(f"partner_reflex {kind}: нет параметра {name!r} в EVENTS.md")
+                continue
+            bounds = types[kind][name]
+            if bounds and not (isinstance(value, (int, float)) and not isinstance(value, bool)
+                               and bounds[0] <= value <= bounds[1]):
+                problems.append(f"partner_reflex {kind}.{name}={value!r} вне границ {bounds[0]:g}..{bounds[1]:g}")
+    return problems
+
+
+def check_call(tool: str, raw: str, allowed: set[str], tools: dict, acts: dict, reflexes: dict) -> list[str]:
+    if tool not in allowed:
+        return [f"вызов {tool}: инструмента нет в белом списке агента"]
+    try:
+        args = json.loads(raw) if raw else {}
+    except ValueError:
+        return [f"вызов {tool}: аргументы — не JSON"]
+    if not isinstance(args, dict):
+        return [f"вызов {tool}: аргументы должны быть объектом"]
+    problems = [f"вызов {tool}: аргумента {k!r} нет в docs/MCP.md"
+                for k in args if k not in tools.get(tool, set())]
+    if {"helper", "key"} & set(args):
+        problems.append(f"вызов {tool}: helper и key в примерах не пишутся")
+    if tool == "partner_say" and len(str(args.get("text", ""))) > 200:
+        problems.append("partner_say: текст длиннее 200 символов")
+    if tool == "partner_wait" and not 0 < args.get("timeout", 30) <= 55:
+        problems.append("partner_wait: timeout должен быть до 55")
+    if tool == "partner_reflex":
+        problems += check_reflex_set(args.get("set"), reflexes)
+    if tool == "partner_act":
+        do = args.get("do")
+        if do not in acts:
+            problems.append(f"partner_act: действия {do!r} нет в docs/ACTIONS.md")
+        else:
+            inner = args.get("args", {})
+            if not isinstance(inner, dict):
+                problems.append(f"partner_act {do}: args должен быть объектом")
+            else:
+                problems += [f"partner_act {do}: аргумента {k!r} нет в docs/ACTIONS.md"
+                             for k in inner if k not in acts[do]]
+                if do == "plan_mining" and inner.get("layout", "simple") not in LAYOUTS:
+                    problems.append(f"plan_mining: раскладки {inner.get('layout')!r} нет в ACTIONS.md")
+    return problems
+
+
+def lint_agent(agent_file: Path = AGENT_FILE, server_file: Path = SERVER_FILE, docs: Path = DOCS,
+               extra_md: list[Path] | None = None) -> list[str]:
+    problems: list[str] = []
+    try:
+        meta, body = parse_agent(agent_file.read_text(encoding="utf-8").replace("\r\n", "\n"))
+    except (OSError, ValueError) as e:
+        return [f"{agent_file.name}: {e}"]
+
+    if meta.get("name") != "partner":
+        problems.append("frontmatter: name должен быть partner")
+    if meta.get("model") != "sonnet":
+        problems.append("frontmatter: model по умолчанию — sonnet")
+    if len(meta.get("description", "")) < 20:
+        problems.append("frontmatter: нужно описание (description)")
+    unknown = set(meta) - {"name", "description", "model", "tools"}
+    if unknown:
+        problems.append("frontmatter: лишние ключи: " + ", ".join(sorted(unknown)))
+
+    in_server, admin = server_tools(server_file)
+    tools = mcp_tools(docs)
+    listed = agent_tools(meta)
+    if not listed:
+        problems.append("frontmatter: пустой белый список tools (без него агент получит все инструменты)")
+    if len(set(listed)) != len(listed):
+        problems.append("frontmatter: инструмент в tools повторяется")
+    short: set[str] = set()
+    for full in listed:
+        if not full.startswith(TOOL_PREFIX) or "*" in full:
+            problems.append(f"tools: {full} — разрешены только явные имена {TOOL_PREFIX}<инструмент>")
+            continue
+        name = full[len(TOOL_PREFIX):]
+        short.add(name)
+        if name in admin or not name.startswith("partner_"):
+            problems.append(f"tools: {name} — служебный инструмент агенту не выдаётся")
+        elif name not in in_server and not (name in PENDING_TOOLS and name in tools):
+            problems.append(f"tools: {name} нет ни в сервере, ни среди добавляемых по docs/MCP.md")
+        elif name not in tools:
+            problems.append(f"tools: {name} нет в таблице инструментов docs/MCP.md")
+    for name in sorted(set(tools) - short):
+        problems.append(f"tools: в белом списке нет инструмента {name} из docs/MCP.md")
+
+    for code in error_codes(docs):
+        if f"`{code}`" not in body:
+            problems.append(f"промпт: нет разбора кода ошибки {code} (PROTOCOL §3)")
+    for text in SERVER_ERRORS:
+        if f"`{text}`" not in body:
+            problems.append(f"промпт: нет разбора отказа сервера «{text}» (MCP.md)")
+    for kind in loud_events(docs):
+        if f"`{kind}`" not in body:
+            problems.append(f"промпт: нет важного события {kind} (EVENTS.md)")
+    for word in REQUIRED:
+        if word not in body:
+            problems.append(f"промпт: нет обязательного правила или слова «{word}»")
+    for layout in LAYOUTS:
+        if f"`{layout}`" not in body:
+            problems.append(f"промпт: не названа раскладка {layout}")
+    acts = actions(docs)
+    reflexes = reflex_types(docs)
+    if not any(t == "partner_reflex" for t, _ in call_blocks(body)):
+        problems.append("промпт: нет блока call с partner_reflex (рефлексы в начале смены)")
+
+    for path in [agent_file, *(extra_md or [])]:
+        try:
+            text = path.read_text(encoding="utf-8").replace("\r\n", "\n")
+        except OSError as e:
+            problems.append(f"{path.name}: {e}")
+            continue
+        for tool, raw in call_blocks(text):
+            problems += [f"{path.name}: {p}" for p in check_call(tool, raw, short, tools, acts, reflexes)]
+    return problems
+
+
+# ---------------------------------------------------------------- прочее
+def lint_files(paths: list[Path]) -> list[str]:
+    """Личные пути и адреса; консольные команды в коде; обязательные части сценария запуска."""
+    problems: list[str] = []
+    for path in paths:
+        if path.suffix not in TEXT_SUFFIXES:
+            continue
+        text = path.read_text(encoding="utf-8")
+        rel = path.name
+        m = PRIVATE_RE.search(text)
+        if m:
+            problems.append(f"{rel}: похоже на личный путь или адрес: {m.group(0)!r}")
+        if path.suffix in {".py", ".js"} and path.name != "lint.py" and CONSOLE_RE.search(text):
+            problems.append(f"{rel}: строка похожа на консольную команду игры (разрешён только /partner через мост)")
+        if path.suffix == ".js":
+            if not re.search(r"^export const meta = \{", text, flags=re.M):
+                problems.append(f"{rel}: сценарий должен начинаться с export const meta")
+            if not re.search(r"agentType:\s*'partner'", text):
+                problems.append(f"{rel}: агенты сценария должны быть типа partner")
+            if re.search(r"Date\.now\(|Math\.random\(|new Date\(\)", text):
+                problems.append(f"{rel}: в сценарии нельзя Date.now / Math.random / new Date()")
+    return problems
+
+
+def repo_files() -> list[Path]:
+    files = [p for p in AGENTS_DIR.rglob("*") if p.is_file() and "__pycache__" not in p.parts]
+    return sorted(files) + [AGENT_FILE]
+
+
+def lint_all() -> list[str]:
+    examples = sorted((AGENTS_DIR / "examples").glob("*.md"))
+    return lint_agent(extra_md=examples) + lint_files(repo_files())
+
+
+def main() -> int:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    problems = lint_all()
+    for p in problems:
+        print("-", p)
+    print("agents lint:", "чисто" if not problems else f"замечаний: {len(problems)}")
+    return 1 if problems else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
