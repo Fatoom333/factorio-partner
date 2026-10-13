@@ -22,6 +22,12 @@ RECIPES = {
     "iron-gear-wheel": ({"iron-plate": 2}, 1),
 }
 KNOWN_ORES = ("iron-ore", "copper-ore", "coal", "stone", "tungsten-ore")
+VEC = {0: (0, -1), 4: (1, 0), 8: (0, 1), 12: (-1, 0)}
+DIR_OF = {v: k for k, v in VEC.items()}
+SIDE_NUM = {"north": 0, "east": 4, "south": 8, "west": 12}
+LIQUID_TILE = "lava"            # имя плитки в модели; сценарии его не знают — читают из ответов
+ACCESS_FRAME = 8                # STATE.md «access»: рамка = участок + 8 клеток
+BELT_SEARCH_MARGIN = 48         # рамка поиска пути ленты вокруг начала и конца
 
 
 class ModError(Exception):
@@ -42,7 +48,8 @@ def default_stores():
 
 class World:
     def __init__(self, stores=None, ore=None, recipes=None, helper_pos=None, blocked=None, hidden=None,
-                 mod="0.1.0", unreachable=False, hard_ores=("tungsten-ore",), far_invisible=False):
+                 mod="0.1.0", unreachable=False, hard_ores=("tungsten-ore",), far_invisible=False,
+                 liquid=None, body="character"):
         self.mod = mod
         self.tick = 1000
         self.seq = 0
@@ -65,6 +72,8 @@ class World:
         self.unreachable = unreachable
         self.far_invisible = far_invisible   # склады дальше 32 клеток от тела не видны (нет радаров)
         self.module_errors = 0
+        self.liquid = set(liquid or ())    # клетки жидкости: не пройти, не построить, под землёй не пройти
+        self.body = body
 
     # ------------------------------------------------------------ RCON
     def handler(self, cmd):
@@ -160,7 +169,8 @@ class World:
         return {"helper": helper, "surface": "nauvis", "pos": dict(h["pos"]), "health": 250, "max_health": 250,
                 "reach": {"build": 10, "reach": 10, "resource": 2.7, "pickup": 1},
                 "inv": dict(h["inv"]) if h["inv"] else {}, "inv_free": 80,
-                "robots": {"construction": 0, "available": 0}, "queue": 0, "tick": self.tick, "seq": self.seq}
+                "robots": {"construction": 0, "available": 0}, "queue": 0, "body": self.body,
+                "module_errors": self.module_errors, "tick": self.tick, "seq": self.seq}
 
     def _center(self, args, helper):
         if "center" in args:
@@ -259,7 +269,7 @@ class World:
         return [(x, y) for x in range(x0, x0 + s) for y in range(y0, y0 + s)]
 
     def _occupied(self):
-        taken = set(self.blocked) | self.hidden
+        taken = set(self.blocked) | self.hidden | self.liquid
         for pos, e in self.entities.items():
             taken.update(self._cells(pos, e["name"]))
         return taken
@@ -287,6 +297,13 @@ class World:
                     legend[ch] = "руда: " + ore
         for (x, y) in self.blocked:
             put(x, y, "O")
+        wet = 0
+        for (x, y) in self.liquid:
+            if 0 <= x - x0 < side and 0 <= y - y0 < side:
+                put(x, y, "~")
+                wet += 1
+        if wet:
+            legend["~"] = "не пройти: " + LIQUID_TILE
         ents = []
         names = args.get("names")
         for pos, e in sorted(self.entities.items()):
@@ -304,7 +321,76 @@ class World:
             put(int(math.floor(h["x"])), int(math.floor(h["y"])), "@")
         return {"surface": "nauvis", "bbox": {"x0": x0, "y0": y0, "x1": x0 + side - 1, "y1": y0 + side - 1},
                 "rows": ["".join(r) for r in grid], "legend": legend, "entities": ents[:100] or {},
+                "liquids": {LIQUID_TILE: {"n": wet, "cover_ok": False}} if wet else {},
                 "truncated": len(ents) > 100}
+
+    def op_access(self, args, helper):
+        """Суша, жидкость и выходы с участка (STATE.md «access»), упрощённо: преграда — жидкость и
+        чужие постройки; выход — самый длинный отрезок суши на стороне рамки, связанный с сушей участка."""
+        area = args.get("area")
+        if area is None:
+            c, r = self._center(args, helper), int(args.get("radius", 32))
+            if r > 64:
+                raise ModError("limit", "radius")
+            cx, cy = int(math.floor(c["x"])), int(math.floor(c["y"]))
+            area = {"left_top": {"x": cx - r, "y": cy - r}, "right_bottom": {"x": cx + r, "y": cy + r}}
+        elif any(k in args for k in ("center", "near", "radius")):
+            raise ModError("bad_args", "area: use either area or center/near with radius")
+        ax0, ay0 = int(area["left_top"]["x"]), int(area["left_top"]["y"])
+        ax1, ay1 = int(area["right_bottom"]["x"]) - 1, int(area["right_bottom"]["y"]) - 1
+        if ax1 - ax0 + 1 > 128 or ay1 - ay0 + 1 > 128:
+            raise ModError("limit", "area")
+        fx0, fy0, fx1, fy1 = ax0 - ACCESS_FRAME, ay0 - ACCESS_FRAME, ax1 + ACCESS_FRAME, ay1 + ACCESS_FRAME
+        wall = self.liquid | self.blocked
+        inside = [(x, y) for x in range(ax0, ax1 + 1) for y in range(ay0, ay1 + 1)]
+        liquid = sum(1 for c in inside if c in self.liquid)
+        land = [c for c in inside if c not in wall]
+        seen = set(land)
+        todo = list(land)
+        while todo:
+            x, y = todo.pop()
+            for dx, dy in VEC.values():
+                n = (x + dx, y + dy)
+                if n not in seen and n not in wall and fx0 <= n[0] <= fx1 and fy0 <= n[1] <= fy1:
+                    seen.add(n)
+                    todo.append(n)
+        sides = {"north": [(x, fy0) for x in range(fx0, fx1 + 1)], "south": [(x, fy1) for x in range(fx0, fx1 + 1)],
+                 "west": [(fx0, y) for y in range(fy0, fy1 + 1)], "east": [(fx1, y) for y in range(fy0, fy1 + 1)]}
+        exits = []
+        for name, cells in sides.items():
+            best, run = [], []
+            for c in cells + [None]:
+                if c is not None and c in seen:
+                    run.append(c)
+                    continue
+                if len(run) > len(best):
+                    best = run
+                run = []
+            if best:
+                mid = best[len(best) // 2]
+                width = len(best)
+                neck = "wide" if width >= 5 else "medium" if width >= 3 else "narrow"
+                exits.append({"side": name, "pos": {"x": mid[0], "y": mid[1]}, "width": width, "neck": neck})
+        rank = {"wide": 3, "medium": 2, "narrow": 1}
+        exits.sort(key=lambda e: (-rank[e["neck"]], -e["width"]))
+        out = {"area": {"left_top": {"x": ax0, "y": ay0}, "right_bottom": {"x": ax1 + 1, "y": ay1 + 1}},
+               "surface": "nauvis", "land": len(land), "liquid": liquid,
+               "liquids": {LIQUID_TILE: liquid} if liquid else {}, "enclosed": not exits,
+               "exits": exits[:8] or {}}
+        warnings = []
+        if exits:
+            out["best"] = exits[0]["side"]
+            if exits[0]["neck"] == "narrow":
+                warnings.append("narrow_access")
+        else:
+            warnings.append("enclosed")
+        if helper in self.helpers:
+            h = self.helpers[helper]["pos"]
+            cell = (int(math.floor(h["x"])), int(math.floor(h["y"])))
+            if fx0 <= cell[0] <= fx1 and fy0 <= cell[1] <= fy1:
+                out["reachable"] = cell in seen
+        out["warnings"] = warnings or {}
+        return out
 
     def _ghosts_in(self, area):
         lt, rb = area["left_top"], area["right_bottom"]
@@ -498,40 +584,135 @@ class World:
         return detail
 
     def do_plan_mining(self, h, a):
-        """Простая раскладка в окне: ряд буров, лента на всю ширину, второй ряд буров (если окно
-        высотой от 8 клеток), один столб."""
+        """Простая раскладка в окне, как у MPP `simple`: буры по обе стороны одной ленты во всю длину
+        окна, один столб. Лента течёт в `direction`; её последняя клетка — выход разметки
+        (`storage.mining_last` мода: его читает `plan_belt {from: "patch"}`). Раскладка считается для
+        ленты на север и поворачивается вокруг центра окна."""
         area = a["area"]
         x0, y0 = int(area["left_top"]["x"]), int(area["left_top"]["y"])
-        w = int(area["right_bottom"]["x"]) - x0
-        two_rows = int(area["right_bottom"]["y"]) - y0 >= 8
+        w, hh = int(area["right_bottom"]["x"]) - x0, int(area["right_bottom"]["y"]) - y0
         ore = self.ore.get(a.get("resource"), set())
-        if not any(x0 <= x < x0 + w for (x, y) in ore):
+        if not any(x0 <= x < x0 + w and y0 <= y < y0 + hh for (x, y) in ore):
             raise self._fail("not_found", "no ore in args.area")
         miner, belt, pole = a.get("miner", "electric-mining-drill"), a.get("belt", "transport-belt"), \
             a.get("pole", "small-electric-pole")
         if a.get("resource") in self.hard_ores and miner != "big-mining-drill":
             raise self._fail("bad_args", "args.miner: mining drill %s can't mine %s" % (miner, a.get("resource")))
-        direction = {"north": 0, "east": 4, "south": 8, "west": 12}[a.get("direction", "north")]
-        plan = [(miner, (x0 + 1.5 + 3 * i, y0 + 1.5), 8) for i in range(w // 3)]
-        plan += [(belt, (x0 + 0.5 + i, y0 + 3.5), direction) for i in range(w)]
-        if two_rows:
-            plan += [(miner, (x0 + 1.5 + 3 * i, y0 + 5.5), 0) for i in range(w // 3)]
-        plan += [(pole, (x0 + 0.5, y0 + (7.5 if two_rows else 4.5)), 0)]
-        drills = (w // 3) * (2 if two_rows else 1)
+        side = a.get("direction", "north")
+        direction = SIDE_NUM[side]
+        turns = direction // 4
+        # каноника (лента на север): длина ленты — вдоль y
+        cw, ch = (w, hh) if turns % 2 == 0 else (hh, w)
+        rows = ch // 3
+        canon = []
+        if cw >= 7:
+            canon += [(miner, (1.5, 1.5 + 3 * i), 4) for i in range(rows)]
+            canon += [(miner, (5.5, 1.5 + 3 * i), 12) for i in range(rows)]
+        canon += [(belt, (3.5, 0.5 + i), 0) for i in range(ch)]
+        canon += [(pole, (7.5, 0.5), None)]
+
+        def turn(cx, cy):
+            if turns == 0:
+                return cx, cy
+            if turns == 1:
+                return ch - cy, cx
+            if turns == 2:
+                return cw - cx, ch - cy
+            return cy, cw - cx
+
+        plan = []
+        for name, (cx, cy), d in canon:
+            rx, ry = turn(cx, cy)
+            plan.append((name, (x0 + rx, y0 + ry), 0 if d is None else (d + direction) % 16))
+        ex, ey = turn(3.5, 0.5)
+        drills = sum(1 for name, _, _ in plan if name == miner)
         taken = self._occupied()
         skipped = sum(1 for name, pos, _ in plan if any(c in taken for c in self._cells(pos, name)))
         need = {}
         for name, _, _ in plan:
             need[name] = need.get(name, 0) + 1
-        detail = {"ghosts": len(plan) - skipped, "need": need, "layout": a.get("layout", "simple"), "warnings": {},
+        wet = sum(1 for c in ore if c in self.liquid and x0 <= c[0] < x0 + w and y0 <= c[1] < y0 + hh)
+        detail = {"ghosts": len(plan) - skipped, "need": need, "layout": a.get("layout", "simple"),
+                  "warnings": ["on_liquid:%d" % wet] if wet else {},
                   "drills": drills, "skipped": skipped, "tiles": 0,
                   "chosen": {"miner": miner, "belt": belt, "pole": pole},
-                  "area": {"left_top": {"x": x0 - 1, "y": y0 - 1}, "right_bottom": {"x": x0 + w + 1, "y": y0 + 9}}}
+                  "area": {"left_top": {"x": x0 - 1, "y": y0 - 1}, "right_bottom": {"x": x0 + w + 1, "y": y0 + hh + 1}}}
         if a.get("dry_run"):
             return dict(detail, dry_run=True)
         for name, pos, d in plan:
             if not any(c in taken for c in self._cells(pos, name)):
                 self.entities[pos] = {"name": name, "dir": d, "ghost": True}
+        h["mining_last"] = [{"pos": {"x": x0 + ex, "y": y0 + ey}, "direction": direction, "side": side}]
+        return detail
+
+    def _belt_route(self, start, goal):
+        """Кратчайший путь по свободным клеткам (4 соседа) от start до goal. → [клетки] | None."""
+        taken = self._occupied()
+        if start in taken or goal in taken:
+            return None
+        lo_x, hi_x = min(start[0], goal[0]) - BELT_SEARCH_MARGIN, max(start[0], goal[0]) + BELT_SEARCH_MARGIN
+        lo_y, hi_y = min(start[1], goal[1]) - BELT_SEARCH_MARGIN, max(start[1], goal[1]) + BELT_SEARCH_MARGIN
+        prev = {start: None}
+        queue = [start]
+        i = 0
+        while i < len(queue):
+            cur = queue[i]
+            i += 1
+            if cur == goal:
+                path = []
+                while cur is not None:
+                    path.append(cur)
+                    cur = prev[cur]
+                return path[::-1]
+            for dx, dy in VEC.values():
+                n = (cur[0] + dx, cur[1] + dy)
+                if n in prev or n in taken or not (lo_x <= n[0] <= hi_x and lo_y <= n[1] <= hi_y):
+                    continue
+                prev[n] = cur
+                queue.append(n)
+        return None
+
+    def do_plan_belt(self, h, a):
+        """Лента призраками от начала до `to` в обход жидкости и построек (ACTIONS.md «plan_belt»).
+        `from: "patch"` — от выхода последней разметки этого помощника: путь начинается с клетки, в
+        которую смотрит её последняя лента."""
+        to = (int(math.floor(a["to"]["x"])), int(math.floor(a["to"]["y"])))
+        belt = a.get("belt", "transport-belt")
+        if a.get("from") == "patch":
+            outs = h.get("mining_last")
+            if not outs:
+                raise self._fail("not_found", "no mining layout of this helper: run plan_mining first")
+            o = outs[0]
+            vx, vy = VEC[o["direction"]]
+            start = (int(math.floor(o["pos"]["x"])) + vx, int(math.floor(o["pos"]["y"])) + vy)
+        else:
+            start = (int(math.floor(a["from"]["x"])), int(math.floor(a["from"]["y"])))
+        if start == to:
+            raise self._fail("bad_args", "args.from and args.to are the same tile")
+        if abs(start[0] - to[0]) > 512 or abs(start[1] - to[1]) > 512:
+            raise self._fail("limit", "args.to is farther than 512 tiles from the start")
+        path = self._belt_route(start, to)
+        if path is None:
+            raise self._fail("path_failed", "no route for the belt", {"reached": {"x": start[0], "y": start[1]}})
+        plan, turns, last = [], 0, None
+        for i, cell in enumerate(path):
+            nxt = path[i + 1] if i + 1 < len(path) else None
+            d = DIR_OF[(nxt[0] - cell[0], nxt[1] - cell[1])] if nxt else last
+            if last is not None and d != last:
+                turns += 1
+            last = d
+            plan.append((belt, (cell[0] + 0.5, cell[1] + 0.5), d))
+        xs, ys = [c[0] for c in path], [c[1] for c in path]
+        straight = abs(start[0] - to[0]) + abs(start[1] - to[1]) + 1
+        detail = {"ghosts": len(plan), "length": len(plan), "undergrounds": 0, "turns": turns, "need": {belt: len(plan)},
+                  "area": {"left_top": {"x": min(xs), "y": min(ys)}, "right_bottom": {"x": max(xs) + 1, "y": max(ys) + 1}},
+                  "path": [{"x": path[0][0] + 0.5, "y": path[0][1] + 0.5}, {"x": to[0] + 0.5, "y": to[1] + 0.5}],
+                  "warnings": ["long_detour"] if len(plan) > 2 * straight else {}, "lanes": 1,
+                  "chosen": {"belt": belt}}
+        if a.get("dry_run"):
+            return dict(detail, dry_run=True)
+        for name, pos, d in plan:
+            self.entities[pos] = {"name": name, "dir": d, "ghost": True}
         return detail
 
 

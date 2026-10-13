@@ -92,7 +92,7 @@ S.suite("mining_access", {
       X.setup()
       X.patch("iron-ore", 0, 0, 12, 9)
       X.plan{ near = NEAR, dry_run = true }
-      S.eq(storage.mining_last, nil, "dry_run ничего не пишет")
+      S.eq((storage.mining_last or {}).h1, nil, "dry_run ничего не пишет")
       X.plan{ near = NEAR, direction = "east" }
       local first = S.copy(storage.mining_last.h1)
       S.eq(first.outputs[1].side, "east")
@@ -209,7 +209,7 @@ S.suite("mining_access", {
       S.ok(d.text:find("args.area", 1, true), d.text)
       S.eq(#X.ghosts(), 0, "ни одного призрака не поставлено")
       S.eq(#X.marked, 0)
-      S.eq(storage.mining_last, nil)
+      S.eq((storage.mining_last or {}).h1, nil)
       local a = d.detail.area
       S.ok(a.right_bottom.x - a.left_top.x > 128, "область в detail: " .. S.dump(a))
       -- сухой прогон отвечает тем же

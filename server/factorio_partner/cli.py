@@ -39,6 +39,7 @@ TOOLS: dict[str, tuple[str, tuple[str, ...]]] = {
     "partner_resources": ("op_resources", ("radius", "name", "center", "near")),
     "partner_stock": ("op_stock", ("radius", "items", "limit", "center", "near")),
     "partner_find": ("op_find", ("item", "kinds", "surface", "limit")),
+    "partner_access": ("op_access", ("area", "radius", "center", "near")),
     "partner_ghosts": ("op_ghosts", ("radius", "area", "center", "near")),
     "partner_rates": ("op_rates", ("scope", "period", "area", "items", "top", "surface")),
     "partner_recipes": ("op_recipes", ("filter",)),

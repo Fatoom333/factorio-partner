@@ -82,7 +82,8 @@ class FakeMod:
         return {"job": job, "queued_before": 0}
 
     def op_state(self, args, env):
-        return {"helper": env.get("helper"), "pos": {"x": 1.5, "y": 2.5}, "tick": self.tick, "seq": self.seq}
+        return {"helper": env.get("helper"), "pos": {"x": 1.5, "y": 2.5}, "body": "character",
+                "module_errors": 0, "tick": self.tick, "seq": self.seq}
 
     def op_blob_put(self, args, env):
         b = args["blob"]

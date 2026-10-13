@@ -1,4 +1,7 @@
-"""Запуск напарника (agents/launch.py) на фейковом мосте: порядок операций, ключи, отказы."""
+"""Запуск напарника (agents/launch.py): порядок операций, ключи, отказы.
+
+Скрипт ходит в мод служебными функциями ``admin_*`` настоящего ``factorio_partner.core.Core``
+(docs/MCP.md); под ядром — фейковый мост, который помнит, что ушло бы в игру."""
 from __future__ import annotations
 
 import argparse
@@ -8,6 +11,9 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+
+from factorio_partner.core import Core
+from factorio_partner.errors import PartnerError
 
 import launch
 
@@ -20,10 +26,19 @@ class FakeBridge:
         self.hello = {"proto": 1, "owner": "Owner", "helpers": [], "module_errors": 0, **(hello or {})}
         self.errors = errors or {}
         self.helper_list = helper_list or []
+        self.closed = False
+
+    def on_reload(self, callback):
+        pass
+
+    async def close(self):
+        self.closed = True
 
     async def request(self, op, args=None, helper=None, channel="cmd", **_):
         self.calls.append((op, dict(args or {}), helper))
         code = self.errors.get((op, helper)) or self.errors.get(op)
+        if code == "transport_timeout":
+            raise PartnerError(code, "no answer")
         if code:
             return {"v": 1, "ok": False, "error": {"code": code, "text": "отказ"}}
         data = {"hello": self.hello,
@@ -43,11 +58,12 @@ def make_cfg(tmp_path: Path):
     return SimpleNamespace(home=home, helpers_file=home / "helpers.json")
 
 
-def run_launch(tmp_path, n=1, body="character", players=(), bridge=None, env=None):
+def run_launch(tmp_path, n=1, body="character", players=(), bridge=None, env=None, ids=None):
     said: list[str] = []
     bridge = bridge or FakeBridge()
     cfg = make_cfg(tmp_path)
-    result = asyncio.run(launch.launch(cfg, n, body, list(players), bridge=bridge,
+    core = Core(cfg, bridge)
+    result = asyncio.run(launch.launch(cfg, n, body, list(players), core=core, ids=ids,
                                        env=env or {"FP_RCON_PORT": "27015"}, python="python", say=said.append))
     return result, bridge, cfg, said
 
@@ -55,12 +71,29 @@ def run_launch(tmp_path, n=1, body="character", players=(), bridge=None, env=Non
 # ---- вопросы игроку -------------------------------------------------------------------
 
 def ns(**kw):
-    return argparse.Namespace(**{"helpers": None, "body": None, "players": None, **kw})
+    return argparse.Namespace(**{"helpers": None, "body": None, "players": None, "player": None, "helper": None,
+                                 **kw})
 
 
 def test_flags_are_used_without_questions():
     assert launch.ask_missing(ns(helpers="3", body="character"), None) == (3, "character", [])
     assert launch.ask_missing(ns(helpers="2", body="player", players="Bob, Eve"), None) == (2, "player", ["Bob", "Eve"])
+
+
+def test_contract_flags_helper_and_player():
+    """MCP.md: `--helper <id>` и `--player <имя>` (можно несколько раз); `--players` — то же списком."""
+    parse = launch.build_parser().parse_args
+    a = parse(["--body", "player", "--helper", "h2", "--player", "Bob"])
+    assert launch.ask_missing(a, None) == (1, "player", ["Bob"]) and launch.parse_ids(a.helper) == ["h2"]
+    a = parse(["--helpers", "3", "--body", "player", "--helper", "a", "--helper", "b", "--player", "Bob",
+               "--players", "Eve"])
+    assert launch.ask_missing(a, None) == (3, "player", ["Bob", "Eve"])
+    with pytest.raises(launch.LaunchError, match="разрешено 1"):
+        launch.ask_missing(parse(["--helpers", "1", "--body", "character", "--helper", "a", "--helper", "b"]), None)
+    for bad in (["H1"], ["h1", "h1"], ["x" * 17], ["../h"], [""]):
+        with pytest.raises(launch.LaunchError):
+            launch.parse_ids(bad)
+    assert launch.parse_ids(None) == []
 
 
 def test_no_flag_and_nobody_to_ask_is_refused():
@@ -164,18 +197,75 @@ def test_player_body_attaches_named_players(tmp_path):
     assert session["helpers"][1]["player"] == "Eve" and "body: player" in session["helpers"][1]["prompt"]
 
 
-def test_alive_body_is_reused_dead_is_spawned(tmp_path):
-    bridge = FakeBridge(hello={"helpers": ["h1", "h2"]},
-                        helper_list=[{"id": "h1", "state": "alive"}, {"id": "h2", "state": "dead"}])
-    _, bridge, _, said = run_launch(tmp_path, n=2, bridge=bridge)
-    assert ("helper_spawn", {}, "h1") not in bridge.calls
-    assert ("helper_spawn", {}, "h2") in bridge.calls
-    assert any("h1" in s for s in said)
+def test_alive_body_is_reused_the_other_is_spawned(tmp_path):
+    """Живое тело с этим id мод называет сам (`helper_exists`): его берём, второго не создаём."""
+    bridge = FakeBridge(hello={"helpers": ["h1", "h2"]}, errors={("helper_spawn", "h1"): "helper_exists"})
+    result, bridge, _, said = run_launch(tmp_path, n=2, bridge=bridge)
+    assert bridge.calls[2:] == [("helper_spawn", {}, "h1"), ("helper_spawn", {}, "h2")]
+    assert result["helpers"] == ["h1", "h2"] and any("h1" in s for s in said) and not any("h2" in s for s in said)
 
 
-def test_helper_exists_is_fine(tmp_path):
-    result, _, _, _ = run_launch(tmp_path, bridge=FakeBridge(errors={"helper_spawn": "helper_exists"}))
-    assert result["helpers"] == ["h1"]
+def test_explicit_helper_ids(tmp_path):
+    result, bridge, cfg, _ = run_launch(tmp_path, n=3, ids=["scout", "h7"])
+    assert bridge.calls == [("hello", {}, None), ("helper_limit", {"max": 3}, None),
+                            ("helper_spawn", {}, "scout"), ("helper_spawn", {}, "h7")]
+    assert result["helpers"] == ["scout", "h7"]
+    assert set(json.loads(cfg.helpers_file.read_text(encoding="utf-8"))) == {"scout", "h7"}
+
+
+def test_launch_goes_through_the_admin_functions_of_core(tmp_path):
+    """MCP.md: скрипт ходит через `admin_*` функции core.py, а не мимо них."""
+    seen: list[tuple] = []
+
+    class SpyCore(Core):
+        async def admin_hello(self):
+            seen.append(("admin_hello",))
+            return await super().admin_hello()
+
+        async def admin_limit(self, max):  # noqa: A002
+            seen.append(("admin_limit", max))
+            return await super().admin_limit(max)
+
+        async def admin_spawn(self, helper):
+            seen.append(("admin_spawn", helper))
+            return await super().admin_spawn(helper)
+
+        async def admin_attach(self, helper, player):
+            seen.append(("admin_attach", helper, player))
+            return await super().admin_attach(helper, player)
+
+    def go(body, players, sub):
+        bridge = FakeBridge()
+        cfg = make_cfg(tmp_path / sub)
+        asyncio.run(launch.launch(cfg, 2, body, players, core=SpyCore(cfg, bridge), env={}, python="python",
+                                  say=lambda _t: None))
+        return bridge
+
+    bridge = go("character", [], "a")
+    assert seen == [("admin_hello",), ("admin_limit", 2), ("admin_spawn", "h1"), ("admin_spawn", "h2")]
+    assert len(bridge.calls) == len(seen)             # в мод ушло ровно то, что прошло через ядро
+    seen.clear()
+    go("player", ["Bob", "Eve"], "b")
+    assert seen[2:] == [("admin_attach", "h1", "Bob"), ("admin_attach", "h2", "Eve")]
+    # сам скрипт моста не создаёт и запросов в мод не шлёт
+    source = Path(launch.__file__).read_text(encoding="utf-8")
+    assert "Bridge" not in source and ".request(" not in source
+
+
+def test_core_checks_apply_before_the_mod(tmp_path):
+    """Проверки ядра (имя игрока) срабатывают до похода в мод."""
+    bridge = FakeBridge()
+    with pytest.raises(launch.LaunchError, match="helper_attach"):
+        run_launch(tmp_path, body="player", players=["Bob\tEve"], bridge=bridge)
+    assert bridge.ops == ["hello", "helper_limit"]
+
+
+def test_mod_unavailable_is_not_reported_as_a_refusal(tmp_path):
+    for op in ("hello", "helper_limit", "helper_spawn"):
+        with pytest.raises(PartnerError) as ei:
+            run_launch(tmp_path / op, bridge=FakeBridge(errors={op: "transport_timeout"}))
+        assert ei.value.code == "transport_timeout"
+        assert not (tmp_path / op / "home" / "launch" / "session.json").exists()
 
 
 def test_module_errors_reach_the_agent(tmp_path):
@@ -189,7 +279,10 @@ def test_module_errors_reach_the_agent(tmp_path):
     ({"helper_spawn": "no_player"}, 1, "character", "хозяин должен быть в игре"),
     ({"helper_spawn": "limit"}, 1, "character", "helper_spawn"),
     ({"helper_attach": "no_player"}, 1, "player", "должен быть в игре"),
-    ({"helper_limit": "limit"}, 1, "character", "больше живых"),
+    ({"helper_attach": "helper_exists"}, 1, "player", "уже заняты"),
+    ({"helper_attach": "internal"}, 1, "player", "helper_attach"),
+    ({"hello": "unknown_op"}, 1, "character", "hello"),
+    ({"helper_limit": "limit"}, 1, "character", "больше занятых мест"),
     ({"helper_limit": "unknown_op"}, 2, "character", "helper_limit"),
     ({"helper_limit": "internal"}, 1, "character", "helper_limit"),
 ])
@@ -214,9 +307,9 @@ def test_wrong_protocol_or_no_owner_is_refused(tmp_path):
 
 
 def test_only_mod_operations_are_sent(tmp_path):
-    """Запуск ходит в игру только операциями мода через мост (мост сам ставит /partner)."""
+    """Запуск ходит в игру только операциями мода (их шлёт ядро сервера, мост сам ставит /partner)."""
     _, bridge, _, _ = run_launch(tmp_path, n=3, bridge=FakeBridge(hello={"helpers": ["h9"]}))
-    assert set(bridge.ops) <= {"hello", "helper_limit", "helper_list", "helper_spawn", "helper_attach"}
+    assert set(bridge.ops) <= {"hello", "helper_limit", "helper_spawn", "helper_attach"}
     source = Path(launch.__file__).read_text(encoding="utf-8")
     assert "RconConnection" not in source and ".execute(" not in source and "subprocess" not in source
 

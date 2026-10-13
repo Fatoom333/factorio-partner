@@ -1,21 +1,26 @@
-"""Сквозной сценарий «поставь добычу», путь `plan_mining` (поток K, TESTING.md §4, docs/E2E.md).
+"""Сквозной сценарий «поставь добычу», путь `plan_mining` + `plan_belt` (поток V4, TESTING.md §4, docs/E2E.md).
 
-Помощник сам размечает руду (раскладки MPP, поток M), собирает предметы и строит:
+Помощник сам размечает руду (раскладки MPP), ведёт от неё ленту (`plan_belt`), собирает предметы и строит:
 
 1. `hello`, помощник. Бур, лента и столб выбираются по складам базы (`find`): что где-то лежит, а
    чего нет — то, что сценарий умеет скрафтить из сырья со складов.
 2. Руда: `resources` по именам руд вокруг помощника и кольцами дальше; на карте (`map`) пятна ищется
-   свободное окно — только земля и руда, без построек. Окно маленькое, чтобы на буры хватило ручного
-   крафта: поручение целиком на всё пятно — это сотни буров, их честно не собрать за один прогон.
+   свободное окно — только земля и руда, без построек и жидкости. Окно маленькое, чтобы на буры хватило
+   ручного крафта: поручение целиком на всё пятно — это сотни буров, их честно не собрать за один прогон.
    Руда, которую выбранный бур не берёт (вольфрам — только большим буром), отбрасывается.
 3. `plan_mining {resource, area, layout: "simple", miner, belt, pole, dry_run}` — сколько чего нужно
    (`need`); окна перебираются, пока раскладка не встанет без пропусков и не слишком большой.
-4. Та же команда без `dry_run` — призраки стоят (сила хозяина).
-5. Предметы честно: `collect` со складов, поход к дальним складам, чего нет — сырьё и `craft`.
-6. `build_ghosts {area: detail.area, mode: "hand"}` — помощник сам идёт к руде и строит.
-7. Сверка с игрой («покрытие»): призраков в области 0; буров на карте столько, сколько обещала
-   разметка; каждый бур достаёт хотя бы до одной клетки руды; буры покрывают руду окна (доля);
-   предметов убыло ровно `need`; ленты смотрят в заданную сторону.
+4. `access {area}` — суша и выходы с участка: остров без выходов (`enclosed`) сценарий не размечает.
+5. Та же разметка без `dry_run` — призраки стоят (сила хозяина); ленты разметки смотрят в заданную сторону.
+6. Лента от добычи: `plan_belt {from: "patch", to, belt, underground: "never", dry_run}` до свободной
+   площадки за краем разметки, потом без `dry_run` — призраки ленты стоят.
+7. Предметы честно (на разметку и на ленту): `collect` со складов, поход к дальним складам, чего нет —
+   сырьё и `craft`.
+8. `build_ghosts {area, mode: "hand"}` по области разметки, потом по области (или кускам) ленты.
+9. Сверка с игрой: призраков в областях 0; буров на карте столько, сколько обещала разметка; каждый
+   бур достаёт хотя бы до одной клетки руды; буры покрывают руду окна (доля); предметов убыло ровно
+   `need` разметки и ленты; **лента непрерывна** — от каждой ленты разметки и от каждой клетки
+   проложенной ленты предмет доезжает до конечной точки.
 Только конверты `/partner <JSON>` через live_client; никаких /c, /sc, /silent-command.
 """
 from __future__ import annotations
@@ -32,8 +37,13 @@ MAX_DRILLS = 6                       # больше руками за прого
 MAX_PATCHES = 5                      # сколько ближних пятен смотреть за один проход поиска
 MAX_DRY_RUNS = 16
 MIN_COVER = 0.6                      # доля клеток руды окна под бурами
+MAX_BELT = 64                        # длиннее ленту за прогон честно не собрать и не построить
+MAX_BELT_TRIES = 4                   # сколько концов ленты пробовать сухим прогоном
 PLAN_TIMEOUT_S = 90.0
+BELT_TIMEOUT_S = 120.0
 BUILD_TIMEOUT_S = 420.0
+# предупреждения plan_belt, при которых не все выходы разметки сведены в одну ленту (ACTIONS.md)
+UNMERGED = ("unmerged_outputs", "not_bundled")
 
 
 def _load(name):
@@ -51,6 +61,13 @@ E = _load("_e2e")
 def plan_args(win, chosen, dry_run=False):
     args = {"resource": win["patch"]["name"], "area": win["area"], "layout": LAYOUT, "direction": DIRECTION,
             "miner": chosen["miner"], "belt": chosen["belt"], "pole": chosen["pole"]}
+    if dry_run:
+        args["dry_run"] = True
+    return args
+
+
+def belt_args(to, chosen, dry_run=False):
+    args = {"from": "patch", "to": E.cell_center(to), "belt": chosen["belt"], "underground": "never"}
     if dry_run:
         args["dry_run"] = True
     return args
@@ -102,7 +119,109 @@ def pick_window(api, chosen, log, tries, result):
     return None
 
 
-def verify(api, win, detail, chosen, before, result, reasons):
+def look_at_access(api, win, result, reasons):
+    """`access` по окну разметки: суша, жидкость, выходы. → можно ли размечать (не остров)."""
+    r = api.try_read("access", {"area": win["area"]})
+    if not r["ok"]:
+        result["access"] = {"error": r["error"]}
+        reasons.append(f"access по окну разметки отказал: {r['error'].get('code')} {r['error'].get('text')}")
+        return False
+    d = r["data"]
+    exits = E.as_list(d.get("exits"))
+    result["access"] = {"land": d.get("land"), "liquid": d.get("liquid"), "liquids": E.as_map(d.get("liquids")),
+                        "enclosed": d.get("enclosed"), "best": d.get("best"), "reachable": d.get("reachable"),
+                        "exits": [{"side": e.get("side"), "width": e.get("width"), "neck": e.get("neck")}
+                                  for e in exits], "warnings": E.as_list(d.get("warnings"))}
+    if not isinstance(d.get("enclosed"), bool) or not isinstance(d.get("land"), int):
+        reasons.append(f"ответ access не по контракту: {result['access']}")
+        return False
+    if d["enclosed"] or not exits:
+        reasons.append("у окна разметки нет выходов (enclosed): ленту не вывести, сценарий здесь не размечает")
+        return False
+    return True
+
+
+def plan_route(api, chosen, area, log, result, reasons):
+    """Лента от выходов разметки до свободной площадки за её краем: сухие прогоны по нескольким концам,
+    потом настоящий. → (клетка конца, detail) | None."""
+    tries = []
+    result["belt_dry_run"] = tries
+    picked = None
+    for to in E.belt_targets(api, area, DIRECTION, log, MAX_BELT_TRIES):
+        r = api.act("plan_belt", belt_args(to, chosen, dry_run=True), BELT_TIMEOUT_S)
+        d = E.detail_of(r)
+        need = E.as_map(d.get("need"))
+        tries.append({"to": list(to), "kind": r["kind"], "code": E.code_of(r), "text": E.text_of(r),
+                      "ghosts": d.get("ghosts"), "length": d.get("length"), "need": need or None,
+                      "warnings": E.as_list(d.get("warnings")), "skipped": d.get("skipped")})
+        if r["kind"] not in ("job_done", "job_failed"):
+            break                        # задача не принята или не завершилась — другие концы не помогут
+        if (r["kind"] == "job_done" and 0 < (d.get("ghosts") or 0) <= MAX_BELT and not d.get("skipped")
+                and set(need) == {chosen["belt"]}):
+            picked = (to, d)
+            break
+    if picked is None:
+        reasons.append("plan_belt (dry_run) не проложил ленту от разметки ни к одной свободной площадке "
+                       f"(пробовал {len(tries)})")
+        return None
+    to, dry = picked
+    # ленты, которые уже стоят там, где пройдёт новая (постройки базы): в сверку они не идут
+    old = E.belt_cells(api, belt_areas(dry), [chosen["belt"]])[0] if dry.get("area") else {}
+    result["belts_before"] = len(old)
+    real = api.act("plan_belt", belt_args(to, chosen), BELT_TIMEOUT_S)
+    result["belt_plan"] = E.brief(real)
+    d = E.detail_of(real)
+    if real["kind"] != "job_done":
+        reasons.append(f"plan_belt не done: {E.code_of(real)} {E.text_of(real)}")
+        return None
+    if d.get("dry_run"):
+        reasons.append("настоящий plan_belt ответил dry_run")
+    if (d.get("ghosts"), E.as_map(d.get("need"))) != (dry.get("ghosts"), E.as_map(dry.get("need"))):
+        reasons.append(f"лента разошлась с сухим прогоном: {d.get('ghosts')} / {d.get('need')} против "
+                       f"{dry.get('ghosts')} / {dry.get('need')}")
+    if sum(E.as_map(d.get("need")).values()) != d.get("ghosts"):
+        reasons.append(f"need ленты {d.get('need')} не сходится с числом призраков {d.get('ghosts')}")
+    if not d.get("area"):
+        reasons.append("в ответе plan_belt нет area")
+        return None
+    return to, d, old
+
+
+def belt_areas(detail):
+    """Области для `build_ghosts`: куски `areas` длинной ленты или одна `area` (ACTIONS.md «plan_belt»)."""
+    return E.as_list(detail.get("areas")) or [detail["area"]]
+
+
+def verify_belt(api, chosen, mining, route, to, mining_belts, old, result, reasons):
+    """Лента непрерывна: от каждой ленты разметки и от каждой клетки проложенной ленты предмет
+    доезжает до конечной точки `to` (по построенным лентам, как их видит игра). `old` — ленты,
+    стоявшие на пути до прокладки: проложенными они не считаются."""
+    cells, truncated = E.belt_cells(api, [mining["area"]] + belt_areas(route), [chosen["belt"]])
+    built = {c: b for c, b in cells.items() if not b["ghost"]}
+    info = {"to": list(to), "on_map": len(built), "truncated": truncated, "length": route.get("length")}
+    result["belt"] = info
+    if truncated:
+        reasons.append("карта обрезала список лент — сверка непрерывности неполная")
+    if to not in built:
+        reasons.append(f"в конечной точке ленты {list(to)} ленты нет")
+        return
+    laid = [c for c in built if c not in mining_belts and c not in old]
+    lost = [c for c in laid if not E.flows_to(built, c, to)[0]]
+    info.update(laid=len(laid), laid_lost=[list(c) for c in lost[:5]])
+    if len(laid) != route.get("ghosts"):
+        reasons.append(f"проложенных лент на карте {len(laid)}, а plan_belt сообщил {route.get('ghosts')}")
+    if lost:
+        reasons.append(f"лента рвётся: с {len(lost)} её клеток до конца не доехать, первая — {list(lost[0])}")
+    cut = [c for c in mining_belts if c not in built or not E.flows_to(built, c, to)[0]]
+    info.update(mining_belts=len(mining_belts), mining_cut=[list(c) for c in cut[:5]])
+    warnings = E.as_list(route.get("warnings"))
+    partly = any(str(w).split(":")[0] in UNMERGED for w in warnings)
+    if cut and (not partly or len(cut) == len(mining_belts)):
+        reasons.append(f"лента разметки не соединена с проложенной: с {len(cut)} из {len(mining_belts)} её "
+                       f"клеток до конца не доехать, первая — {list(cut[0])}")
+
+
+def verify(api, win, detail, chosen, before, need, result, reasons):
     area = detail.get("area")
     if not area or max(E.area_side(area)) > 64:
         reasons.append(f"detail.area нет или она слишком большая: {area}")
@@ -113,7 +232,7 @@ def verify(api, win, detail, chosen, before, result, reasons):
         reasons.append(f"в области осталось призраков: {left.get('count')}")
     center = E.area_center(area)
     radius = max(E.area_side(area)) / 2 + 2
-    names = [chosen["miner"], chosen["belt"], chosen["pole"]]
+    names = [chosen["miner"], chosen["pole"]]
     built, _, truncated = E.on_map(api, names, center, radius)
 
     def inside(e):
@@ -122,9 +241,8 @@ def verify(api, win, detail, chosen, before, result, reasons):
 
     built = [e for e in built if inside(e)]
     drills = [e for e in built if e["name"] == chosen["miner"]]
-    belts = [e for e in built if e["name"] == chosen["belt"]]
-    result["on_map"] = {"drills": len(drills), "belts": len(belts),
-                        "poles": sum(1 for e in built if e["name"] == chosen["pole"]), "truncated": truncated}
+    result["on_map"] = {"drills": len(drills), "poles": sum(1 for e in built if e["name"] == chosen["pole"]),
+                        "truncated": truncated}
     if len(drills) != detail.get("drills"):
         reasons.append(f"буров на карте {len(drills)}, а разметка обещала {detail.get('drills')}")
 
@@ -145,17 +263,12 @@ def verify(api, win, detail, chosen, before, result, reasons):
             reasons.append(f"буры без руды в области добычи: {off_ore}")
         if share < MIN_COVER:
             reasons.append(f"буры покрывают {share:.0%} клеток руды окна, меньше {MIN_COVER:.0%}")
-    dirs = sorted({e.get("dir") for e in belts})
-    result["belt_dirs"] = dirs
-    if belts and dirs != [E.DIR_NUM[DIRECTION]]:
-        reasons.append(f"лента смотрит в {dirs}, а не в {E.DIR_NUM[DIRECTION]} ({DIRECTION})")
 
     after = E.inventory(api)
-    need = E.as_map(detail.get("need"))
     spent = {k: before.get(k, 0) - after.get(k, 0) for k in need}
     result["inventory"] = {"need": need, "spent": spent}
     if spent != need:
-        reasons.append(f"у помощника убыло {spent}, а разметке нужно {need}")
+        reasons.append(f"у помощника убыло {spent}, а разметке и ленте нужно {need}")
 
 
 def run(client) -> dict:
@@ -187,6 +300,8 @@ def run(client) -> dict:
     result["patch"] = {"name": win["patch"]["name"], "center": win["patch"]["center"], "tiles": win["patch"].get("tiles"),
                        "dist": win["patch"].get("dist"), "window": win["area"], "ore_in_window": win["ore"]}
     reasons = []
+    if not look_at_access(api, win, result, reasons):
+        return E.finish(result, reasons)
 
     real = api.act("plan_mining", plan_args(win, chosen), PLAN_TIMEOUT_S)
     result["plan"] = E.brief(real)
@@ -194,7 +309,7 @@ def run(client) -> dict:
     if real["kind"] != "job_done":
         reasons.append(f"plan_mining не done: {E.code_of(real)} {E.text_of(real)}")
         return E.finish(result, reasons)
-    need = E.as_map(detail.get("need"))
+    need = dict(E.as_map(detail.get("need")))
     if need != E.as_map(dry_detail.get("need")) or detail.get("ghosts") != dry_detail.get("ghosts"):
         reasons.append(f"разметка разошлась с сухим прогоном: {detail.get('ghosts')} / {need} против "
                        f"{dry_detail.get('ghosts')} / {dry_detail.get('need')}")
@@ -202,6 +317,24 @@ def run(client) -> dict:
     result["ghosts_op"] = {"count": seen.get("count"), "need": seen.get("need"), "blocked_total": seen.get("blocked_total")}
     if seen.get("count") != detail.get("ghosts"):
         reasons.append(f"операция ghosts видит {seen.get('count')} призраков, а разметка сообщила {detail.get('ghosts')}")
+    if not detail.get("area"):
+        reasons.append("в ответе plan_mining нет area")
+        return E.finish(result, reasons)
+
+    # ленты разметки — до прокладки: куда смотрят и где стоят (потом от них сверяется непрерывность)
+    cells, _ = E.belt_cells(api, [detail["area"]], [chosen["belt"]])
+    mining_belts = {c: b for c, b in cells.items() if b["ghost"]}
+    dirs = sorted({b.get("dir") for b in mining_belts.values()})
+    result["belt_dirs"] = dirs
+    if mining_belts and dirs != [E.DIR_NUM[DIRECTION]]:
+        reasons.append(f"лента разметки смотрит в {dirs}, а не в {E.DIR_NUM[DIRECTION]} ({DIRECTION})")
+
+    planned = plan_route(api, chosen, detail["area"], log, result, reasons)
+    if planned is None:
+        return E.finish(result, reasons)
+    to, route, old = planned
+    for item, n in E.as_map(route.get("need")).items():
+        need[item] = need.get(item, 0) + n
 
     missing, notes = E.obtain(api, need, log)
     if missing:
@@ -211,12 +344,27 @@ def run(client) -> dict:
         return E.finish(result, reasons)
     before = E.inventory(api)
 
-    r = api.act("build_ghosts", {"area": detail["area"], "mode": "hand"}, BUILD_TIMEOUT_S)
-    result["build"] = E.brief(r)
-    d = E.detail_of(r)
-    if r["kind"] != "job_done":
-        reasons.append(f"build_ghosts не done: {E.code_of(r)} {E.text_of(r)}")
-    elif d.get("built") != detail.get("ghosts") or d.get("left"):
-        reasons.append(f"построено {d.get('built')} из {detail.get('ghosts')}, осталось {d.get('left')}")
-    verify(api, win, detail, chosen, before, result, reasons)
+    built_total = 0
+    builds = []
+    result["build"] = builds
+    for area in [detail["area"]] + belt_areas(route):
+        r = api.act("build_ghosts", {"area": area, "mode": "hand"}, BUILD_TIMEOUT_S)
+        d = E.detail_of(r)
+        builds.append(dict(E.brief(r), area=area))
+        if r["kind"] != "job_done":
+            reasons.append(f"build_ghosts не done: {E.code_of(r)} {E.text_of(r)}")
+            break
+        built_total += d.get("built") or 0
+        if d.get("left"):
+            reasons.append(f"после build_ghosts в области осталось призраков: {d.get('left')}")
+    expected = (detail.get("ghosts") or 0) + (route.get("ghosts") or 0)
+    result["built"] = {"total": built_total, "expected": expected}
+    if built_total != expected:
+        reasons.append(f"построено {built_total}, а призраков разметки и ленты было {expected}")
+    for area in belt_areas(route):
+        left = api.read("ghosts", {"area": area})
+        if left.get("count"):
+            reasons.append(f"в области ленты осталось призраков: {left.get('count')}")
+    verify(api, win, detail, chosen, before, need, result, reasons)
+    verify_belt(api, chosen, detail, route, to, mining_belts, old, result, reasons)
     return E.finish(result, reasons)

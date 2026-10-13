@@ -9,14 +9,16 @@
  2. partner_brief         — правила для агента (заметки forge могут быть недоступны — это не ошибка)
  3. partner_state         — помощник, позиция, tick и seq
  4. partner_map           — карта 17×17 вокруг помощника
- 5. partner_find          — поиск по всей базе предмета, который точно лежит на складе
- 6. partner_act(walk)     — задача принята, `partner_wait` доводит до `job_done`, помощник на месте
- 7. partner_wait          — без событий: `timed_out`, пустой список, курсор не уходит назад
- 8. partner_reflex        — список рефлексов ставится и снимается (полная замена)
- 9. отказы сервера        — чужой ключ → `access denied`; неизвестное действие и радиус сверх границы
-                            не уходят в мод (`bad_args` / `limit`)
-10. сверка в обход сервера — `jobs` и `helper_list` мода конвертом: очередь пуста, помощник жив
-11. уборка                — admin remove
+ 5. partner_access        — суша, жидкость и выходы с участка вокруг помощника (радиусом и областью)
+ 6. partner_find          — поиск по всей базе предмета, который точно лежит на складе
+ 7. partner_act(walk)     — задача принята, `partner_wait` доводит до `job_done`, помощник на месте
+ 8. partner_wait          — без событий: `timed_out`, пустой список, курсор не уходит назад
+ 9. partner_reflex        — список рефлексов ставится и снимается (полная замена)
+10. отказы сервера        — чужой ключ → `access denied`; неизвестное действие, радиус сверх границы,
+                            неверные аргументы `plan_belt` и `build_blueprint` не уходят в мод
+                            (`bad_args` / `limit`)
+11. сверка в обход сервера — `jobs` и `helper_list` мода конвертом: очередь пуста, помощник жив
+12. уборка                — admin remove
 Только `/partner <JSON>` (и сервер, и стенд другого не шлют); никаких /c, /sc, /silent-command.
 """
 from __future__ import annotations
@@ -30,6 +32,7 @@ HELPER = "e2e"
 WALK_STEP = 6            # на сколько клеток отойти
 WALK_RADIUS = 1
 WALK_TIMEOUT_S = 90.0
+ACCESS_RADIUS = 16       # участок access вокруг помощника: 33×33 клетки
 FIND_FALLBACK = ("iron-plate", "steel-plate", "stone", "coal", "copper-plate", "calcite")
 
 
@@ -67,11 +70,21 @@ def step_brief(client, api, ctx):
     d = client.tool("brief")
     need(isinstance(d, dict) and d.get("helper") == HELPER, f"brief.helper = {d.get('helper')!r}")
     need(isinstance(d.get("rules"), str) and "partner_act" in d["rules"], "brief.rules пуст")
+    # короткие правила честности и ссылка на полные правила агента (MCP.md «partner_brief»)
+    need("Честность" in d["rules"] and len(d["rules"]) < 2500, f"brief.rules не короткие: {len(d['rules'])} символов")
+    need(isinstance(d.get("rules_full"), str) and d["rules_full"].endswith("partner.md"),
+         f"brief.rules_full = {d.get('rules_full')!r}")
     notes = d.get("notes")
     need(notes is None or isinstance(notes, str), "brief.notes: строка или null")
     need(notes is not None or isinstance(d.get("notes_missing"), str), "brief: нет ни заметок, ни причины")
+    # старый forge: пустые заметки и код причины, без сырого вывода forge (usage, список команд)
+    missing = str(d.get("notes_missing") or "")
+    need("usage:" not in missing.lower() and "invalid choice" not in missing.lower(),
+         "brief.notes_missing несёт сырой вывод forge")
+    need(d.get("reason") in (None, "forge_too_old"), f"brief.reason = {d.get('reason')!r}")
     # заметки профиля — записи хозяина: в результат идут только их размер и причина, почему их нет
-    return {"keys": sorted(d), "notes_chars": len(notes) if notes else 0, "notes_missing": d.get("notes_missing")}
+    return {"keys": sorted(d), "notes_chars": len(notes) if notes else 0, "notes_missing": d.get("notes_missing"),
+            "reason": d.get("reason")}
 
 
 def step_state(client, api, ctx):
@@ -81,8 +94,12 @@ def step_state(client, api, ctx):
     need(isinstance(d.get("surface"), str) and d["surface"], "state.surface")
     need(is_int(d.get("tick")) and is_int(d.get("seq")), "state: нет tick / seq")
     need(isinstance(d.get("reach"), dict), "state.reach")
+    # ревизия 3.3: вид тела и счётчик ошибок модулей — прямо в state
+    need(d.get("body") in ("character", "player"), f"state.body = {d.get('body')!r}")
+    need(is_int(d.get("module_errors")), f"state.module_errors = {d.get('module_errors')!r}")
     ctx["pos"], ctx["tick"] = d["pos"], d["tick"]
-    return {"pos": d["pos"], "surface": d["surface"], "inv_free": d.get("inv_free")}
+    return {"pos": d["pos"], "surface": d["surface"], "inv_free": d.get("inv_free"), "body": d["body"],
+            "module_errors": d["module_errors"]}
 
 
 def step_map(client, api, ctx):
@@ -95,6 +112,39 @@ def step_map(client, api, ctx):
     box = d.get("bbox") or {}
     need(box.get("x1", 0) - box.get("x0", 0) == 16, f"map.bbox: {box}")
     return {"bbox": box, "entities": len(E.as_list(d.get("entities")))}
+
+
+def step_access(client, api, ctx):
+    """`partner_access`: суша, жидкость и выходы вокруг помощника — форма ответа и согласие с картой."""
+    d = client.tool("access", radius=ACCESS_RADIUS)
+    need(is_int(d.get("land")) and is_int(d.get("liquid")) and d["land"] >= 0 and d["liquid"] >= 0,
+         f"access.land / liquid: {d.get('land')!r} / {d.get('liquid')!r}")
+    side = 2 * ACCESS_RADIUS + 1
+    need(d["land"] + d["liquid"] <= side * side, f"access: land + liquid больше площади {side}×{side}")
+    need(isinstance(d.get("enclosed"), bool), f"access.enclosed = {d.get('enclosed')!r}")
+    liquids = E.as_map(d.get("liquids"))
+    need((d["liquid"] > 0) == bool(liquids), f"access.liquid = {d['liquid']}, а liquids = {liquids!r}")
+    exits = E.as_list(d.get("exits"))
+    for e in exits:
+        need(e.get("side") in ("north", "east", "south", "west") and e.get("neck") in ("narrow", "medium", "wide")
+             and is_int(e.get("width")) and e["width"] >= 1 and is_pos(e.get("pos")), f"access.exits[]: {e}")
+    warnings = E.as_list(d.get("warnings"))
+    need(all(isinstance(w, str) for w in warnings), f"access.warnings: {warnings!r}")
+    if d["enclosed"]:
+        need(not exits and "enclosed" in warnings, f"enclosed, а выходы {exits} и предупреждения {warnings}")
+    else:
+        need(exits and d.get("best") == exits[0]["side"], f"access.best = {d.get('best')!r}, выходы {exits[:1]}")
+    # помощник стоит внутри рамки: сервер и мод обязаны сказать, достижим ли участок
+    need(d.get("reachable") is True, f"access.reachable = {d.get('reachable')!r} вокруг самого помощника")
+    # область вместо радиуса — тот же участок, тот же ответ по суше
+    area = d.get("area")
+    need(isinstance(area, dict) and is_pos(area.get("left_top")) and is_pos(area.get("right_bottom")),
+         f"access.area: {area!r}")
+    again = client.tool("access", area=area)
+    need((again.get("land"), again.get("liquid")) == (d["land"], d["liquid"]),
+         f"access через area: {again.get('land')} / {again.get('liquid')}, через radius: {d['land']} / {d['liquid']}")
+    return {"land": d["land"], "liquid": d["liquid"], "liquids": liquids, "enclosed": d["enclosed"],
+            "best": d.get("best"), "exits": len(exits), "warnings": warnings}
 
 
 def step_find(client, api, ctx):
@@ -181,12 +231,21 @@ def step_refusals(client, api, ctx):
     need("unknown action" in str(r["error"].get("text")), f"отказ пришёл не от сервера: {r}")
     r = client.try_tool("map", radius=64)
     need(not r["ok"] and r["error"]["code"] == "limit", f"радиус сверх границы: {r}")
+    r = client.try_tool("access", radius=65)
+    need(not r["ok"] and r["error"]["code"] == "limit", f"радиус access сверх границы: {r}")
+    r = client.try_tool("access", radius=8, area=E.area_around(ctx["pos"], 4))
+    need(not r["ok"] and r["error"]["code"] == "bad_args", f"access с area и radius вместе: {r}")
+    # новые действия и аргументы ревизии 3.3 сервер знает, но неверные значения в мод не пускает
+    r = client.try_tool("act", do="plan_belt", args={"from": "patch", "to": ctx["pos"], "lanes": 9})
+    need(not r["ok"] and r["error"]["code"] == "limit", f"plan_belt.lanes сверх границы: {r}")
+    r = client.try_tool("act", do="build_blueprint", args={"blob": "nope", "anchor": ctx["pos"], "partial": "yes"})
+    need(not r["ok"] and r["error"]["code"] == "bad_args", f"build_blueprint.partial не bool: {r}")
     r = client.try_tool("act", do="walk", args={"to": {"x": 0, "y": 0}, "speed": 100})
     need(not r["ok"] and r["error"]["code"] == "bad_args", f"лишнее поле действия: {r}")
     need("unknown field" in str(r["error"].get("text")), f"отказ пришёл не от сервера: {r}")
     jobs = client.call_ok("jobs", {}, HELPER)
     need(not jobs.get("active") and not E.as_list(jobs.get("queue")), f"отказанное действие попало в очередь: {jobs}")
-    out["bad_requests"] = ["bad_args", "limit", "bad_args"]
+    out["bad_requests"] = ["bad_args", "limit", "limit", "bad_args", "limit", "bad_args", "bad_args"]
     return out
 
 
@@ -208,7 +267,8 @@ def step_remove(client, api, ctx):
     return {"removed": True, "corpse": bool(E.as_map(d.get("data")).get("corpse"))}
 
 
-STEPS = (("brief", step_brief), ("state", step_state), ("map", step_map), ("find", step_find),
+STEPS = (("brief", step_brief), ("state", step_state), ("map", step_map), ("access", step_access),
+         ("find", step_find),
          ("walk", step_walk), ("wait", step_wait), ("reflex", step_reflex), ("refusals", step_refusals),
          ("direct", step_direct), ("remove", step_remove))
 

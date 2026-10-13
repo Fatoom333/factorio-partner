@@ -27,12 +27,14 @@ SERVER_FILE = ROOT / "server" / "factorio_partner" / "server.py"
 DOCS = ROOT / "docs"
 
 TOOL_PREFIX = "mcp__partner__"
-# инструменты из docs/MCP.md, которые добавляет другой поток той же волны (сервер может отставать)
-PENDING_TOOLS = {"partner_access"}
+# инструменты из docs/MCP.md, которые добавляет другой поток той же волны (сервер может отставать).
+# После волны 4 пусто: всё, что есть в таблице MCP.md, сервер уже отдаёт.
+PENDING_TOOLS: set[str] = set()
 # аргументы partner_plan описаны в MCP.md отдельным разделом, а не в таблице
 PLAN_ARGS = {"task", "resource", "patch", "options"}
-# MCP.md: для build_blueprint вместо blob можно plan
-EXTRA_ACT_ARGS = {"build_blueprint": {"plan"}}
+# MCP.md: для build_blueprint вместо blob можно plan; mirror — аргумент мода, которым применяется
+# ответ `fit.mirror` (ACTIONS.md «Плитки без опоры»: fit = {anchor, shift, direction?, mirror?})
+EXTRA_ACT_ARGS = {"build_blueprint": {"plan", "mirror"}}
 SERVER_ERRORS = ("access denied", "transport_timeout", "game_paused", "repeated_failure",
                  "response too large")
 LAYOUTS = ("simple", "compact", "super_compact", "sparse", "logistics", "compact_logistics",
@@ -43,7 +45,12 @@ REQUIRED = (
     "partner_stock", "partner_rates", "partner_wait", "partner_say", "collect", "timed_out",
     "flee", "watch", "module_errors", "superforced", "dry_run", "to_remove", "build_ghosts",
     "plan_mining", "partner_plan", "build_blueprint", "supported:false", "notes", "style",
+    # ревизия 3.3: жидкость и выходы с участка, поиск места для чертежа, лента до базы, заметки смены
+    "partner_access", "narrow_access", "enclosed", "on_liquid", "fit", "rotate", "partial", "plan_belt",
+    "areas", "need", "chosen", "forge_too_old", "только как факты", "без подтверждения хозяина",
 )
+# порядок шагов поручения «добыча с лентой» в примере (PLAN «Волна 4»)
+MINING_ORDER = ("partner_access", "plan_mining", "plan_belt", "collect", "build_ghosts")
 _U = "U" + "sers"
 PRIVATE_RE = re.compile(
     r"(?<![\w)\]*])[A-Za-z]:[\\/](?![\\/])\w"  # путь с буквой диска
@@ -243,7 +250,40 @@ def check_call(tool: str, raw: str, allowed: set[str], tools: dict, acts: dict, 
                              for k in inner if k not in acts[do]]
                 if do == "plan_mining" and inner.get("layout", "simple") not in LAYOUTS:
                     problems.append(f"plan_mining: раскладки {inner.get('layout')!r} нет в ACTIONS.md")
+                if do == "build_blueprint" and inner.get("partial") is True:
+                    problems.append("build_blueprint: partial:true в примерах не пишется — обрезанный чертёж "
+                                    "ставится только по прямому согласию хозяина")
     return problems
+
+
+def call_order(text: str) -> list[str]:
+    """Шаги примера по порядку: имена инструментов чтения и ``do`` действий (без пробных прогонов)."""
+    steps: list[str] = []
+    for tool, raw in call_blocks(text):
+        if tool != "partner_act":
+            steps.append(tool)
+            continue
+        try:
+            args = json.loads(raw)
+        except ValueError:
+            continue
+        inner = args.get("args") if isinstance(args, dict) else None
+        if isinstance(inner, dict) and inner.get("dry_run") is not True:
+            steps.append(str(args.get("do")))
+    return steps
+
+
+def check_mining_order(text: str, name: str) -> list[str]:
+    """В примере добычи шаги идут так: access → plan_mining → plan_belt → collect → build_ghosts."""
+    steps = call_order(text)
+    at = -1
+    for step in MINING_ORDER:
+        try:
+            at = steps.index(step, at + 1)
+        except ValueError:
+            return [f"{name}: порядок поручения нарушен — нет шага {step} после предыдущих "
+                    f"({' → '.join(MINING_ORDER)})"]
+    return []
 
 
 def lint_agent(agent_file: Path = AGENT_FILE, server_file: Path = SERVER_FILE, docs: Path = DOCS,
@@ -349,7 +389,11 @@ def repo_files() -> list[Path]:
 
 def lint_all() -> list[str]:
     examples = sorted((AGENTS_DIR / "examples").glob("*.md"))
-    return lint_agent(extra_md=examples) + lint_files(repo_files())
+    order: list[str] = []
+    mining = AGENTS_DIR / "examples" / "mining-order.md"
+    if mining.is_file():
+        order = check_mining_order(mining.read_text(encoding="utf-8").replace("\r\n", "\n"), mining.name)
+    return lint_agent(extra_md=examples) + order + lint_files(repo_files())
 
 
 def main() -> int:

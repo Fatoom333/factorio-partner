@@ -6,12 +6,12 @@
 |---|---|
 | `rcon.py` | RCON на `factorio-rcon-py` (UTF-8 с заменой, предел длины пакета); шлёт **только** `/partner <JSON>` |
 | `bridge.py` | конверт v1, два соединения `cmd`/`poll`, повтор тем же `id` (3 попытки), `game_paused`, `game_reloaded` |
-| `validate.py` | белые списки `do` и полей (ACTIONS.md), лимиты |
+| `validate.py` | белые списки `do` и полей (ACTIONS.md, включая `plan_belt` и `search`/`rotate`/`partial` у `build_blueprint`), лимиты |
 | `core.py` | `op_*`: ключ помощника, логи, курсоры событий и ожидание, `repeated_failure`, загрузка чертежа через `blob_put` |
-| `brief.py` | `partner_brief`: правила + `notes.md` профиля forge + `FP_HOME/style.md` |
+| `brief.py` | `partner_brief`: короткие правила честности (полные — в промпте агента `.claude/agents/partner.md`) + `notes.md` профиля forge + `FP_HOME/style.md` |
 | `server.py` | инструменты MCP (FastMCP, stdio), `--admin` — служебные |
 | `cli.py` | JSON из stdin → JSON в stdout теми же `op_*`; флаги запуска `--helpers`, `--body` |
-| `forge.py` | поток I (`partner_plan`) |
+| `forge.py` | поток I (`partner_plan`, заметки профиля); старый forge без нужных команд → `forge_too_old`, его сырой вывод агенту не уходит |
 
 ## Запуск
 ```powershell
@@ -39,6 +39,8 @@ $cli = "$env:TEMP\fp-venv\Scripts\python"
   `--player` на каждый `--helper` (PROTOCOL §7 «Два вида тела»).
 - Первый отказ мода останавливает остальные шаги; в ответе `done` — что уже сделано.
 - То же для оркестра через MCP с `--admin`: `admin_limit(max)`, `admin_attach(helper, player)`.
+- `agents/launch.py` (ключи, тела, конфигурация MCP для агентов) ходит в мод теми же функциями
+  `Core.admin_*`, а не мимо них.
 
 ## Тесты
 ```powershell
