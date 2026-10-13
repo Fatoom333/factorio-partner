@@ -141,13 +141,13 @@ def look_at_access(api, win, result, reasons):
     return True
 
 
-def plan_route(api, chosen, area, log, result, reasons):
+def plan_route(api, chosen, area, resource, log, result, reasons):
     """Лента от выходов разметки до свободной площадки за её краем: сухие прогоны по нескольким концам,
-    потом настоящий. → (клетка конца, detail) | None."""
+    потом настоящий. → (клетка конца, detail, ленты на пути до прокладки) | None."""
     tries = []
     result["belt_dry_run"] = tries
     picked = None
-    for to in E.belt_targets(api, area, DIRECTION, log, MAX_BELT_TRIES):
+    for to in E.belt_targets(api, area, DIRECTION, log, MAX_BELT_TRIES, resource):
         r = api.act("plan_belt", belt_args(to, chosen, dry_run=True), BELT_TIMEOUT_S)
         d = E.detail_of(r)
         need = E.as_map(d.get("need"))
@@ -329,7 +329,7 @@ def run(client) -> dict:
     if mining_belts and dirs != [E.DIR_NUM[DIRECTION]]:
         reasons.append(f"лента разметки смотрит в {dirs}, а не в {E.DIR_NUM[DIRECTION]} ({DIRECTION})")
 
-    planned = plan_route(api, chosen, detail["area"], log, result, reasons)
+    planned = plan_route(api, chosen, detail["area"], win["patch"]["name"], log, result, reasons)
     if planned is None:
         return E.finish(result, reasons)
     to, route, old = planned

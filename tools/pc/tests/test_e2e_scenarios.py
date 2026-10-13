@@ -454,6 +454,12 @@ def test_belt_targets_are_ahead_of_the_patch_on_bare_ground(E, live):
     east = E.belt_targets(E.LiveApi(client), area, "east", log)
     assert east and all(x >= 40 + 3 for x, y in east) and len(east) <= 4
     assert log[-1]["step"] == "belt_target" and log[-1]["ahead"] >= len(east)
+    # посреди большого пятна голой земли нет: площадка на той же руде годится (лента по руде идёт)
+    north = E.belt_targets(E.LiveApi(client), area, "north", log, resource="iron-ore")
+    assert north and all(y <= -1 - 3 for x, y in north)
+    world.entities[(34.5, -12.5)] = {"name": BELT, "dir": 0, "ghost": True}      # призрак на площадке — мимо
+    again = E.belt_targets(E.LiveApi(client), area, "north", log, resource="iron-ore")
+    assert again and not any(abs(x - 34) <= 1 and abs(y + 13) <= 1 for x, y in again)
 
 
 def test_mining_missing_items_leaves_ghosts_and_explains(live):
