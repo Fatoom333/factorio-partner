@@ -137,8 +137,9 @@ S.suite("helpers", {
       S.ok(rec.corpse_pos ~= nil, "позиция трупа")
       S.tick()
       local ev = S.okr(S.req("events", { since = 0 })).events
-      S.eq(#ev, 1, "helper_lost после смерти не шлётся")
-      S.eq({ ev[1].kind, ev[1].data.code }, { "job_failed", "no_helper" })
+      -- после job_failed идёт died от рефлекса смерти (поток H, EVENTS.md); helper_lost не шлётся
+      S.eq(#ev, 2, "helper_lost после смерти не шлётся")
+      S.eq({ ev[1].kind, ev[1].data.code, ev[2].kind }, { "job_failed", "no_helper", "died" })
       S.err(S.req("jobs", {}, "h1"), "no_helper")
       S.err(S.req("helper_spawn", {}, "h1"), "cooldown")
       local list = S.okr(S.req("helper_list")).helpers
@@ -149,6 +150,9 @@ S.suite("helpers", {
       S.load_mod()
       S.add_player{ name = "Tartaluga" }
       S.okr(S.req("helper_spawn", {}, "h1"))
+      -- помощник должен остаться мёртвым: возрождение (поток H, PROTOCOL §6.9) здесь отключено;
+      -- load_mod грузит модули заново, поэтому правка не выходит за этот тест
+      require("scripts.reflexes.death").RESPAWN_TICKS = math.huge
       S.tick(5)
       storage.helpers.h1.entity.die()
       local corpse = storage.helpers.h1.corpse_pos
