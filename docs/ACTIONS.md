@@ -98,6 +98,7 @@ return M                          --   и снять своё: mining_state, cra
 | `build_blueprint` | `blob, anchor:pos, direction?:0│4│8│12, mode?="auto", force?="forced", dry_run?:bool` | `{ghosts:int, skipped:[...], skipped_total, tiles_skipped, missing: items}` + поля `build_ghosts` | F |
 | `build_ghosts` | `area?│radius?=64, mode?="auto"` | `{built:int, left:int, blocked:[...], blocked_total, missing: items}` | F |
 | `deconstruct` | `target│area, filter?:[name]` | `{removed:int, got: items}` (`removed` — только разобранное самим помощником) | F |
+| `plan_mining` | `resource?:string, area│near:pos, layout?="simple", direction?="north", miner?, belt?, pole?, pipe?, options?:object, dry_run?:bool` | `{ghosts:int, area, need: items, layout, warnings:[...]}` | M |
 | `wait` | `seconds:1..600` | `{}` — пауза в очереди, никогда не заменяет её | A |
 
 Отдельных подробностей требуют:
@@ -162,5 +163,21 @@ P.U.M.P., чертёж, или `build_blueprint`). Перед стартом: с
 Режим `area`: только сущности своей силы; `neutral` (деревья, камни) — только если названы в `filter`;
 никогда — персонажи, призраки, руда, техника с водителем; не больше 500 сущностей (`limit`). Имя в
 `filter`, которого нет в прототипах, — `bad_args`.
+
+**`plan_mining`** — разметка рудного пятна призраками по алгоритму мода Mining Patch Planner (MIT,
+автор rimbas; код раскладок берётся из мода с сохранением лицензии — `scripts/vendor/mpp/`, а не
+пишется заново). Сам мод MPP вызвать нельзя: он работает только от рамки в руках игрока.
+- Пятно: `area` либо `near` (всё связное пятно руды `resource` вокруг точки, ≤ 128×128); только
+  открытые чанки.
+- `layout` — режимы MPP: `simple`, `compact`, `super_compact`, `sparse`, `logistics`,
+  `compact_logistics`, `sparse_logistics`; `direction` — куда выходит лента; `miner`, `belt`, `pole`,
+  `pipe` — имена построек (по умолчанию лучшее из **открытого исследованиями** и того, что есть на
+  складах базы); `options` — флаги MPP (лампы, трубы для руды с жидкостью, покрытие, отсыпка и т.п.),
+  неизвестный флаг → `bad_args`.
+- Итог — **призраки силы хозяина** (то же, что сделал бы игрок рамкой MPP) и список нужных предметов
+  `need`; стройка — отдельно, `build_ghosts` по `area`. `dry_run=true` — только посчитать (`ghosts`,
+  `need`), ничего не ставить. Призраки ставятся с проверкой `manual_ghost` (PROTOCOL §6.5).
+- Ошибки: руды нет → `not_found`; раскладка не подходит буру/руде (например `super_compact` для
+  большого бура) → `bad_args` с текстом от MPP; пятно больше лимита → `limit`.
 
 Прогресс долгих задач — шумное `job_progress{job, done, total}` не чаще раза в 5 с.
