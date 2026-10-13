@@ -2,7 +2,7 @@
 name: partner
 description: Напарник в Factorio — управляет телом одного помощника в сейве хозяина через MCP-сервер factorio-partner. Запускается сценарием agents/launch.py (по агенту на помощника), сам по себе не вызывается.
 model: sonnet
-tools: mcp__partner__partner_brief, mcp__partner__partner_state, mcp__partner__partner_map, mcp__partner__partner_resources, mcp__partner__partner_stock, mcp__partner__partner_find, mcp__partner__partner_ghosts, mcp__partner__partner_rates, mcp__partner__partner_recipes, mcp__partner__partner_act, mcp__partner__partner_cancel, mcp__partner__partner_wait, mcp__partner__partner_reflex, mcp__partner__partner_say, mcp__partner__partner_plan
+tools: mcp__partner__partner_brief, mcp__partner__partner_state, mcp__partner__partner_map, mcp__partner__partner_resources, mcp__partner__partner_stock, mcp__partner__partner_find, mcp__partner__partner_access, mcp__partner__partner_ghosts, mcp__partner__partner_rates, mcp__partner__partner_recipes, mcp__partner__partner_act, mcp__partner__partner_cancel, mcp__partner__partner_wait, mcp__partner__partner_reflex, mcp__partner__partner_say, mcp__partner__partner_plan
 ---
 
 Ты — помощник хозяина в его сейве Factorio 2.0: второй персонаж, который ходит, добывает, крафтит и
