@@ -1,5 +1,6 @@
 -- Действие build_blueprint (поток F): ACTIONS.md «build_blueprint» — blob → create_inventory →
--- import_stack → проверки manual_ghost → build_blueprint{build_mode normal} → призраки → стройка.
+-- import_stack → проверки manual_ghost → build_blueprint{build_mode по args.force} → призраки построек
+-- и плиток, пометки к сносу → снос помеченного → плитки → постройки.
 local S = require("stubs")
 local C = require("stubs_c")
 local F = require("stubs_f")
@@ -31,7 +32,8 @@ S.suite("build_blueprint", {
       put(two_chests())
       local d, kind = F.wait(bp{ dry_run = true })
       S.eq(kind, "job_done", S.dump(d))
-      S.eq(d.detail, { ghosts = 2, skipped = {}, skipped_total = 0, missing = { ["iron-chest"] = 1 } })
+      S.eq(d.detail, { ghosts = 2, skipped = {}, skipped_total = 0, missing = { ["iron-chest"] = 1 },
+        tiles = {}, tiles_skipped = 0, to_remove = {}, to_remove_total = 0 })
       S.eq(#F.ghosts(), 0)
       S.eq(#F.bp_calls, 0, "build_blueprint не вызывался")
       S.eq({ F.bp_created, F.bp_destroyed }, { 1, 1 })
@@ -47,17 +49,18 @@ S.suite("build_blueprint", {
       S.eq(F.checks[2].pos, { x = 20.5, y = 0.5 })
       S.eq(storage.reservations.areas.h1, nil)
   end },
-  { "ставит призраки (build_mode normal, центр = anchor) и строит их руками", function()
+  { "ставит призраки (по умолчанию build_mode forced, центр = anchor) и строит их руками", function()
       local W = F.setup{ items = { ["iron-chest"] = 3 } }
       put(two_chests())
       local d, kind = F.wait(bp{ mode = "hand" })
       S.eq(kind, "job_done", S.dump(d))
       S.eq(d.detail, {
         ghosts = 2, skipped = {}, skipped_total = 0, built = 2, left = 0, blocked = {}, blocked_total = 0, missing = {},
+        tiles = {}, tiles_skipped = 0, to_remove = {}, to_remove_total = 0,
       })
       S.eq(#F.bp_calls, 1)
       local p = F.bp_calls[1]
-      S.eq(p.build_mode, defines.build_mode.normal)
+      S.eq(p.build_mode, defines.build_mode.forced)
       S.eq(p.skip_fog_of_war, false)
       S.eq(S.norm_pos(p.position), ANCHOR)
       S.eq(p.direction, 0)
@@ -159,7 +162,7 @@ S.suite("build_blueprint", {
       F.setup()
       put({ entities = { { entity_number = 1, name = "stone-furnace", position = { x = 0, y = 0 } } } })
       local d = F.wait(bp{ dry_run = true, anchor = { x = 30.4, y = 7.6 } })
-      S.eq(d.detail, { ghosts = 1, skipped = {}, skipped_total = 0, missing = { ["stone-furnace"] = 1 } })
+      S.eq({ d.detail.ghosts, d.detail.skipped_total, d.detail.missing }, { 1, 0, { ["stone-furnace"] = 1 } })
       S.eq(F.checks[1].pos, { x = 30, y = 8 })
   end },
   { "движок поставил призраки со сдвигом на клетку — сверка всё равно сходится", function()
@@ -171,15 +174,224 @@ S.suite("build_blueprint", {
       S.eq({ d.detail.ghosts, d.detail.skipped_total, d.detail.built, d.detail.left }, { 2, 0, 2, 0 })
       S.eq(#F.built("iron-chest", { x = 19.5, y = 1.5 }), 1)
   end },
-  { "плитки чертежа не ставятся: tiles_skipped", function()
-      F.setup{ items = { ["iron-chest"] = 2 } }
+  { "плитки чертежа ставятся призраками и строятся раньше построек", function()
+      local W = F.setup{ items = { ["iron-chest"] = 2, ["stone-brick"] = 5 } }
       local spec = two_chests()
-      spec.tiles = { { name = "stone-path", position = { x = 0, y = 0 } }, { name = "stone-path", position = { x = 1, y = 0 } } }
+      spec.tiles = { { name = "stone-path", position = { x = -1, y = 0 } }, { name = "stone-path", position = { x = 0, y = 0 } } }
       put(spec)
+      local dry = F.wait(bp{ dry_run = true })
+      S.eq({ dry.detail.ghosts, dry.detail.tiles, dry.detail.tiles_skipped, dry.detail.missing },
+        { 2, { ["stone-path"] = 2 }, 0, {} })
+      S.eq(#F.tile_ghosts_left(), 0, "dry_run плиток не ставит")
       local d, kind = F.wait(bp{ mode = "hand" })
       S.eq(kind, "job_done", S.dump(d))
-      S.eq(d.detail.tiles_skipped, 2)
-      S.eq(F.tile_ghosts, 0)
+      S.eq({ d.detail.ghosts, d.detail.tiles, d.detail.tiles_skipped }, { 2, { ["stone-path"] = 2 }, 0 })
+      S.eq({ d.detail.built, d.detail.left, d.detail.tiles_built, d.detail.tiles_first }, { 4, 0, 2, true })
+      S.eq(F.tile_ghosts, 2)
+      S.eq({ F.tile_at(19, 0), F.tile_at(20, 0) }, { "stone-path", "stone-path" })
+      S.eq(#F.tile_ghosts_left(), 0)
+      S.eq(#F.built("iron-chest"), 2)
+      S.eq(C.counts(W.main), { ["stone-brick"] = 3 })
+      -- порядок по журналу «движка»: обе плитки раньше первой постройки
+      local last_tile, first_entity = 0, math.huge
+      for _, t in ipairs(F.tile_log) do last_tile = math.max(last_tile, t.tick) end
+      for _, e in ipairs(F.revive_log) do first_entity = math.min(first_entity, e.tick) end
+      S.ok(last_tile < first_entity, "плитки построены раньше построек")
+  end },
+  { "плитка, которую сюда положить нельзя или которая уже лежит: tiles_skipped и «уже есть»", function()
+      F.setup{ items = { ["iron-chest"] = 2, ["stone-brick"] = 5 } }
+      local spec = two_chests()
+      spec.tiles = {
+        { name = "stone-path", position = { x = -1, y = 0 } },
+        { name = "stone-path", position = { x = 0, y = 0 } },
+        { name = "stone-path", position = { x = 1, y = 0 } },
+      }
+      put(spec)
+      -- рамка x −1..2 → центр 0.5; anchor 20.5 → клетки 19, 20, 21
+      F.set_tile(19, 0, "stone-path")   -- уже лежит
+      F.set_tile(21, 0, "water")        -- дорожку на воду не кладут
+      local a = { x = 20.5, y = 0.5 }
+      local dry = F.wait(bp{ dry_run = true, anchor = a })
+      S.eq({ dry.detail.tiles, dry.detail.tiles_skipped }, { { ["stone-path"] = 1 }, 1 })
+      local d, kind = F.wait(bp{ mode = "hand", anchor = a })
+      S.eq(kind, "job_done", S.dump(d))
+      S.eq({ d.detail.tiles, d.detail.tiles_skipped, d.detail.tiles_built }, { { ["stone-path"] = 1 }, 1, 1 })
+      S.eq({ F.tile_at(20, 0), F.tile_at(21, 0) }, { "stone-path", "water" })
+  end },
+  { "отсыпка в чертеже: на воду кладётся (и постройка встаёт на неё), на лаву — нет (tile_condition)", function()
+      local W = F.setup{ items = { ["iron-chest"] = 2, landfill = 2 } }
+      put({ entities = { { entity_number = 1, name = "iron-chest", position = { x = 0.5, y = 0.5 } } },
+        tiles = { { name = "landfill", position = { x = 0, y = 0 } } } })
+      -- лава: ни плитки, ни постройки
+      F.set_tile(30, 0, "lava")
+      local lava = { x = 30.5, y = 0.5 }
+      local dry = F.wait(bp{ dry_run = true, anchor = lava })
+      S.eq({ dry.detail.ghosts, dry.detail.tiles, dry.detail.tiles_skipped }, { 0, {}, 1 })
+      local d, kind = F.wait(bp{ mode = "hand", anchor = lava })
+      S.eq({ kind, d.code }, { "job_failed", "cannot_place" })
+      S.eq({ d.detail.ghosts, d.detail.tiles, d.detail.tiles_skipped }, { 0, {}, 1 })
+      S.eq(F.tile_at(30, 0), "lava")
+      -- вода: плитка чертежа, потом постройка на ней
+      F.set_tile(20, 0, "water")
+      local water = { x = 20.5, y = 0.5 }
+      local dry2 = F.wait(bp{ dry_run = true, anchor = water })
+      S.eq({ dry2.detail.ghosts, dry2.detail.tiles, dry2.detail.tiles_skipped }, { 1, { landfill = 1 }, 0 })
+      local d2, kind2 = F.wait(bp{ mode = "hand", anchor = water })
+      S.eq(kind2, "job_done", S.dump(d2))
+      S.eq({ d2.detail.built, d2.detail.tiles_built, d2.detail.tiles_first }, { 2, 1, true })
+      S.eq(F.tile_at(20, 0), "landfill")
+      S.eq(C.counts(W.main), { ["iron-chest"] = 1, landfill = 1 })
+  end },
+  { "чертёж из одних плиток строится; пустой чертёж — bad_args", function()
+      local W = F.setup{ items = { ["stone-brick"] = 3 } }
+      put({ entities = {}, tiles = {
+        { name = "stone-path", position = { x = 0, y = 0 } }, { name = "stone-path", position = { x = 1, y = 0 } },
+      } })
+      local d, kind = F.wait(bp{ mode = "hand", anchor = { x = 20, y = 0.5 } })
+      S.eq(kind, "job_done", S.dump(d))
+      S.eq({ d.detail.ghosts, d.detail.tiles, d.detail.built, d.detail.tiles_built }, { 0, { ["stone-path"] = 2 }, 2, 2 })
+      S.eq({ F.tile_at(19, 0), F.tile_at(20, 0) }, { "stone-path", "stone-path" })
+      S.eq(C.counts(W.main), { ["stone-brick"] = 1 })
+  end },
+  { "force normal: дерево и своя постройка на месте — skipped, ничего не помечено", function()
+      F.setup{ items = { ["iron-chest"] = 2 } }
+      put(two_chests())
+      local tree = S.nauvis.create_entity{ name = "tree-01", position = { x = 19.5, y = 0.5 }, force = "neutral" }
+      local mine = C.chest({ x = 20.5, y = 0.5 }, {}, { name = "wooden-chest" })
+      local dry = F.wait(bp{ dry_run = true, force = "normal" })
+      S.eq({ dry.detail.ghosts, dry.detail.skipped_total, dry.detail.to_remove_total }, { 0, 2, 0 })
+      local d, kind = F.wait(bp{ mode = "hand", force = "normal" })
+      S.eq({ kind, d.code }, { "job_failed", "cannot_place" })
+      S.eq(F.bp_calls[1].build_mode, defines.build_mode.normal)
+      S.eq({ d.detail.ghosts, d.detail.skipped_total, d.detail.to_remove_total }, { 0, 2, 0 })
+      S.eq({ rawget(tree, "_marked"), rawget(mine, "_marked") }, { nil, nil })
+      S.ok(tree.valid and mine.valid)
+  end },
+  { "force forced (по умолчанию): дерево помечается и разбирается перед стройкой; свою постройку не трогает", function()
+      local W = F.setup{ items = { ["iron-chest"] = 2 } }
+      put(two_chests())
+      local tree = S.nauvis.create_entity{ name = "tree-01", position = { x = 19.5, y = 0.5 }, force = "neutral" }
+      local mine = C.chest({ x = 20.5, y = 0.5 }, {}, { name = "wooden-chest" })
+      local dry = F.wait(bp{ dry_run = true })
+      S.eq({ dry.detail.ghosts, dry.detail.skipped_total }, { 1, 1 })
+      S.eq(dry.detail.to_remove, { { name = "tree-01", pos = { x = 19.5, y = 0.5 } } })
+      S.eq(dry.detail.to_remove_total, 1)
+      S.eq(rawget(tree, "_marked"), nil, "dry_run ничего не помечает")
+      F.reach_only_openable = true   -- как в игре: до дерева can_reach_entity = false
+      local d, kind = F.wait(bp{ mode = "hand" })
+      S.eq(kind, "job_done", S.dump(d))
+      S.eq({ d.detail.ghosts, d.detail.skipped_total, d.detail.built, d.detail.removed }, { 1, 1, 1, 1 })
+      S.eq(d.detail.to_remove, { { name = "tree-01", pos = { x = 19.5, y = 0.5 } } })
+      S.eq(d.detail.skipped[1].pos, { x = 20.5, y = 0.5 })
+      S.eq({ tree.valid, mine.valid }, { false, true })
+      S.eq(#F.built("iron-chest", { x = 19.5, y = 0.5 }), 1)
+      S.eq(C.mined, 1, "дерево срублено движком (selected + mining_state)")
+      S.eq(C.counts(W.main), { ["iron-chest"] = 1, wood = 4 })
+  end },
+  { "force superforced: помечает и свою постройку; to_remove в dry_run и в итоге", function()
+      local W = F.setup{ items = { ["iron-chest"] = 2 } }
+      put(two_chests())
+      local tree = S.nauvis.create_entity{ name = "tree-01", position = { x = 19.5, y = 0.5 }, force = "neutral" }
+      local mine = C.chest({ x = 20.5, y = 0.5 }, {}, { name = "wooden-chest" })
+      local enemy = C.chest({ x = 30.5, y = 0.5 }, {}, { force = "enemy" })
+      local dry = F.wait(bp{ dry_run = true, force = "superforced" })
+      S.eq({ dry.detail.ghosts, dry.detail.skipped_total, dry.detail.to_remove_total }, { 2, 0, 2 })
+      local names = { dry.detail.to_remove[1].name, dry.detail.to_remove[2].name }
+      table.sort(names)
+      S.eq(names, { "tree-01", "wooden-chest" })
+      S.ok(tree.valid and mine.valid and rawget(mine, "_marked") == nil)
+      local d, kind = F.wait(bp{ mode = "hand", force = "superforced" })
+      S.eq(kind, "job_done", S.dump(d))
+      S.eq(F.bp_calls[1].build_mode, defines.build_mode.superforced)
+      S.eq({ d.detail.ghosts, d.detail.built, d.detail.removed, d.detail.to_remove_total }, { 2, 2, 2, 2 })
+      S.eq({ tree.valid, mine.valid, enemy.valid }, { false, false, true })
+      S.eq(#F.built("iron-chest"), 3, "два новых и чужой, которого не тронули")
+      S.eq(C.counts(W.main), { wood = 4, ["wooden-chest"] = 1 })
+  end },
+  { "superforced поверх чужой постройки: не помечает, skipped", function()
+      F.setup{ items = { ["iron-chest"] = 2 } }
+      put(two_chests())
+      local enemy = C.chest({ x = 20.5, y = 0.5 }, {}, { force = "enemy" })
+      local dry = F.wait(bp{ dry_run = true, force = "superforced" })
+      S.eq({ dry.detail.ghosts, dry.detail.skipped_total, dry.detail.to_remove_total }, { 1, 1, 0 })
+      local d = F.wait(bp{ mode = "hand", force = "superforced" })
+      S.eq({ d.detail.ghosts, d.detail.skipped_total, d.detail.built, d.detail.to_remove_total }, { 1, 1, 1, 0 })
+      S.ok(enemy.valid and rawget(enemy, "_marked") == nil)
+  end },
+  { "forced на воде: под постройкой встаёт призрак отсыпки; плитка строится первой, потом постройка", function()
+      local W = F.setup{ items = { ["iron-chest"] = 2, landfill = 1 } }
+      put(two_chests())
+      F.set_tile(20, 0, "water")
+      local normal = F.wait(bp{ dry_run = true, force = "normal" })
+      S.eq({ normal.detail.ghosts, normal.detail.skipped_total, normal.detail.tiles }, { 1, 1, {} })
+      local dry = F.wait(bp{ dry_run = true })
+      S.eq({ dry.detail.ghosts, dry.detail.skipped_total, dry.detail.tiles, dry.detail.missing },
+        { 2, 0, { landfill = 1 }, {} })
+      local d, kind = F.wait(bp{ mode = "hand" })
+      S.eq(kind, "job_done", S.dump(d))
+      S.eq({ d.detail.ghosts, d.detail.skipped_total, d.detail.tiles }, { 2, 0, { landfill = 1 } })
+      S.eq({ d.detail.built, d.detail.tiles_built, d.detail.tiles_first, d.detail.blocked_total }, { 3, 1, true, 0 })
+      S.eq(F.tile_at(20, 0), "landfill")
+      S.eq(#F.built("iron-chest"), 2)
+      S.eq(C.counts(W.main), {})
+  end },
+  { "подложка не исследована (рецепт закрыт): forced на воде ничего не ставит, оценка это знает", function()
+      F.setup{ items = { ["iron-chest"] = 2, landfill = 1 } }
+      put(two_chests())
+      F.set_tile(20, 0, "water")
+      game.forces.player.recipes["landfill"].enabled = false
+      local dry = F.wait(bp{ dry_run = true })
+      S.eq({ dry.detail.ghosts, dry.detail.skipped_total, dry.detail.tiles }, { 1, 1, {} })
+      local d, kind = F.wait(bp{ mode = "hand" })
+      S.eq(kind, "job_done", S.dump(d))
+      S.eq({ d.detail.ghosts, d.detail.skipped_total, d.detail.tiles, d.detail.built }, { 1, 1, {}, 1 })
+      S.eq(F.tile_at(20, 0), "water")
+  end },
+  { "forced на воде без отсыпки в инвентаре: призраки стоят (не blocked), no_items с missing", function()
+      F.setup{ items = { ["iron-chest"] = 2 } }
+      put(two_chests())
+      F.set_tile(20, 0, "water")
+      local d, kind = F.wait(bp{ mode = "hand" })
+      S.eq({ kind, d.code }, { "job_failed", "no_items" })
+      S.eq({ d.detail.ghosts, d.detail.built, d.detail.left, d.detail.blocked_total }, { 2, 1, 2, 0 })
+      S.eq(d.detail.missing, { landfill = 1 })
+      S.eq(#F.ghosts(), 1, "призрак над водой ждёт плитку, его не убрали")
+      S.eq(#F.tile_ghosts_left(), 1)
+  end },
+  { "на лаве подложки нет: и forced не ставит постройку", function()
+      F.setup{ items = { ["iron-chest"] = 2 } }
+      put(two_chests())
+      F.set_tile(20, 0, "lava")
+      local dry = F.wait(bp{ dry_run = true })
+      S.eq({ dry.detail.ghosts, dry.detail.skipped_total, dry.detail.tiles }, { 1, 1, {} })
+      local d = F.wait(bp{ mode = "hand" })
+      S.eq({ d.detail.ghosts, d.detail.skipped_total, d.detail.built }, { 1, 1, 1 })
+  end },
+  { "уже помеченное к сносу до чертежа в to_remove не попадает", function()
+      F.setup{ items = { ["iron-chest"] = 2 } }
+      put(two_chests())
+      local old = F.mark(S.nauvis.create_entity{ name = "tree-01", position = { x = 21.5, y = 1.5 }, force = "neutral" })
+      local d, kind = F.wait(bp{ mode = "hand" })
+      S.eq(kind, "job_done", S.dump(d))
+      S.eq({ d.detail.to_remove_total, d.detail.built, d.detail.removed }, { 0, 2, nil })
+      S.ok(old.valid, "помеченное, но не мешающее призракам, не трогается")
+  end },
+  { "три длинных списка в detail урезаются, событие остаётся целым", function()
+      F.setup()
+      local ents = {}
+      for i = 1, 40 do ents[i] = { entity_number = i, name = "iron-chest", position = { x = i - 0.5, y = 0.5 } } end
+      put({ entities = ents })
+      -- рамка x 0..40 → центр 20; anchor 40 → клетки 20.5 .. 59.5
+      for i = 1, 15 do
+        S.nauvis.create_entity{ name = "tree-01", position = { x = 19.5 + i, y = 0.5 }, force = "neutral" }
+      end
+      for i = 16, 30 do C.chest({ x = 19.5 + i, y = 0.5 }, {}, { name = "wooden-chest" }) end
+      for i = 31, 40 do F.blocked[F.key({ x = 19.5 + i, y = 0.5 })] = { ghost_revive = true } end
+      local d, kind = F.wait(bp{ mode = "hand", anchor = { x = 40, y = 0.5 } })
+      S.eq({ kind, d.code }, { "job_failed", "no_items" })
+      S.eq(d.truncated, nil, "событие не ужато ядром")
+      S.eq({ d.detail.to_remove_total, d.detail.skipped_total }, { 15, 25 })
+      S.eq({ #d.detail.to_remove, #d.detail.skipped }, { 10, 10 })
   end },
   { "плохой blob и не чертёж — bad_args, инвентарь уничтожается всегда", function()
       F.setup()
@@ -238,6 +450,14 @@ S.suite("build_blueprint", {
       S.err(C.act("build_blueprint", { blob = "bp1", anchor = ANCHOR, direction = 16 }), "limit")
       S.err(C.act("build_blueprint", { blob = "bp1", anchor = ANCHOR, mode = "forced" }), "bad_args")
       S.err(C.act("build_blueprint", { blob = "bp1", anchor = ANCHOR, build_mode = "forced" }), "bad_args")
+      S.err(C.act("build_blueprint", { blob = "bp1", anchor = ANCHOR, force = "hyper" }), "bad_args")
+      S.err(C.act("build_blueprint", { blob = "bp1", anchor = ANCHOR, force = true }), "bad_args")
+      local many = two_chests()
+      many.tiles = {}
+      for i = 1, 4001 do many.tiles[i] = { name = "stone-path", position = { x = i % 100, y = math.floor(i / 100) } } end
+      F.blueprints["TILES"] = many
+      F.blob("tiles", "TILES")
+      S.eq(F.wait(bp{ blob = "tiles" }).code, "limit")
       S.eq(#F.bp_calls, 0)
       S.eq(F.bp_created, F.bp_destroyed)
   end },
