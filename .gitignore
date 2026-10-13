@@ -21,3 +21,6 @@ logs/
 
 # личное окружение автора
 CLAUDE.local.md
+
+# служебное Claude Code
+.claude/scheduled_tasks.lock
