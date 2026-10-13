@@ -25,8 +25,6 @@ local ACTIONS = {
 for _, name in ipairs(ACTIONS) do
   core.register_action(require("scripts.actions." .. name))
 end
-local plan_mining = optional("scripts.actions.plan_mining")
-if plan_mining then core.register_action(plan_mining) end
 
 local MODULES = {
   "lib.path",

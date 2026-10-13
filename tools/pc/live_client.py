@@ -13,6 +13,9 @@ CLI (запускает tools/pc/remote/stand.ps1 на ПК):
     python live_client.py wait-ready --slot N --dir D:\\Temp\\fp-live-N [--timeout 240]
     python live_client.py run        --slot N --dir D:\\Temp\\fp-live-N --scenario NAME [--timeout 600]
     python live_client.py quit       --slot N --dir D:\\Temp\\fp-live-N
+    python live_client.py check-log  --slot N --dir D:\\Temp\\fp-live-N   (после остановки сервера)
+`check-log` читает вынесенный вычищенный журнал игры и проваливает сценарий, если в нём есть строка
+под образец из его `log_must_not_match` (строка или список regex в результате сценария).
 Пароль читается из <dir>/rcon.pw и никуда не пишется (ни в журнал, ни в results).
 """
 from __future__ import annotations
@@ -432,20 +435,132 @@ def _write_json(path: str, data: Dict[str, Any]) -> None:
     os.replace(tmp, path)
 
 
-def _scrub(obj: Any, secret: str) -> Any:
-    """Пароль не должен попасть в results ни при каких условиях."""
-    if isinstance(obj, str):
-        return obj.replace(secret, "<private>") if secret else obj
-    if isinstance(obj, dict):
-        return {str(k): _scrub(v, secret) for k, v in obj.items()}
-    if isinstance(obj, (list, tuple)):
-        return [_scrub(v, secret) for v in obj]
-    return obj
+def _scrub(obj: Any, secret: Any) -> Any:
+    """Пароль (и другие секреты запуска) не должны попасть в results ни при каких условиях.
+
+    secret — строка или набор строк; пустые пропускаются."""
+    secrets_ = [secret] if isinstance(secret, str) else list(secret or ())
+    secrets_ = [s for s in secrets_ if isinstance(s, str) and s]
+    if not secrets_:
+        return obj
+
+    def clean(v: Any) -> Any:
+        if isinstance(v, str):
+            for s in secrets_:
+                v = v.replace(s, "<private>")
+            return v
+        if isinstance(v, dict):
+            return {clean(str(k)): clean(x) for k, x in v.items()}
+        if isinstance(v, (list, tuple)):
+            return [clean(x) for x in v]
+        return v
+
+    return clean(obj)
+
+
+# ---------- журнал игры: log_must_not_match (TESTING.md §3, PLAN «ревизия 3.2», поток E) ----------
+LOG_PATTERN_MAX = 500       # длина одного образца
+LOG_PATTERNS_MAX = 8        # образцов в сценарии
+LOG_LINE_MAX = 4000         # длиннее строку журнала режем (образцы — про короткие строки мода)
+LOG_MATCHES_KEPT = 5        # сколько совпавших строк кладём в results
+LOG_BYTES_MAX = 64 * 1024 * 1024
+
+
+def log_patterns(value: Any) -> list:
+    """Образцы из `result["log_must_not_match"]`: строка или список строк → скомпилированные regex.
+
+    Нет поля / None → []. Кривая форма или regex — LiveClientError("refused", …): сценарий, который
+    просил проверку журнала, без неё зелёным не бывает."""
+    if value is None:
+        return []
+    items = [value] if isinstance(value, str) else value
+    if not isinstance(items, (list, tuple)) or not items or len(items) > LOG_PATTERNS_MAX:
+        raise LiveClientError("refused", f"log_must_not_match: строка или список 1..{LOG_PATTERNS_MAX} строк")
+    out = []
+    for p in items:
+        if not isinstance(p, str) or not p or len(p) > LOG_PATTERN_MAX:
+            raise LiveClientError("refused", f"log_must_not_match: образец — непустая строка до {LOG_PATTERN_MAX} символов")
+        try:
+            out.append(re.compile(p))
+        except re.error as e:
+            raise LiveClientError("refused", f"log_must_not_match: плохой regex ({e})") from None
+    return out
+
+
+def log_matches(text: str, patterns: list, keep: int = LOG_MATCHES_KEPT) -> Dict[str, Any]:
+    """Строки журнала, подходящие под любой образец. → {"count": всего, "lines": [первые keep]}."""
+    count = 0
+    lines = []
+    for no, line in enumerate(text.splitlines(), 1):
+        line = line[:LOG_LINE_MAX]
+        for rx in patterns:
+            if rx.search(line):
+                count += 1
+                if len(lines) < keep:
+                    lines.append({"line": no, "pattern": rx.pattern, "text": _snip(line)})
+                break
+    return {"count": count, "lines": lines}
+
+
+def check_log(slot: int, slot_dir: str) -> int:
+    """Проверить вынесенный журнал игры по `log_must_not_match` из results сценария.
+
+    Зовётся стендом ПОСЛЕ остановки сервера: журнал уже лежит вычищенным в out/factorio-<slot>.log.
+    Нашлась строка, нет журнала или образец кривой → в results `ok=false` и причина в `log_check`.
+    Код: 0 — проверять нечего или чисто, 1 — сценарий провален журналом, 2 — нет results."""
+    _check_slot(slot)
+    out_dir = os.path.join(slot_dir, "out")
+    results_path = os.path.join(out_dir, f"results-{slot}.json")
+    log_file = os.path.join(out_dir, f"factorio-{slot}.log")
+    try:
+        with open(results_path, "r", encoding="utf-8") as f:
+            result = json.load(f)
+    except (OSError, ValueError) as e:
+        print(f"check-log: нет results ({type(e).__name__})", file=sys.stderr)
+        return 2
+    if not isinstance(result, dict) or result.get("log_must_not_match") is None:
+        return 0
+    check: Dict[str, Any] = {"ok": False, "patterns": result.get("log_must_not_match")}
+    try:
+        patterns = log_patterns(result.get("log_must_not_match"))
+        try:
+            if os.path.getsize(log_file) > LOG_BYTES_MAX:
+                raise LiveClientError("refused", f"журнал игры больше {LOG_BYTES_MAX} байт")
+            with open(log_file, "r", encoding="utf-8-sig", errors="replace") as f:
+                text = f.read()
+        except OSError:
+            raise LiveClientError("refused", "журнал игры не вынесен — проверить log_must_not_match нечем") from None
+        found = log_matches(text, patterns)
+        check.update(matches=found["count"], lines=found["lines"], ok=found["count"] == 0)
+        if found["count"]:
+            check["text"] = f"в журнале игры {found['count']} строк(и) под запретный образец"
+    except LiveClientError as e:
+        check["text"] = e.message
+    result["log_check"] = check
+    if not check["ok"]:
+        result["ok"] = False
+        result.setdefault("reasons", [])
+        if isinstance(result["reasons"], list):
+            result["reasons"].append("журнал игры: " + str(check.get("text")))
+    secrets_: list = []
+    try:
+        secrets_.append(read_password(slot_dir))
+    except LiveClientError:
+        pass
+    _write_json(results_path, _scrub(result, secrets_))
+    print(json.dumps({"log_check": check["ok"], "matches": check.get("matches"), "text": check.get("text")},
+                     ensure_ascii=False))
+    return 0 if check["ok"] else 1
 
 
 def run_scenario(slot: int, slot_dir: str, scenario: str, timeout: float,
-                 scenario_directory: Optional[str] = None, rcon_timeout: float = 10.0) -> Dict[str, Any]:
-    """Запустить сценарий и записать <dir>/out/results-<slot>.json. Возвращает результат."""
+                 scenario_directory: Optional[str] = None, rcon_timeout: float = 10.0,
+                 wrap: Optional[Callable[..., Any]] = None) -> Dict[str, Any]:
+    """Запустить сценарий и записать <dir>/out/results-<slot>.json. Возвращает результат.
+
+    wrap(client, module, secrets) -> объект для `module.run(...)` — так server_client.py подменяет
+    клиента на обёртку над настоящим сервером; в список secrets она дописывает свои секреты (ключ
+    помощника), чтобы они не попали в results. У обёртки может быть `close()`."""
     _check_slot(slot)
     out_dir = os.path.join(slot_dir, "out")
     os.makedirs(out_dir, exist_ok=True)
@@ -454,6 +569,7 @@ def run_scenario(slot: int, slot_dir: str, scenario: str, timeout: float,
     started = time.time()
     meta = {"slot": slot, "scenario": scenario, "started": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(started))}
     password = ""
+    secrets_: list = []
     done = threading.Event()
     write_lock = threading.Lock()
 
@@ -464,7 +580,7 @@ def run_scenario(slot: int, slot_dir: str, scenario: str, timeout: float,
             result = dict(result)
             result.setdefault("ok", False)
             result["meta"] = dict(meta, duration_s=round(time.time() - started, 2))
-            result = _scrub(result, password)
+            result = _scrub(result, [password] + secrets_)
             _write_json(results_path, result)
             done.set()
             return result
@@ -477,13 +593,15 @@ def run_scenario(slot: int, slot_dir: str, scenario: str, timeout: float,
     watchdog.daemon = True
     watchdog.start()
     client: Optional[LiveClient] = None
+    wrapped: Any = None
     try:
         module = load_scenario(scenario, scenario_directory)
         password = read_password(slot_dir)
         client = LiveClient(rcon_port(slot), password, timeout=rcon_timeout, id_prefix=f"e{slot}", log_path=log_path)
         client.deadline = time.monotonic() + timeout
         client.connect()
-        result = module.run(client)
+        wrapped = wrap(client, module, secrets_) if wrap is not None else None
+        result = module.run(wrapped if wrapped is not None else client)
         if not isinstance(result, dict):
             result = {"ok": False, "error": {"kind": "scenario", "text": "run() вернул не dict"}}
         result.setdefault("requests", client.sent)
@@ -495,6 +613,12 @@ def run_scenario(slot: int, slot_dir: str, scenario: str, timeout: float,
         return finish({"ok": False, "error": {"kind": "exception", "text": f"{type(e).__name__}: {e}", "trace": tb}})
     finally:
         watchdog.cancel()
+        closer = getattr(wrapped, "close", None)
+        if callable(closer):
+            try:
+                closer()
+            except Exception:  # закрытие обёртки не должно портить итог
+                pass
         if client is not None:
             client.close()
 
@@ -536,7 +660,7 @@ def send_quit(slot: int, slot_dir: str) -> bool:
 def main(argv: Optional[list] = None) -> int:
     parser = argparse.ArgumentParser(description="Клиент живых тестов factorio-partner")
     sub = parser.add_subparsers(dest="cmd", required=True)
-    for name in ("run", "wait-ready", "quit"):
+    for name in ("run", "wait-ready", "quit", "check-log"):
         p = sub.add_parser(name)
         p.add_argument("--slot", type=int, required=True)
         p.add_argument("--dir", required=True)
@@ -562,6 +686,8 @@ def main(argv: Optional[list] = None) -> int:
         return 0 if result.get("ok") else 1
     if ns.cmd == "wait-ready":
         return 0 if wait_ready(ns.slot, ns.dir, ns.timeout) else 1
+    if ns.cmd == "check-log":
+        return check_log(ns.slot, ns.dir)
     return 0 if send_quit(ns.slot, ns.dir) else 1
 
 
