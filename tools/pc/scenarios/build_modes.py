@@ -15,7 +15,7 @@ Ctrl+Shift) записано в ACTIONS.md со слов игрока. Здес�
 движок (`tiles`), что помечено к сносу (`to_remove`), что помощник разобрал (`removed`) и построил,
 а на лаве — клетки без возможной подложки (`on_liquid`, `liquids`) и найденный сдвиг (`fit`).
 Ревизия 3.3: на плитке без возможной подложки forced/superforced не ставят чертёж вовсе
-(`cannot_place`), normal пропускает клетку с причиной `liquid`.
+(`cannot_place`), normal на лаве ведёт себя так же: чертёж не ставится, ищется сдвиг.
 
 Итог `ok` — это «сценарий отработал и мод вёл себя согласованно», а не «движок совпал с контрактом»:
 совпадение с контрактом — в `facts` и `contract` (true/false по каждому утверждению), расхождения
@@ -201,7 +201,9 @@ def run(client) -> dict:
     result["contract"] = {
         "normal_marks_nothing": all(f.get("marked", 0) == 0 for p in facts.values() for m, f in p.items() if m == "normal"),
         "normal_on_obstacle_places_no_ghost": None if "rock" not in facts else got("rock", "normal", "ghosts") == 0,
-        "normal_on_lava_skips_cell": None if not lava else got("lava", "normal", "skipped") == ["liquid"],
+        "normal_on_lava_refuses_whole": None if not lava else (
+            got("lava", "normal", "result") == "cannot_place" and bool(got("lava", "normal", "on_liquid"))),
+        "normal_on_lava_gives_fit": None if not lava else got("lava", "normal", "fit") is not None,
         "forced_on_lava_puts_tile_ghosts": None if not lava else bool(got("lava", "forced", "tiles")),
         "forced_on_lava_refuses_whole": None if not lava else (
             got("lava", "forced", "result") == "cannot_place" and bool(got("lava", "forced", "on_liquid"))),
@@ -226,7 +228,7 @@ def run(client) -> dict:
             elif t[step]["code"] in BAD_CODES:
                 reasons.append(f"{tag}: {step} → {t[step]['code']} ({t[step].get('text')})")
         d = t["run"]["detail"]
-        if d.get("on_liquid") and t["force"] != "normal" and t["run"]["kind"] is not None:
+        if d.get("on_liquid") and t["run"]["kind"] is not None:
             # клетка без возможной подложки: чертёж не ставится вовсе, оценка говорит то же без ошибки
             if t["run"]["code"] != "cannot_place":
                 reasons.append(f"{tag}: on_liquid = {d.get('on_liquid')}, а итог {t['run']['code'] or t['run']['kind']}")

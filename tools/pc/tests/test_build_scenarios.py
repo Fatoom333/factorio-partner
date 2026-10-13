@@ -396,7 +396,7 @@ class Model:
             ghosts, skipped, tile_ghosts, tiles_skipped, to_mark, wet = self._plan(a)
             s = self._summary(ghosts, skipped, tile_ghosts, tiles_skipped, to_mark, wet)
             partial = a.get("partial") and not self.ignore_partial
-            if wet and a.get("force", "forced") != "normal" and not partial and not self.place_on_liquid:
+            if wet and not partial and not self.place_on_liquid:
                 # клетки без возможной подложки: чертёж не ставится вовсе, в detail — сдвиг (ACTIONS.md)
                 fit = self._fit(a)
                 if fit:
