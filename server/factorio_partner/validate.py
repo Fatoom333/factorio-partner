@@ -113,11 +113,16 @@ def area(field: str, v: Any):
 
 
 def target(field: str, v: Any):
-    if isinstance(v, dict) and set(v) == {"unit_number"}:
-        return {"unit_number": integer(1, 2**53)(field + ".unit_number", v["unit_number"])}
+    if isinstance(v, dict) and set(v) <= {"unit_number", "pos"} and "unit_number" in v:
+        # pos is optional: the mod falls back to a search around it when the engine cannot find
+        # a building by unit_number (ACTIONS.md «target»)
+        out = {"unit_number": integer(1, 2**53)(field + ".unit_number", v["unit_number"])}
+        if "pos" in v:
+            out["pos"] = pos(field + ".pos", v["pos"])
+        return out
     if isinstance(v, dict) and set(v) == {"name", "pos"}:
         return {"name": name(field + ".name", v["name"]), "pos": pos(field + ".pos", v["pos"])}
-    raise bad(field, "must be {unit_number} or {name, pos}")
+    raise bad(field, "must be {unit_number, pos?} or {name, pos}")
 
 
 def items(field: str, v: Any):
@@ -131,8 +136,11 @@ def items(field: str, v: Any):
 
 def name_list(max_len: int) -> Validator:
     def check(field: str, v: Any):
-        if not isinstance(v, list) or not v or len(v) > max_len:
+        if not isinstance(v, list) or not v:
             raise bad(field, f"must be a non-empty list of up to {max_len} names")
+        if len(v) > max_len:
+            # PROTOCOL §3: too many names is an upper bound -> `limit`
+            raise PartnerError("limit", f"{field}: at most {max_len} names")
         return [name(f"{field}[{i}]", x) for i, x in enumerate(v)]
     return check
 
@@ -148,10 +156,10 @@ ACTIONS: dict[str, tuple[dict[str, Validator], tuple[str, ...], tuple[tuple[tupl
     "walk": ({"to": pos_or_player, "radius": REACH}, ("to",), ()),
     "approach": ({"target": target, "to": pos_or_player, "distance": REACH}, (),
                  ((("target", "to"), True),)),
-    "follow": ({"distance": REACH, "duration_s": number(0, 86_400)}, (), ()),
+    "follow": ({"distance": number(1, 32), "duration_s": integer(1, 3600)}, (), ()),
     "mine": ({"target": target, "resource": name, "near": pos, "count": integer(1, ITEM_COUNT_MAX)},
              ("count",), ((("target", "resource"), True),)),
-    "craft": ({"recipe": name, "count": integer(1, ITEM_COUNT_MAX)}, ("recipe", "count"), ()),
+    "craft": ({"recipe": name, "count": integer(1, 10_000)}, ("recipe", "count"), ()),
     "insert": ({"target": target, "items": items}, ("target", "items"), ()),
     "extract": ({"target": target, "items": items, "equip": boolean}, ("target",), ()),
     "collect": ({"items": items, "center": pos, "near": enum("player"), "radius": number(0, 128)},
@@ -234,3 +242,10 @@ def check_types(field: str, v: Any) -> list | None:
     if v is None:
         return None
     return name_list(32)(field, v)
+
+
+def check_names(field: str, v: Any, max_len: int = 100) -> list | None:
+    """``items`` of ``partner_stock`` / ``partner_rates`` (STATE.md: at most 100 names)."""
+    if v is None:
+        return None
+    return name_list(max_len)(field, v)

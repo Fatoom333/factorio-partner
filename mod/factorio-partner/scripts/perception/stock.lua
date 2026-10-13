@@ -12,11 +12,11 @@ M.DEFAULT_LIMIT = 50
 M.MAX_LIMIT = 200
 M.CONTAINER_TYPES = { "container", "logistic-container" }
 
--- Общий сбор складов (его же использует `ghosts`).
+-- Общий сбор складов (его же использует `ghosts`); helper_id — «глаза» помощника (core.vis).
 -- → {containers = [{unit,name,pos,dist,items}] (по возрастанию dist, только с предметами),
 --    total = {name=count}, hidden = int}
-function M.scan(surface, force, center, radius, filter)
-  local view = C.chunk_view(force, surface)
+function M.scan(surface, force, center, radius, filter, helper_id)
+  local view = C.chunk_view(force, surface, helper_id)
   local found = surface.find_entities_filtered {
     position = center, radius = radius, force = force, type = M.CONTAINER_TYPES,
   }
@@ -56,7 +56,7 @@ local function stock_op(args, ctx)
   local filter = C.check_names(args.items, "items", 100)
   local where = C.resolve(args, ctx)
 
-  local r = M.scan(where.surface, where.force, where.center, radius, filter)
+  local r = M.scan(where.surface, where.force, where.center, radius, filter, where.helper_id)
   local out = {}
   for i = 1, math.min(#r.containers, limit) do
     local c = r.containers[i]

@@ -14,6 +14,7 @@
 -- Только чтение: ничего не меняет в игре, в storage не пишет.
 local err = require("scripts.core.err")
 local owner = require("scripts.core.owner")
+local vis = require("scripts.core.vis")
 
 local M = {}
 
@@ -27,7 +28,6 @@ local ITEMS_MAX = 100
 local NAME_MAX = 200
 local AREA_SIDE_MAX = 128
 local MACHINES_MAX = 100
-local CHUNK = 32
 local MACHINE_TYPES = { "assembling-machine", "furnace", "mining-drill", "rocket-silo" }
 
 -- ---------------------------------------------------------------- утилиты
@@ -357,7 +357,7 @@ local function drill_flow(e)
   return target.name, fin, fout
 end
 
-local function rates_area(a, force, surface)
+local function rates_area(a, force, surface, helper_id)
   local wanted
   if a.items then
     wanted = {}
@@ -366,17 +366,8 @@ local function rates_area(a, force, surface)
 
   local entities = surface.find_entities_filtered { area = a.area, force = force, type = MACHINE_TYPES }
 
-  local visible_cache = {}
-  local function visible(pos)
-    local cx, cy = math.floor(pos.x / CHUNK), math.floor(pos.y / CHUNK)
-    local key = cx .. ":" .. cy
-    local v = visible_cache[key]
-    if v == nil then
-      v = force.is_chunk_visible(surface, { x = cx, y = cy }) and true or false
-      visible_cache[key] = v
-    end
-    return v
-  end
+  -- живые данные машин — только видимое (PROTOCOL §6.7): чанк или ≤ 32 клеток от тела помощника
+  local visible = vis.viewer(helper_id, surface, force)
 
   local groups, order, hidden, idle = {}, {}, 0, 0
   for _, e in ipairs(entities) do
@@ -465,7 +456,7 @@ M.ops = {
     end
     local force, surface = resolve(a, ctx)
     if a.scope == "surface" then return rates_surface(a, force, surface) end
-    return rates_area(a, force, surface)
+    return rates_area(a, force, surface, ctx and ctx.helper_id)
   end,
 }
 

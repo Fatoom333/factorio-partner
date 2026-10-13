@@ -5,6 +5,7 @@
 local err = require("scripts.core.err")
 local core_owner = require("scripts.core.owner")
 local jobs = require("scripts.core.jobs")
+local vis = require("scripts.core.vis")
 
 local M = {}
 local C = {}
@@ -177,7 +178,7 @@ function C.resolve(args, ctx, opts)
 
   local owner = C.owner_player()
   local present = core_owner.present() ~= nil
-  local where = { entity = e, owner = owner }
+  local where = { entity = e, owner = owner, helper_id = ctx and ctx.helper_id }
 
   if e then
     where.surface = e.surface
@@ -216,8 +217,11 @@ end
 -- Два уровня обзора (PROTOCOL §6.7): открытые / видимые чанки, кэш на один вызов
 ---------------------------------------------------------------------------
 
-function C.chunk_view(force, surface)
-  local charted, visible = {}, {}
+-- helper_id — чьими «глазами» смотрим живое (PROTOCOL §6.7): видимый чанк ИЛИ ≤ 32 клеток от
+-- живого тела помощника (scripts.core.vis); nil — только is_chunk_visible.
+function C.chunk_view(force, surface, helper_id)
+  local charted = {}
+  local eyes = vis.viewer(helper_id, surface, force)
   local v = {}
   local function key(cx, cy) return cx * 4194304 + cy end -- |cx|,|cy| < 2^21
   function v.charted_chunk(cx, cy)
@@ -229,20 +233,11 @@ function C.chunk_view(force, surface)
     end
     return r
   end
-  function v.visible_chunk(cx, cy)
-    local k = key(cx, cy)
-    local r = visible[k]
-    if r == nil then
-      r = force.is_chunk_visible(surface, { x = cx, y = cy }) and true or false
-      visible[k] = r
-    end
-    return r
-  end
   function v.charted(pos)
     return v.charted_chunk(floor((pos.x or pos[1]) / 32), floor((pos.y or pos[2]) / 32))
   end
   function v.visible(pos)
-    return v.visible_chunk(floor((pos.x or pos[1]) / 32), floor((pos.y or pos[2]) / 32))
+    return eyes(pos)
   end
   return v
 end
@@ -408,9 +403,9 @@ local function robots(e)
   return r
 end
 
-local function near(e)
+local function near(e, helper_id)
   local surface, force, pos = e.surface, e.force, e.position
-  local view = C.chunk_view(force, surface)
+  local view = C.chunk_view(force, surface, helper_id)
   local enemies = {}
   local found = surface.find_entities_filtered { position = pos, radius = NEAR_RADIUS, force = "enemy", type = ENEMY_TYPES }
   for _, en in ipairs(found) do
@@ -464,7 +459,7 @@ local function state_op(args, ctx)
     job = job,
     queue = queue,
     players = players_list(e),
-    near = near(e),
+    near = near(e, helper_id),
     vision = C.vision_on(helper_id),
     tick = game.tick,
     seq = C.last_seq(),

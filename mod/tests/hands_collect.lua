@@ -72,11 +72,28 @@ S.suite("hands_collect", {
       S.eq(C.counts(chest_inv(a)), { coal = 10 })
       S.eq(C.counts(W.main), {})
   end },
-  { "полный инвентарь: inventory_full, итог с тем, что успел", function()
+  { "склад в невидимом чанке, но ≤ 32 клеток от тела помощника — виден (без игроков онлайн)", function()
+      local W = C.setup()
+      local ch = C.chest({ x = 20.5, y = 0.5 }, { coal = 12 })
+      game.forces.player.invisible[S.chunk_key(S.nauvis, { x = 0, y = 0 })] = true
+      local d, kind = C.wait(collect{ items = { coal = 5 } })
+      S.eq(kind, "job_done", S.dump(d))
+      S.eq(d.detail.collected, { coal = 5 })
+      S.eq(C.counts(chest_inv(ch)), { coal = 7 })
+  end },
+  { "остался только неделимый стак — no_items, reason=whole_stacks_only", function()
+      local W = C.setup()
+      C.chest({ x = 5.5, y = 0.5 }, { { name = "yumako", count = 50, data = "spoil-A" } })
+      local d = C.wait(collect{ items = { yumako = 10 } })
+      S.eq({ d.code, d.detail.reason }, { "no_items", "whole_stacks_only" }, S.dump(d))
+      S.eq(C.counts(W.main), {})
+  end },
+  { "полный инвентарь: inventory_full и no_space, в detail — что успел", function()
       local W = C.setup{ size = 1, items = { coal = 40 } }
       C.chest({ x = 5.5, y = 0.5 }, { coal = 30 })
       local d, kind = C.wait(collect{ items = { coal = 30 } })
-      S.eq(kind, "job_done")
+      S.eq(kind, "job_failed")
+      S.eq({ d.code, d.detail.reason }, { "no_space", "inventory_full" })
       S.eq(d.detail.collected, { coal = 10 })
       S.eq(d.detail.missing, { coal = 20 })
       S.eq(#C.events("inventory_full"), 1)

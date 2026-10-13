@@ -16,6 +16,8 @@
 --   detail совпадают с заявкой), недобор виден в missing/left.
 local err = require("scripts.core.err")
 local util = require("scripts.core.util")
+local target = require("scripts.core.target")
+local vis = require("scripts.core.vis")
 
 local M = {}
 
@@ -232,32 +234,19 @@ end
 
 -- ------------------------------------------------------------------ цели
 
---- Цель действия (ACTIONS.md «Общие типы»): {unit_number} │ {name, pos} на поверхности
---- помощника, своей силы или neutral. Иначе — not_found; другая поверхность — not_reachable;
---- неоткрытый чанк — not_charted.
+--- Цель действия (ACTIONS.md «Общие типы»): {unit_number, pos?} │ {name, pos} на поверхности
+--- помощника, своей силы или neutral — поиск общий, scripts.core.target.resolve.
+--- Нет / чужая сила — not_found; другая поверхность — not_reachable; неоткрытый чанк — not_charted.
 function M.resolve_target(ctx, t)
   local h = ctx.entity
-  local e
-  if t.unit_number ~= nil then
-    e = game.get_entity_by_unit_number(t.unit_number)
-    if e == nil or not e.valid then err.raise("not_found", "target " .. t.unit_number .. " not found") end
-    if e.surface.index ~= h.surface.index then
-      err.raise("not_reachable", "target is on another surface")
-    end
-  else
+  local e, why = target.resolve(h.surface, t, h.force)
+  if e == nil then
+    if why == "other_surface" then err.raise("not_reachable", "target is on another surface") end
+    if why == "foreign" then err.raise("not_found", "target is not of own or neutral force") end
+    if t.unit_number ~= nil then err.raise("not_found", "target " .. t.unit_number .. " not found") end
     if prototypes.entity[t.name] == nil then err.raise("not_found", "unknown entity " .. t.name) end
-    local list = h.surface.find_entities_filtered{ name = t.name, position = t.pos, radius = 1 }
-    local best, bd
-    for _, x in ipairs(list) do
-      if x.valid then
-        local d = util.dist(util.xy(x.position), t.pos)
-        if bd == nil or d < bd then best, bd = x, d end
-      end
-    end
-    if best == nil then err.raise("not_found", "no " .. t.name .. " near the given pos") end
-    e = best
+    err.raise("not_found", "no " .. t.name .. " near the given pos")
   end
-  if not M.allowed_force(h, e) then err.raise("not_found", "target is not of own or neutral force") end
   if not M.charted(h, e.position) then err.raise("not_charted", "target is in an uncharted chunk") end
   return e
 end
@@ -279,8 +268,14 @@ function M.charted(h, pos)
   return h.force.is_chunk_charted(h.surface, chunk_of(pos))
 end
 
-function M.visible(h, pos)
-  return h.force.is_chunk_visible(h.surface, chunk_of(pos))
+--- Видна ли позиция (PROTOCOL §6.7): видимый чанк или ≤ 32 клеток от тела помощника.
+--- ctx — контекст действия (нужен helper_id); viewer(pos) — для массовых проверок.
+function M.visible(ctx, pos)
+  return vis.visible(ctx.helper_id, ctx.entity.surface, pos, ctx.entity.force)
+end
+
+function M.viewer(ctx)
+  return vis.viewer(ctx.helper_id, ctx.entity.surface, ctx.entity.force)
 end
 
 -- ------------------------------------------------------------------ досягаемость и подход
@@ -374,12 +369,12 @@ function M.inventory_full(task, ctx)
   ctx.emit("inventory_full", { job = task.job })
 end
 
---- Результат «инвентарь полон» (кода inventory_full в PROTOCOL §3 нет — stuck с причиной).
+--- Результат «инвентарь полон»: громкое inventory_full и failed{no_space} (PROTOCOL §3).
 function M.full_result(task, ctx, detail)
   M.inventory_full(task, ctx)
   detail = detail or {}
   detail.reason = "inventory_full"
-  return { status = "failed", code = "stuck", text = "inventory is full", detail = detail }
+  return { status = "failed", code = "no_space", text = "inventory is full", detail = detail }
 end
 
 function M.failed(code, text, detail)

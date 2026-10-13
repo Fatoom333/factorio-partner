@@ -38,7 +38,16 @@ S.suite("hands_pickup", {
       S.eq(d2.code, "not_visible")
       S.eq(far.valid, true)
       S.eq(C.counts(W.main), {})
-      S.err(C.act("pickup", { area = { left_top = { x = 0, y = 0 }, right_bottom = { x = 300, y = 1 } } }), "bad_args")
+      S.err(C.act("pickup", { area = { left_top = { x = 0, y = 0 }, right_bottom = { x = 300, y = 1 } } }), "limit")
+  end },
+  { "area: чанк не виден, но предмет ≤ 32 клеток от тела помощника — виден (глаза помощника)", function()
+      local W = C.setup()
+      local near = C.ground({ x = 20.5, y = 0.5 }, "coal", 4)
+      game.forces.player.invisible[S.chunk_key(S.nauvis, { x = 0, y = 0 })] = true
+      local d, kind = C.wait(pickup{ area = { left_top = { x = 15, y = -5 }, right_bottom = { x = 25, y = 5 } } })
+      S.eq(kind, "job_done", S.dump(d))
+      S.eq(d.detail, { picked = { coal = 4 } })
+      S.eq(near.valid, false)
   end },
   { "труп: забирает всё, броня с данными — стаком", function()
       local W = C.setup()
@@ -57,21 +66,22 @@ S.suite("hands_pickup", {
       S.eq(C.wait(pickup{ target = { unit_number = ch.unit_number } }).code, "bad_args")
       S.eq(C.wait(pickup{ target = { unit_number = ch.unit_number }, area = { left_top = { x = 0, y = 0 }, right_bottom = { x = 1, y = 1 } } }).code, "bad_args")
   end },
-  { "полный инвентарь: труп — часть взята, left и inventory_full", function()
+  { "полный инвентарь: труп — часть взята, no_space, left и inventory_full", function()
       local W = C.setup{ size = 1, items = { coal = 40 } }
       local c = corpse({ x = 3.5, y = 0.5 }, { coal = 30, stone = 5 })
       local d, kind = C.wait(pickup{ target = { unit_number = c.unit_number } })
-      S.eq(kind, "job_done")
-      S.eq(d.detail, { picked = { coal = 10 }, left = { coal = 20, stone = 5 } })
+      S.eq(kind, "job_failed")
+      S.eq(d.code, "no_space")
+      S.eq(d.detail, { picked = { coal = 10 }, left = { coal = 20, stone = 5 }, reason = "inventory_full" })
       S.eq(#C.events("inventory_full"), 1)
       S.eq(C.counts(c.get_inventory(defines.inventory.character_corpse)), { coal = 20, stone = 5 })
       S.eq(C.counts(W.main), { coal = 50 })
   end },
-  { "полный инвентарь: на земле — stuck, предмет остался", function()
+  { "полный инвентарь: на земле — no_space, предмет остался", function()
       local W = C.setup{ size = 1, items = { stone = 50 } }
       local g = C.ground({ x = 3.5, y = 0.5 }, "coal", 5)
       local d = C.wait(pickup{ area = { left_top = { x = 0, y = -2 }, right_bottom = { x = 6, y = 2 } } })
-      S.eq({ d.code, d.detail.reason }, { "stuck", "inventory_full" })
+      S.eq({ d.code, d.detail.reason }, { "no_space", "inventory_full" })
       S.eq(g.valid, true)
       S.eq(g.stack.count, 5)
       S.eq(C.counts(W.main), { stone = 50 })
