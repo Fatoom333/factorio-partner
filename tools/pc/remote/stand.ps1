@@ -2,8 +2,10 @@
 # Запускает tools/pc/run-live.ps1 по SSH из распакованного пакета D:\Temp\fp-live-<N>\stand\.
 #
 #   stand.ps1 -Action deploy   копия сейва, жёсткие ссылки на моды, конфиги, пароль RCON, запуск сервера без окна
-#   stand.ps1 -Action run      сценарий через live_client.py -> out\results-<N>.json
-#   stand.ps1 -Action stop     /quit через live_client.py, ожидание выхода, журнал в out\
+#   stand.ps1 -Action run      сценарий через live_client.py (или server_client.py — настоящий пакет
+#                              сервера, если у сценария RUNNER = "server") -> out\results-<N>.json
+#   stand.ps1 -Action stop     /quit через live_client.py, ожидание выхода, журнал в out\,
+#                              проверка журнала по log_must_not_match сценария
 #
 # Настройки — stand\stand.json (собирает tools/pc/pack.py). Всё слушает только 127.0.0.1.
 # Пароль RCON генерируется здесь, лежит только в <slot>\rcon.pw и в аргументах процесса сервера.
@@ -85,12 +87,33 @@ function Protect-File([string]$Path) {
     Set-Acl -LiteralPath $Path -AclObject $acl
 }
 
-function Invoke-Client([string[]]$ClientArgs) {
+function Get-CfgText([string]$Name, [string]$Default = '') {
+    # Поле stand.json, которого может не быть в старом пакете (StrictMode не даёт читать его прямо).
+    $p = $Cfg.PSObject.Properties[$Name]
+    if ($null -eq $p -or $null -eq $p.Value) { return $Default }
+    return [string]$p.Value
+}
+
+function Test-ServerRunner {
+    # Сценарий с RUNNER = "server" идёт через настоящий пакет сервера (server_client.py).
+    return ((Get-CfgText 'runner' 'live') -eq 'server')
+}
+
+function Get-ServerPython {
+    $py = Get-CfgText 'server_python'
+    if (-not $py -or -not (Test-Path -LiteralPath $py)) {
+        throw "нет Python для пакета сервера (server_python): нужен Python 3.11+ с factorio-rcon-py — docs/E2E.md, раздел про подготовку ПК"
+    }
+    return $py
+}
+
+function Invoke-Client([string[]]$ClientArgs, [string]$Script = 'live_client.py', [string]$Python = '') {
     $ErrorActionPreference = 'Continue'   # PS 5.1: stderr Python не должен становиться исключением
-    $py = [string]$Cfg.pc_python
+    $py = if ($Python) { $Python } else { [string]$Cfg.pc_python }
     if (-not (Test-Path -LiteralPath $py)) { throw "нет Python для стенда: $py" }
+    if (@('live_client.py', 'server_client.py') -notcontains $Script) { throw "чужой скрипт клиента: $Script" }
     # -I: изолированный режим (без PYTHON* и без импорта из текущей папки); UTF-8 клиент ставит сам.
-    & $py -I (Join-Path $StandDir 'live_client.py') @ClientArgs | Out-Host
+    & $py -I (Join-Path $StandDir $Script) @ClientArgs | Out-Host
     return $LASTEXITCODE
 }
 
@@ -141,6 +164,7 @@ function Invoke-Deploy {
     foreach ($p in @($exe, $fdata, $save)) {
         if (-not (Test-Path -LiteralPath $p)) { throw "не найдено: $p" }
     }
+    if (Test-ServerRunner) { [void](Get-ServerPython) }   # нет Python сервера — не поднимаем игру зря
     if (Get-SlotServer) { throw "в слоте $Slot уже работает сервер — сначала уборка" }
     if (-not (Test-PortFree $RconPort 'tcp')) { throw "порт RCON $RconPort занят" }
     if (-not (Test-PortFree $GamePort 'udp')) { throw "порт игры $GamePort занят" }
@@ -246,8 +270,15 @@ write-data=$DataDir
 }
 
 function Invoke-Run {
-    $code = Invoke-Client @('run', '--slot', "$Slot", '--dir', $SlotDir, '--scenario', [string]$Cfg.scenario,
+    $runArgs = @('run', '--slot', "$Slot", '--dir', $SlotDir, '--scenario', [string]$Cfg.scenario,
         '--timeout', "$([int]$Cfg.timeout_sec)")
+    if (Test-ServerRunner) {
+        # Настоящий пакет сервера (bridge + core) против RCON слота; пути forge он берёт из stand.json.
+        $code = Invoke-Client $runArgs 'server_client.py' (Get-ServerPython)
+    }
+    else {
+        $code = Invoke-Client $runArgs
+    }
     Write-Host "слот $Slot`: сценарий $($Cfg.scenario) завершился с кодом $code"
     exit $code
 }
@@ -276,6 +307,13 @@ function Invoke-Stop {
         }
         try { Copy-RedactedLog $src $src $secret }
         catch { Write-Host "слот $Slot`: не удалось вычистить $name в слоте: $($_.Exception.Message)" }
+    }
+    # Журнал вынесен (уже вычищенный): сценарий, объявивший log_must_not_match, проваливается, если в
+    # журнале есть такая строка. Итог пишется в out\results-<N>.json — его и читает run-live.ps1.
+    if (Test-Path -LiteralPath (Join-Path $OutDir "results-$Slot.json")) {
+        $logCode = Invoke-Client @('check-log', '--slot', "$Slot", '--dir', $SlotDir)
+        if ($logCode -eq 1) { Write-Host "слот $Slot`: журнал игры провалил сценарий (log_must_not_match)" }
+        elseif ($logCode -ne 0) { Write-Host "слот $Slot`: проверка журнала не выполнена (код $logCode)" }
     }
     Write-Host "слот $Slot`: остановлен"
 }

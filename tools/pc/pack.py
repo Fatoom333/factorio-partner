@@ -2,14 +2,20 @@
 
     python tools/pc/pack.py mod --src mod/factorio-partner --out DIR        -> печатает путь zip
     python tools/pc/pack.py scenario-mods --name e_chart                    -> печатает JSON-список модов
+    python tools/pc/pack.py scenario-runner --name e2e_mcp                  -> печатает live или server
     python tools/pc/pack.py payload --slot N --scenario NAME --out FILE.zip [--mods a,b] [--save ...] ...
 
 Zip мода — как ждёт Factorio: одна папка `<name>_<version>/` внутри, пути через `/`.
-Пакет стенда: `stand/live_client.py`, `stand/stand.ps1`, `stand/scenarios/*.py`,
+Пакет стенда: `stand/live_client.py`, `stand/server_client.py`, `stand/stand.ps1`, `stand/scenarios/*.py`,
+`stand/server/factorio_partner/*.py` (настоящий пакет сервера — для сценариев с `RUNNER = "server"`),
 `stand/mods/<name>_<version>.zip`, `stand/stand.json` (настройки запуска, без секретов).
 Пути ПК по умолчанию — в DEFAULTS; свои (другой диск, обновился Steam) — в необязательном
-`tools/pc/pc.local.json` (в git не идёт): {"factorio_exe": ..., "factorio_data": ..., "pc_python": ..., "save": ...}.
-Порядок: DEFAULTS < pc.local.json < ключи командной строки.
+`tools/pc/pc.local.json` (в git не идёт): {"factorio_exe": ..., "factorio_data": ..., "pc_python": ..., "save": ...,
+"server_python": ..., "forge": ..., "forge_home": ..., "forge_profile": ...}.
+forge на ПК (личные пути — только в pc.local.json или в окружении запуска, в git — никогда): `forge` —
+checkout factorio-forge с `.venv` (он же FP_FORGE), `forge_home` — дом forge с профилями (FACTORIO_FORGE_HOME),
+`forge_profile` — профиль сейва (FP_FORGE_PROFILE).
+Порядок: DEFAULTS < окружение (только три переменные forge) < pc.local.json < ключи командной строки.
 Только стандартная библиотека.
 """
 from __future__ import annotations
@@ -46,12 +52,25 @@ DEFAULTS = {
     "factorio_exe": r"D:\Program Files (x86)\Steam\steamapps\common\Factorio\bin\x64\factorio.exe",
     "factorio_data": r"C:\FactorioData",  # заглушка: свой путь к данным Factorio — в tools/pc/pc.local.json
     "pc_python": r"D:\Temp\partner-rcon\venv\Scripts\python.exe",
+    # Python ≥ 3.11 с зависимостями пакета сервера (factorio-rcon-py[async]) — для RUNNER = "server";
+    # как его завести — docs/E2E.md «Подготовка ПК»
+    "server_python": r"D:\Temp\fp-server\venv\Scripts\python.exe",
+    "forge": "",            # пусто = forge на ПК не подключён (partner_plan ответит supported:false)
+    "forge_home": "",
+    "forge_profile": "",
     "timeout_sec": 600,
     "ready_timeout_sec": 240,
 }
 
 LOCAL_CONFIG = os.path.join(HERE, "pc.local.json")
-LOCAL_KEYS = ("save", "factorio_exe", "factorio_data", "pc_python")
+LOCAL_KEYS = ("save", "factorio_exe", "factorio_data", "pc_python", "server_python",
+              "forge", "forge_home", "forge_profile")
+# Окружение запуска (значения — пути НА ПК): то же, что читает сам сервер (MCP.md «Доступ и настройки»).
+ENV_KEYS = {"FP_FORGE": "forge", "FACTORIO_FORGE_HOME": "forge_home", "FP_FORGE_PROFILE": "forge_profile"}
+PATH_RE = re.compile(r"^[A-Za-z]:\\[^\"'`$;&|<>\r\n]*$")
+PROFILE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+RUNNERS = ("live", "server")
+SERVER_PACKAGE = os.path.join("server", "factorio_partner")
 
 
 class PackError(Exception):
@@ -103,8 +122,11 @@ def build_mod(src: str, out_dir: str) -> str:
     return out
 
 
-def scenario_mods(name: str, scenarios_dir: Optional[str] = None) -> List[str]:
-    """Читает `MODS = [...]` из сценария без его выполнения (ast). Нет — DEFAULT_MODS."""
+_MISSING = object()
+
+
+def _scenario_const(name: str, const: str, scenarios_dir: Optional[str] = None):
+    """Значение `<const> = <литерал>` верхнего уровня сценария без его выполнения (ast)."""
     if not SCENARIO_RE.match(name or ""):
         raise PackError("имя сценария: [a-z0-9_]{1,64}")
     path = os.path.join(scenarios_dir or os.path.join(HERE, "scenarios"), name + ".py")
@@ -114,10 +136,46 @@ def scenario_mods(name: str, scenarios_dir: Optional[str] = None) -> List[str]:
     except OSError:
         raise PackError(f"нет сценария {name}") from None
     for node in tree.body:
-        if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "MODS" for t in node.targets):
-            value = ast.literal_eval(node.value)
-            return validate_mods(value)
-    return list(DEFAULT_MODS)
+        if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == const for t in node.targets):
+            try:
+                return ast.literal_eval(node.value)
+            except ValueError:
+                raise PackError(f"сценарий {name}: {const} должен быть литералом") from None
+    return _MISSING
+
+
+def scenario_mods(name: str, scenarios_dir: Optional[str] = None) -> List[str]:
+    """Читает `MODS = [...]` из сценария без его выполнения (ast). Нет — DEFAULT_MODS."""
+    value = _scenario_const(name, "MODS", scenarios_dir)
+    if value is _MISSING:
+        return list(DEFAULT_MODS)
+    return validate_mods(value)
+
+
+def scenario_runner(name: str, scenarios_dir: Optional[str] = None) -> str:
+    """Читает `RUNNER = "live"│"server"` из сценария (ast). Нет — "live".
+
+    "server" — сценарий идёт через настоящий пакет сервера (bridge + core): `server_client.py`
+    под Python сервера (`server_python`), а не `live_client.py`."""
+    value = _scenario_const(name, "RUNNER", scenarios_dir)
+    if value is _MISSING:
+        return RUNNERS[0]
+    if value not in RUNNERS:
+        raise PackError(f"сценарий {name}: RUNNER {value!r}; можно: {list(RUNNERS)}")
+    return value
+
+
+def _server_files(repo: str) -> List[str]:
+    """Файлы пакета сервера для пакета стенда: только *.py самого пакета (без тестов и кэша)."""
+    src = os.path.join(repo, SERVER_PACKAGE)
+    try:
+        names = sorted(n for n in os.listdir(src) if n.endswith(".py"))
+    except OSError:
+        raise PackError(f"нет пакета сервера {SERVER_PACKAGE}") from None
+    out = [n for n in names if os.path.isfile(os.path.join(src, n)) and not os.path.islink(os.path.join(src, n))]
+    if "core.py" not in out or "bridge.py" not in out:
+        raise PackError(f"в {SERVER_PACKAGE} нет core.py / bridge.py")
+    return out
 
 
 def validate_mods(mods) -> List[str]:
@@ -149,13 +207,25 @@ def load_local_config(path: Optional[str]) -> Dict:
     return data
 
 
+def env_config(env=None) -> Dict:
+    """Настройки forge из окружения запуска (ENV_KEYS); пустые значения пропускаются."""
+    env = os.environ if env is None else env
+    return {key: env[var] for var, key in ENV_KEYS.items() if env.get(var)}
+
+
 def build_payload(slot: int, scenario: str, out_file: str, mods: Optional[List[str]] = None,
-                  repo: str = REPO, local_config: Optional[str] = None, **overrides) -> Dict:
+                  repo: str = REPO, local_config: Optional[str] = None, env: Optional[Dict] = None,
+                  **overrides) -> Dict:
+    """env — окружение для настроек forge (ENV_KEYS); None = не читать (так зовут тесты),
+    командная строка передаёт os.environ."""
     if not isinstance(slot, int) or not (0 <= slot <= 9):
         raise PackError("слот 0..9")
     scen_dir = os.path.join(repo, "tools", "pc", "scenarios")
     mods = validate_mods(mods) if mods else scenario_mods(scenario, scen_dir)
+    runner = scenario_runner(scenario, scen_dir)
     config = dict(DEFAULTS)
+    if env is not None:
+        config.update(env_config(env))
     config.update(load_local_config(local_config))
     for k, v in overrides.items():
         if v is not None:
@@ -167,12 +237,17 @@ def build_payload(slot: int, scenario: str, out_file: str, mods: Optional[List[s
     for k in ("timeout_sec", "ready_timeout_sec"):
         if not isinstance(config[k], int) or not (10 <= config[k] <= 7200):
             raise PackError(f"{k}: 10..7200")
-    for k in ("factorio_exe", "factorio_data", "pc_python"):
+    for k in ("factorio_exe", "factorio_data", "pc_python", "server_python", "forge", "forge_home"):
         v = config[k]
-        if not isinstance(v, str) or not re.match(r"^[A-Za-z]:\\[^\"'`$;&|<>\r\n]*$", v):
+        if k in ("forge", "forge_home") and v == "":
+            continue
+        if not isinstance(v, str) or not PATH_RE.match(v):
             raise PackError(f"{k}: нужен абсолютный путь Windows без кавычек и спецсимволов")
-    config.update({"slot": slot, "scenario": scenario, "mods": [], "rcon_port": 27100 + slot,
-                   "game_port": 34200 + slot})
+    if config["forge_profile"] != "" and not (
+            isinstance(config["forge_profile"], str) and PROFILE_RE.match(config["forge_profile"])):
+        raise PackError("forge_profile: латиница, цифры, '.', '_', '-'")
+    config.update({"slot": slot, "scenario": scenario, "runner": runner, "mods": [],
+                   "rcon_port": 27100 + slot, "game_port": 34200 + slot})
     tmp_mods = out_file + ".mods"
     os.makedirs(tmp_mods, exist_ok=True)
     try:
@@ -185,9 +260,13 @@ def build_payload(slot: int, scenario: str, out_file: str, mods: Optional[List[s
             mod_zips.append(path)
         if not os.path.isfile(os.path.join(scen_dir, scenario + ".py")):
             raise PackError(f"нет сценария {scenario}")
+        server_files = _server_files(repo)
         with zipfile.ZipFile(out_file, "w", compression=zipfile.ZIP_DEFLATED) as z:
             z.write(os.path.join(repo, "tools", "pc", "live_client.py"), "stand/live_client.py")
+            z.write(os.path.join(repo, "tools", "pc", "server_client.py"), "stand/server_client.py")
             z.write(os.path.join(repo, "tools", "pc", "remote", "stand.ps1"), "stand/stand.ps1")
+            for n in server_files:
+                z.write(os.path.join(repo, SERVER_PACKAGE, n), "stand/server/factorio_partner/" + n)
             for n in sorted(os.listdir(scen_dir)):
                 if n.endswith(".py") and SCENARIO_RE.match(n[:-3]):
                     z.write(os.path.join(scen_dir, n), "stand/scenarios/" + n)
@@ -210,6 +289,8 @@ def main(argv=None) -> int:
     p = sub.add_parser("scenario-mods")
     p.add_argument("--name", required=True)
     p.add_argument("--plain", action="store_true", help="через запятую, для PowerShell")
+    p = sub.add_parser("scenario-runner")
+    p.add_argument("--name", required=True)
     p = sub.add_parser("payload")
     p.add_argument("--slot", type=int, required=True)
     p.add_argument("--scenario", required=True)
@@ -219,6 +300,10 @@ def main(argv=None) -> int:
     p.add_argument("--factorio-exe")
     p.add_argument("--factorio-data")
     p.add_argument("--pc-python")
+    p.add_argument("--server-python", help="Python ≥ 3.11 на ПК с зависимостями пакета сервера")
+    p.add_argument("--forge", help="checkout factorio-forge на ПК (как FP_FORGE)")
+    p.add_argument("--forge-home", help="дом forge на ПК (как FACTORIO_FORGE_HOME)")
+    p.add_argument("--forge-profile", help="профиль сейва forge (как FP_FORGE_PROFILE)")
     p.add_argument("--timeout-sec", type=int)
     p.add_argument("--ready-timeout-sec", type=int)
     p.add_argument("--local-config", default=LOCAL_CONFIG, help="пути ПК (по умолчанию tools/pc/pc.local.json, если есть)")
@@ -229,12 +314,19 @@ def main(argv=None) -> int:
         elif ns.cmd == "scenario-mods":
             mods = scenario_mods(ns.name)
             print(",".join(mods) if ns.plain else json.dumps(mods))
+        elif ns.cmd == "scenario-runner":
+            print(scenario_runner(ns.name))
         else:
             mods = [m.strip() for m in ns.mods.split(",") if m.strip()] or None
-            cfg = build_payload(ns.slot, ns.scenario, ns.out, mods, local_config=ns.local_config, save=ns.save, factorio_exe=ns.factorio_exe,
+            cfg = build_payload(ns.slot, ns.scenario, ns.out, mods, local_config=ns.local_config, env=os.environ,
+                                save=ns.save, factorio_exe=ns.factorio_exe,
                                 factorio_data=ns.factorio_data, pc_python=ns.pc_python,
+                                server_python=ns.server_python, forge=ns.forge, forge_home=ns.forge_home,
+                                forge_profile=ns.forge_profile,
                                 timeout_sec=ns.timeout_sec, ready_timeout_sec=ns.ready_timeout_sec)
-            print(json.dumps({"mods": [m["file"] for m in cfg["mods"]], "scenario": cfg["scenario"]}))
+            # пути forge — личные: в вывод идёт только признак «подключён»
+            print(json.dumps({"mods": [m["file"] for m in cfg["mods"]], "scenario": cfg["scenario"],
+                              "runner": cfg["runner"], "forge": bool(cfg["forge"] or cfg["forge_home"])}))
     except PackError as e:
         print(f"pack: {e}", file=sys.stderr)
         return 2
