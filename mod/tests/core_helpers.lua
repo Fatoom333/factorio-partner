@@ -126,6 +126,10 @@ S.suite("helpers", {
       S.eq(S.okr(S.req("helper_limit", { max = 2 })), { max = 2, alive = 1 })
       -- удалили мёртвого — место свободно
       S.okr(S.req("helper_remove", {}, "h1"))
+      -- перезарядка общая для всех id: новое тело под другим id сразу не появляется
+      S.err(S.req("helper_spawn", {}, "h3"), "cooldown", "remove h1 → spawn h3 не телепорт")
+      storage.helpers.h1.removed_tick = -1e9
+      storage.helpers.h1.died_tick = -1e9
       S.okr(S.req("helper_spawn", {}, "h3"))
       S.okr(S.req("helper_limit", { max = 2 }))
   end },

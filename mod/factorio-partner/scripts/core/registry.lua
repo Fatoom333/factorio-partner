@@ -261,6 +261,15 @@ function M.op_spawn(args, ctx)
     err.raise("cooldown", "helper_spawn possible in " .. math.ceil(left / 60) .. " s")
   end
   M.check_slot(id)
+  -- перезарядка общая для всех id (PROTOCOL §4): иначе helper_remove h1 → helper_spawn h2
+  -- переносил бы тело к хозяину без ожидания
+  for _, other in pairs(storage.helpers) do
+    local since = cooldown_since(other)
+    if since ~= nil then left = math.max(left, since + M.COOLDOWN - game.tick) end
+  end
+  if left > 0 then
+    err.raise("cooldown", "helper_spawn possible in " .. math.ceil(left / 60) .. " s")
+  end
   local p, surface, anchor = owner.spawn_anchor()
   if not p then err.raise("no_player", "owner is not in the save, or is online without a character") end
   local center = util.xy(anchor)
