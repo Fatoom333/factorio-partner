@@ -183,7 +183,7 @@ S.suite("attach_away", {
   end },
 
   { "перезарядку тела-персонажа привязка и отвязка тела-игрока не снимают (§4: не телепорт)", function()
-      local COOLDOWN = 5 * 60 * 60
+      local COOLDOWN = 600
       local reg = require("scripts.core.registry")
       local _, friend = P.setup{ attach = false }
       S.okr(S.req("helper_spawn", {}, "h1"))
@@ -230,7 +230,7 @@ S.suite("attach_away", {
   end },
 
   { "перезарядка после смерти тела-персонажа: замена записи телом-игроком её не снимает", function()
-      local COOLDOWN = 5 * 60 * 60
+      local COOLDOWN = 600
       P.setup{ attach = false }
       S.okr(S.req("helper_spawn", {}, "h1"))
       P.tick(5)
