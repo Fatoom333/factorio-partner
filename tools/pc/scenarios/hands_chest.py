@@ -101,8 +101,10 @@ def run(client) -> dict:
     result["chest"] = {"unit": unit, "name": chest.get("name"), "pos": chest.get("pos"), "dist": chest.get("dist"),
                        "item": item, "n": n}
     c0, h0 = items[item], helper_count(client, item)
-    target = {"unit_number": unit}
-    alt = {"name": chest.get("name"), "pos": chest.get("pos")}
+    # ACTIONS.md «target»: {unit_number, pos} — мод сам ищет вокруг pos, если движок не находит
+    # постройку по unit_number; alt ({name, pos}) остаётся запасным
+    target = {"unit_number": unit, "pos": chest.get("pos")}
+    alt ={"name": chest.get("name"), "pos": chest.get("pos")}
     reasons = []
 
     ev = _act(client, "extract", {"target": target, "items": {item: n}}, result, "extract", alt)
