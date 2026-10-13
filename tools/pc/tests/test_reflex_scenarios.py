@@ -22,7 +22,8 @@ class Model:
     """Модель мода: помощники, набор рефлексов со схемой flee/watch, очередь из одной задачи wait."""
 
     def __init__(self, mod="0.1.0", accept_unknown=False, respawn_after_remove=False, lose_helper=False,
-                 frozen=False, no_defaults=False, no_cooldown=False, enemies=False):
+                 frozen=False, no_defaults=False, no_cooldown=False, enemies=False, no_body=False,
+                 crash=False, no_recent=False):
         self.tick = 1000
         self.seq = 0
         self.events = []
@@ -36,6 +37,12 @@ class Model:
         self.no_defaults = no_defaults
         self.no_cooldown = no_cooldown
         self.enemies = enemies
+        self.no_body = no_body          # мод до ревизии 3.3: в helper_list нет body
+        self.crash = crash              # проверка рефлекса падает под pcall: module_errors растёт
+        self.no_recent = no_recent      # мод не хранит ответы по id (повтор исполняется заново)
+        self.module_errors = 0
+        self.recent = {}
+        self.pending = {}               # долгие задачи wait: job -> helper
         self.job = 0
         self.ops = []
         self.commands = []
@@ -89,9 +96,18 @@ class Model:
             return None
         assert cmd.startswith("/partner {")
         env = json.loads(cmd[len("/partner "):])
+        if not self.no_recent and env["id"] in self.recent:
+            return self.recent[env["id"]]
+        reply = self.handle(env)
+        self.recent[env["id"]] = reply
+        return reply
+
+    def handle(self, env):
         op, args, helper = env["op"], env.get("args", {}), env.get("helper")
         self.ops.append(op)
         self.advance()
+        if self.crash and self.sets.get(helper):
+            self.module_errors += 1
 
         def ok(data):
             return json.dumps({"v": 1, "id": env["id"], "ok": True, "tick": self.tick, "seq": self.seq, "data": data})
@@ -103,9 +119,11 @@ class Model:
         h = self.helpers.get(helper)
         if op == "hello":
             return ok({"proto": 1, "mod": self.mod, "tick": self.tick, "seq": self.seq, "owner": "Tartaluga",
-                       "players_online": 0, "players": [], "helpers": {}})
+                       "players_online": 0, "players": [], "helpers": {}, "module_errors": self.module_errors})
         if op == "helper_list":
-            return ok({"helpers": [{"id": k, "state": v["state"]} for k, v in sorted(self.helpers.items())]})
+            extra = {} if self.no_body else {"body": "character"}
+            return ok({"helpers": [dict({"id": k, "state": v["state"]}, **extra)
+                                   for k, v in sorted(self.helpers.items())]})
         if op == "events":
             evs = [e for e in self.events if e["seq"] > args["since"] and e["helper"] in (None, args.get("helper"))]
             return ok({"seq": self.seq, "events": evs or {}, "lost": False})
@@ -131,8 +149,20 @@ class Model:
             return ok({"set": rset or {}})
         if op == "act":
             self.job += 1
-            self.emit(helper, "job_done", {"job": self.job, "do": args["do"], "detail": {}})
+            if (args.get("args") or {}).get("seconds", 0) > 5:
+                self.pending[self.job] = helper   # долгая задача: итог придёт только после cancel
+            else:
+                self.emit(helper, "job_done", {"job": self.job, "do": args["do"], "detail": {}})
             return ok({"job": self.job, "queued_before": 0})
+        if op == "cancel":
+            job = args.get("job")
+            if self.pending.pop(job, None) is None:
+                return fail("not_found")
+            self.emit(helper, "job_failed", {"job": job, "do": "wait", "code": "cancelled", "text": "cancelled",
+                                             "detail": {}})
+            return ok({"cancelled": [job]})
+        if op == "vision":
+            return ok({"on": args.get("on")})
         return fail("unknown_op", op)
 
 
@@ -260,3 +290,71 @@ def test_death_times_out_when_game_is_frozen(fake_rcon, fast_death, monkeypatch)
 def test_death_needs_factorio_partner(fake_rcon, fast_death):
     res = run(fake_rcon, fast_death, Model(mod="partner-test 0.3.0"))
     assert res["ok"] is False and res["failed"] == ["hello"]
+
+
+# ---------- reflex_keep ----------
+
+@pytest.fixture
+def fast_keep(monkeypatch):
+    sc = load("reflex_keep")
+    monkeypatch.setattr(sc, "WATCH_TIMEOUT_S", 3.0)
+    monkeypatch.setattr(sc, "POLL_S", 0.01)
+    monkeypatch.setattr(sc, "JOB_TIMEOUT_S", 1.0)
+    return sc
+
+
+def test_keep_ok(fake_rcon, fast_keep):
+    model = Model()
+    res = run(fake_rcon, fast_keep, model)
+    assert res["ok"] is True, failed(res)
+    assert [s["name"] for s in res["steps"]] == [
+        "hello", "helper_spawn", "reflexes set", "queue churn", "watch", "repeat request", "helper_remove",
+        "hello_end"]
+    assert len(res["steps"]) == fast_keep.STEPS
+    watch = next(s for s in res["steps"] if s["name"] == "watch")
+    assert watch["info"]["ticks"] >= fast_keep.WATCH_TICKS
+    # ограничение стенда названо прямо: перезагрузки сейва вживую нет
+    assert "перезагрузка сейва" in res["limitation"] and "reflex_keep.lua" in res["limitation"]
+    assert res["log_must_not_match"]
+    assert model.helpers["rkeep"]["state"] == "removed"
+    assert model.sets.get("rkeep") is None, "helper_remove сбросил набор"
+    assert model.pending == {}, "долгая задача отменена"
+    # только конверты /partner: ни одной консольной команды (в т. ч. команд сохранения)
+    assert all(c.startswith("/partner {") for c in model.commands)
+    assert set(model.ops) == {"hello", "helper_spawn", "helper_list", "events", "reflexes", "act", "cancel",
+                              "vision", "helper_remove"}
+    # набор за весь прогон задан одинаковым: работа очереди его не меняла
+    assert model.ops.count("reflexes") == 2, "повтор с тем же id до мода дошёл, но не исполнился заново"
+
+
+def test_keep_reports_enemies_as_evidence(fake_rcon, fast_keep):
+    res = run(fake_rcon, fast_keep, Model(enemies=True))
+    assert res["ok"] is True, failed(res)
+    watch = next(s for s in res["steps"] if s["name"] == "watch")
+    assert watch["info"]["saw_enemy"] >= 1
+
+
+@pytest.mark.parametrize("kw, step, text", [
+    ({"no_body": True}, "helper_spawn", "body"),
+    ({"no_defaults": True}, "reflexes set", "набор в ответе"),
+    ({"lose_helper": True}, "watch", ""),
+    ({"frozen": True}, "watch", "тиков"),
+    ({"crash": True}, "hello_end", "module_errors"),
+    ({"no_recent": True}, "repeat request", "сохранённый ответ"),
+])
+def test_keep_failures(fake_rcon, fast_keep, monkeypatch, kw, step, text):
+    if kw.get("frozen"):
+        monkeypatch.setattr(fast_keep, "WATCH_TIMEOUT_S", 0.2)
+    model = Model(**kw)
+    res = run(fake_rcon, fast_keep, model)
+    assert res["ok"] is False
+    bad = failed(res)
+    assert step in bad and text in bad[step], bad
+    assert all(h["state"] != "alive" for h in model.helpers.values()), "уборка: живых не осталось"
+
+
+def test_keep_needs_factorio_partner(fake_rcon, fast_keep):
+    model = Model(mod="partner-test 0.3.0")
+    res = run(fake_rcon, fast_keep, model)
+    assert res["ok"] is False and res["failed"] == ["hello"]
+    assert model.ops == ["hello"]

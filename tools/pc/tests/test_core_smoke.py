@@ -23,6 +23,7 @@ class Model:
         self.seq = 3
         self.alive = False
         self.removed = False
+        self.body = "character"   # helper_list.body (ревизия 3.3); None — мод до 3.3, поля нет
         self.vision = False
         self.unknown_after_vision = unknown_after_vision
         self.no_owner = no_owner
@@ -80,8 +81,11 @@ class Model:
             return ok({"helper": helper, "unit_number": 77, "surface": "nauvis", "pos": {"x": 3.5, "y": 2}})
         if op == "helper_list":
             if self.removed:
-                return ok({"helpers": [{"id": "h1", "state": "removed", "cooldown_s": 300}]})
-            return ok({"helpers": [{"id": "h1", "state": "alive", "surface": "nauvis", "pos": {"x": 3.5, "y": 2}}]})
+                return ok({"helpers": [{"id": "h1", "state": "removed", "cooldown_s": 300, "body": self.body}]})
+            item = {"id": "h1", "state": "alive", "surface": "nauvis", "pos": {"x": 3.5, "y": 2}}
+            if self.body is not None:
+                item["body"] = self.body
+            return ok({"helpers": [item]})
         if not self.alive and op != "helper_remove":
             return fail("no_helper")
         if op == "state":
@@ -234,3 +238,14 @@ def test_smoke_cleans_up_helper_on_exception(fake_rcon, smoke, monkeypatch):
         with pytest.raises(KeyboardInterrupt):
             smoke.run(c)
     assert model.ops[-1] == "helper_remove"
+
+
+def test_smoke_needs_body_in_helper_list(fake_rcon, smoke):
+    """Ревизия 3.3: helper_list отдаёт body; мод без этого поля шаг helper_list не проходит."""
+    model = Model()
+    model.body = None
+    srv = fake_rcon(handler=model)
+    with lc.LiveClient(srv.port, PASSWORD, timeout=5) as c:
+        res = smoke.run(c)
+    bad = {s["name"]: s.get("error", "") for s in res["steps"] if not s["ok"]}
+    assert res["ok"] is False and "helper_list" in bad and "body" in bad["helper_list"], bad
