@@ -1,9 +1,9 @@
-"""Дымовой живой сценарий ядра мода factorio-partner (поток A, волна 2).
+"""Дымовой живой сценарий ядра мода factorio-partner (поток A, волна 2; ревизия 3.2 — поток Y).
 
 Идёт по основным операциям протокола на сервере без окна (хозяин в сейве офлайн — спавн у его
 последней позиции, PROTOCOL §4 ревизия 3) и сверяет формы ответов с docs/PROTOCOL.md и STATE.md:
 
- 1. hello                  — proto, mod, owner, players_online, players, helpers, tick, seq
+ 1. hello                  — proto, mod, owner, players_online, players, helpers, module_errors, tick, seq
  2. helper_spawn h1        — helper, unit_number, surface, pos (хозяина нет в сейве -> стоп)
  3. state                  — STATE.md «state»
  4. map                    — bbox, axis, rows (ровные строки), legend, entities, surface, truncated
@@ -12,11 +12,13 @@
  7. ghosts                 — count, by_name, need, have{helper,stock}, missing, blocked
  8. recipes                — craftable{}
  9. rates                  — scope=surface, items, fluids, truncated
+ 9a. find                  — item, surface, groups, total{producers,consumers,storage}, hidden (STATE.md «find»)
 10. vision on, 10 с       — затем map вокруг помощника без «?» (неоткрытого не осталось)
 11. say                    — ответ {} (чат проверить из сценария нельзя — смотрим журнал вручную)
 12. act wait 1 с + events  — job_done для этой задачи, форма события
 13. jobs                   — очередь пуста
 14. helper_remove          — и helper_list: state=removed, cooldown_s > 0
+15. hello ещё раз          — module_errors не вырос: за весь прогон ни один модуль не упал под pcall
 
 Только `/partner <JSON>` через client.call; никаких /c, /sc (PROTOCOL §1).
 Результат: {"ok": bool, "steps": [{"name", "ok", "error"?, "info"?}], "failed": [имена]}.
@@ -32,6 +34,8 @@ JOB_TIMEOUT_S = 20.0       # act wait 1 с -> job_done
 POLL_S = 0.5
 MAP_RADIUS = 16
 RESOURCE_RADIUS = 32
+FIND_ITEM = "iron-plate"   # есть в любой игре с base; на базе его может не быть — проверяется форма ответа
+FIND_KINDS = ("producers", "consumers", "storage")
 
 
 class Check(AssertionError):
@@ -98,6 +102,7 @@ def check_hello(d):
     need(d["players_online"] == sum(1 for p in players if p["online"]),
          "players_online не совпадает с числом online в players")
     field(d, "helpers", is_list, "список id")
+    field(d, "module_errors", lambda v: is_int(v) and v >= 0, "целое >= 0")
 
 
 def check_spawn(d):
@@ -195,6 +200,24 @@ def check_rates(d):
     field(d, "truncated", lambda v: isinstance(v, bool), "bool")
 
 
+def check_find(d):
+    need(d.get("item") == FIND_ITEM, f"item={d.get('item')!r}")
+    field(d, "surface", lambda v: isinstance(v, str) and v, "строка")
+    total = as_map(field(d, "total", is_map, "объект"))
+    need(set(total) == set(FIND_KINDS), f"total: ждали {sorted(FIND_KINDS)}, пришло {sorted(total)}")
+    for k in FIND_KINDS:
+        need(is_int(total[k]) and total[k] >= 0, f"total.{k}: целое >= 0")
+    field(d, "hidden", lambda v: is_int(v) and v >= 0, "целое >= 0")
+    groups = as_list(field(d, "groups", is_list, "список"))
+    for g in groups:
+        need(g.get("kind") in FIND_KINDS and is_pos(g.get("pos")) and is_int(g.get("count")) and g["count"] >= 1
+             and is_map(g.get("names")) and is_num(g.get("dist")),
+             f"groups[]: kind/pos/dist/count/names, пришло {str(g)[:120]!r}")
+    dists = [g["dist"] for g in groups]
+    need(dists == sorted(dists), "группы не по возрастанию dist")
+    return groups
+
+
 def check_event(ev, job):
     need(ev.get("kind") == "job_done", f"kind={ev.get('kind')!r}")
     need(is_int(ev.get("seq")) and is_int(ev.get("tick")), "seq/tick события")
@@ -235,13 +258,15 @@ class Run:
 def run(client) -> dict:
     r = Run(client)
     c = client
-    state = {"spawned": False, "seq0": 0}
+    state = {"spawned": False, "seq0": 0, "errors0": 0}
 
     def hello():
         d = r.ok_call("hello")
         check_hello(d)
         state["seq0"] = d["seq"]
-        return {"owner": d["owner"], "players_online": d["players_online"], "mod": d["mod"]}
+        state["errors0"] = d["module_errors"]
+        return {"owner": d["owner"], "players_online": d["players_online"], "mod": d["mod"],
+                "module_errors": d["module_errors"]}
 
     def spawn():
         d = r.ok_call("helper_spawn", {}, HELPER)
@@ -276,6 +301,16 @@ def run(client) -> dict:
 
     def rates():
         check_rates(r.ok_call("rates", {}, HELPER))
+
+    def find():
+        d = r.ok_call("find", {"item": FIND_ITEM}, HELPER)
+        groups = check_find(d)
+        return {"total": d["total"], "groups": len(groups), "hidden": d["hidden"]}
+
+    def hello_end():
+        d = r.ok_call("hello")
+        need(d.get("module_errors") == state["errors0"],
+             f"module_errors вырос за прогон: {state['errors0']} -> {d.get('module_errors')!r} (см. журнал игры)")
 
     def vision():
         d = r.ok_call("vision", {"on": True}, HELPER)
@@ -341,10 +376,11 @@ def run(client) -> dict:
             return finish(r, aborted="helper_spawn не удался: дальше без помощника нельзя")
         for name, fn in (("helper_list", helper_list_alive), ("state", st), ("map", map_before),
                          ("resources", resources), ("stock", stock), ("ghosts", ghosts),
-                         ("recipes", recipes), ("rates", rates), ("vision", vision), ("say", say),
+                         ("recipes", recipes), ("rates", rates), ("find", find), ("vision", vision), ("say", say),
                          ("act_wait_events", wait_job), ("jobs", jobs)):
             r.step(name, fn)
         r.step("helper_remove", remove)
+        r.step("hello_end", hello_end)
         return finish(r)
     finally:
         if state["spawned"]:
