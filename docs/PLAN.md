@@ -38,6 +38,7 @@
 | 2 | **F. Стройка** | `scripts/actions/{place,build_blueprint,build_ghosts,deconstruct}.lua`, `scripts/lib/build.lua`, тесты/сценарии `build_*` |
 | 2 | **H. Рефлексы** | `scripts/reflexes/**` (атака, здоровье, смерть, возрождение — PROTOCOL §6.9, отступление), тесты/сценарии `reflex_*` |
 | 3 | **M. Разметка добычи** | `scripts/actions/plan_mining.lua`, `scripts/vendor/mpp/**` (код раскладок MPP + его LICENSE), тесты/сценарии `mining_*` |
+| 3 | **P. Тело-игрок** | `scripts/core/attach.lua` (операция `helper_attach`, ежетиковое удержание состояний, выход/возврат игрока), тесты `attach_*`; правки `registry.lua` — вместе с A в потоке Y |
 | 3 | **J. Агентский слой** | `agents/**`, `.claude/agents/partner.md` |
 | 3 | **K. Сквозной сценарий** | `tools/pc/scenarios/e2e_*.py`, `docs/E2E.md` |
 
@@ -72,7 +73,8 @@
   `no_space`; `whole_stacks_only` по ACTIONS. **DI:** `near?/center?` у resources/stock/ghosts, `top`/`items` ≤ 100.
 
 ## Волна 3 — два запуска
-- **3a:** Y (хвосты ниже, `find`, плитки, режимы постройки), M (разметка добычи по MPP).
+- **3a:** Y (хвосты ниже, `find`, плитки, режимы постройки), M (разметка добычи по MPP), P (тело-игрок;
+  живьём проверяется только с игроком — на стенде без окна второго клиента нет).
 - **3b:** J (агентский слой), K (сквозной сценарий: forge, призраки игрока, `plan_mining`),
   проверка MCP-сервера с настоящим модом и **настоящим forge**.
 
