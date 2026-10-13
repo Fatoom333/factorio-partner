@@ -115,3 +115,13 @@ RCON и ответ не-JSON, например `Unknown command` без мода
 ## Лимиты
 Запрос к моду ≤ 8 КБ; `act.args` ≤ 4 КБ; часть `blob_put` ≤ 3500 байт; чертёж ≤ 1 МБ;
 `say` ≤ 200 символов.
+
+## Уточнения ревизии 3.4 (по волне 4)
+- `partner_brief` → `{rules, rules_full, notes, notes_missing?, reason? ("forge_too_old"), profile,
+  style, helper}`; `rules` — короткие правила, `rules_full` — ссылка на полные.
+- `forge_too_old` определяется по коду выхода 2 и отказу разбора командной строки forge; прочие сбои
+  forge отдают последнюю строку его stderr без путей.
+- Запуск: `--helper <id>` и `--player <имя>` повторяемые, `--players a,b` — синоним; запуск
+  `helper_list` не зовёт.
+- `partner_build_blueprint` пропускает `search`, `rotate`, `mirror`, `partial`; `partial` и
+  `force:"superforced"` агент передаёт только после прямого согласия игрока.

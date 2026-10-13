@@ -95,7 +95,7 @@ return M                          --   и снять своё: mining_state, cra
 | `collect` | `items, center?│near?:"player", radius?=64` | `{collected: items, missing: items, from:[unit]}` | C |
 | `pickup` | `target?` (труп: `{name:"character-corpse", pos}`) │ `area?` (предметы на земле) | `{picked: items}` | C |
 | `place` | `item, pos, direction?:0..15, recipe?` | `{unit_number, name, pos}` | F |
-| `build_blueprint` | `blob, anchor:pos, direction?:0│4│8│12, mode?="auto", force?="forced", search?=16, rotate?=false, partial?=false, dry_run?:bool` | `{ghosts:int, tiles:int, skipped:[...], skipped_total, tiles_skipped, on_liquid:int, liquids?, fit?, to_remove?, to_remove_total?, missing: items}` + поля `build_ghosts` | F |
+| `build_blueprint` | `blob, anchor:pos, direction?:0│4│8│12, mode?="auto", force?="forced", search?=16, rotate?=false, mirror?=false, partial?=false, dry_run?:bool` | `{ghosts:int, tiles:int, skipped:[...], skipped_total, tiles_skipped, on_liquid:int, liquids?, fit?, to_remove?, to_remove_total?, missing: items}` + поля `build_ghosts` | F |
 | `build_ghosts` | `area?│radius?=64, mode?="auto"` | `{built:int, tiles_built:int, left:int, removed:int, not_removed:int, blocked:[...], blocked_total, missing: items}` | F |
 | `deconstruct` | `target│area, filter?:[name]` | `{removed:int, got: items}` (`removed` — только разобранное самим помощником) | F |
 | `plan_mining` | `resource?:string, area│near:pos, layout?="simple", direction?="north", miner?, belt?, pole?, pipe?, options?:object, dry_run?:bool` | `{ghosts:int, drills:int, tiles:int, skipped:int, area, need: items, layout, chosen:{miner, belt│chest, pole, pipe?}, warnings:[...], dry_run?}` | M |
@@ -237,3 +237,50 @@ P.U.M.P., чертёж, или `build_blueprint`). Перед стартом: с
   шириной 1–2 клетки), `near_enemy` (ближе 32 клеток к видимому врагу).
 
 Прогресс долгих задач — шумное `job_progress{job, done, total}` не чаще раза в 5 с.
+
+## Уточнения ревизии 3.4 (по волне 4)
+**`build_blueprint`**
+- `mirror?:bool=false` — поставить зеркально (то, что вернул `fit.mirror`). Чертежи с рельсами,
+  станциями и баками не зеркалятся (`bad_args`); `rotate:true` для них перебирает только повороты.
+- Сдвиг не найден → `detail.fit = null`; служебные поля `fit_checked:int` (сколько мест проверено) и
+  `fit_limit:true` (поиск оборван бюджетом работы).
+- Режим `normal` и клетка на плитке без опоры: клетка пропускается (`skipped`, `reason:"liquid"`), это
+  не отказ — как в игре, обычная постановка пропускает всё, что мешает. Отказ `cannot_place` с `fit` —
+  только в `forced` и `superforced`.
+- Плитки самого чертежа (бетон, отсыпка) на клетке без опоры считаются клетками без опоры.
+- «Подложка доступна» = предмет подложки есть у помощника или в логистической сети силы **и** рецепт
+  или предмет открыт. Оценка оптимистична (хватает одной штуки на весь чертёж): нехватка всплывёт в
+  `need` и в `build_ghosts{no_items}`.
+- `detail.tiles` — число. У `build_ghosts`: `not_removed` — число, список — `not_removed_list` (≤ 20).
+- Свои пометки к сносу задача снимает при `failed`, `cancel` и `stuck`; число снятых — `detail.unmarked`.
+  После `failed{no_items}` призраки остаются, пометки сняты — повторный `build_ghosts` поставит их снова.
+- `pickup` трупа: цель `{name:"character-corpse", pos}`, поиск по типу в радиусе 3 клеток от `pos`.
+
+**`plan_mining`**
+- `avoid_water` по умолчанию `true`; явное `landfill:true` без `avoid_water` его выключает. «Плитка без
+  опоры» определяется по маске бура. `direction` без умолчания в таблице: по умолчанию — сторона
+  лучшего выхода (`access`), `north` только на открытом со всех сторон месте.
+- `access_side:<сторона>` — сторона лучшего выхода (даже `medium`/`narrow`); не пишется, если участок
+  открыт со всех сторон. `limit` и `cannot_place` приходят до первого призрака. Раскладка считается
+  дважды (сухой прогон и настоящий) — это известная цена, не ошибка.
+
+**`plan_belt`**
+- `start_direction`: `"north"│"east"│"south"│"west"`. Клетки `from` и `to`: свободная получает ленту,
+  занятая — нет (лента стыкуется с тем, что там стоит). При `from:"patch"` лента начинается от последней
+  ленты разметки; эта клетка в `ghosts` не входит.
+- Ответ сверх таблицы: `lanes` (сколько лент дошло), `chosen:{belt, underground?}`, `areas` (куски
+  ≤ 128, только если `area` больше), `path_total` (если углов больше 40), `skipped`, `merged`,
+  `dry_run`. `length`, `turns`, `path` — по первой ленте; `undergrounds` — число пар по всем лентам.
+- `failed{path_failed}`: `detail:{reached, left, expanded, lane, reason:"unreachable"│"budget"}`.
+  На мелком замкнутом острове возможен `budget` вместо `unreachable` — агент трактует оба одинаково.
+- `warnings` сверх списка: `not_bundled` (пачка не сложилась, ленты найдены по одной),
+  `unmerged_outputs:N`, `marked_for_deconstruction:N`, `skipped:N`, `not_researched:<имя>`
+  (`underground:"prefer"` с неисследованным подземным ставит призраки с этим предупреждением).
+- `long_detour` сравнивает с манхэттенским расстоянием. В режиме `auto` подземный ставится только
+  вплотную к помехе и только исследованный. Призраки и ленты на пути — помеха; вторая лента той же
+  задачи клетки первой не занимает.
+- `lanes > 1` от точки: пачка вдоль пути; не сложилась — ленты по одной справа от первой; занятая
+  клетка справа от цели → `cannot_place`.
+- Рамка поиска: охват концов + 48 + дальность/4 клеток; бюджет 4×(20000 + 100×дальность) раскрытий;
+  задача дольше 2 минут → `failed{path_failed, reason:"budget"}`.
+- Подземные под плитками: PROTOCOL §6.12 (маски из стадии данных, иначе осторожное правило).
