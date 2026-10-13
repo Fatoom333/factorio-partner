@@ -555,6 +555,77 @@ S.suite("build_blueprint", {
       local r = F.wait(bp{ blob = "rail", mirror = true, dry_run = true })
       S.eq(r.code, "bad_args")
   end },
+  { "бак (тип storage-tank) зеркалом не ставится: rotate зеркало не предлагает, mirror — bad_args", function()
+      F.setup{ items = { ["iron-chest"] = 3 } }
+      -- бак из мода, 1×1: отказ — по типу прототипа, а не по имени
+      local tank = {}
+      for k, v in pairs(prototypes.entity["iron-chest"]) do tank[k] = v end
+      tank.name, tank.type = "mod-tank", "storage-tank"
+      tank.items_to_place_this = { { name = "mod-tank", count = 1 } }
+      prototypes.entity["mod-tank"] = tank
+      prototypes.item["mod-tank"] = { name = "mod-tank", type = "item", stack_size = 50, place_result = tank }
+      -- та же L, что в тесте зеркала (встаёт только отражённой), но вместо ленты — бак
+      local function l_shape(last)
+        return { entities = {
+          { entity_number = 1, name = "iron-chest", position = { x = 0.5, y = 0.5 } },
+          { entity_number = 2, name = "iron-chest", position = { x = 0.5, y = 1.5 } },
+          { entity_number = 3, name = "iron-chest", position = { x = 0.5, y = 2.5 } },
+          { entity_number = 4, name = last, position = { x = 1.5, y = 2.5 } },
+        } }
+      end
+      for x = 14, 28 do
+        for y = -6, 8 do F.set_tile(x, y, "lava") end
+      end
+      for _, c in ipairs({ { 21, 0 }, { 21, 1 }, { 21, 2 }, { 20, 2 } }) do F.set_tile(c[1], c[2], "grass-1") end
+      local a = { x = 21, y = 1.5 }
+      -- проверка самой сцены: без бака поиск находит зеркало
+      put(l_shape("iron-chest"))
+      local ok = F.wait(bp{ dry_run = true, anchor = a, search = 2, rotate = true })
+      S.eq(ok.detail.fit and ok.detail.fit.mirror, true, S.dump(ok.detail.fit))
+      -- с баком зеркало не перебирается: места нет, fit без mirror = true
+      put(l_shape("mod-tank"))
+      local dry, dk = F.wait(bp{ dry_run = true, anchor = a, search = 2, rotate = true })
+      S.eq(dk, "job_done", S.dump(dry))
+      S.eq({ dry.detail.on_liquid, dry.detail.fit }, { 2, nil }, S.dump(dry.detail.fit))
+      -- там, где чертёж с баком встаёт без зеркала, fit есть и он не зеркальный
+      F.set_tile(22, 2, "grass-1")
+      F.set_tile(20, 2, "lava")
+      local d2 = F.wait(bp{ dry_run = true, anchor = a, search = 2, rotate = true })
+      S.ok(d2.detail.fit ~= nil, "сдвиг без зеркала нашёлся")
+      S.eq(d2.detail.fit.mirror, false, S.dump(d2.detail.fit))
+      -- mirror: true на чертеже с баком — отказ, ничего не поставлено
+      local r = F.wait(bp{ anchor = a, mirror = true })
+      S.eq(r.code, "bad_args")
+      S.ok(r.text:find("storage tank", 1, true), r.text)
+      local r2 = F.wait(bp{ anchor = a, mirror = true, dry_run = true })
+      S.eq(r2.code, "bad_args")
+      S.eq({ #F.bp_calls, #F.ghosts() }, { 0, 0 })
+  end },
+  { "поиск сдвига: «подложка доступна» считается один раз на весь поиск, а не каждый тик", function()
+      F.setup{ items = { ["iron-chest"] = 2 } }
+      put(two_chests())
+      for x = -20, 60 do
+        for y = -40, 40 do F.set_tile(x, y, "water") end
+      end
+      game.forces.player.recipes["landfill"].enabled = false
+      local calls, old = 0, prototypes.get_recipe_filtered
+      prototypes.get_recipe_filtered = function()
+        calls = calls + 1
+        return {}
+      end
+      local A = require("scripts.actions.build_blueprint")
+      local ops_tick = A.FIT_OPS_TICK
+      A.FIT_OPS_TICK = 120
+      local job = bp{ dry_run = true, search = 8 }
+      F.run(5)
+      S.eq(C.result(job), nil, "поиск идёт несколько тиков")
+      S.ok(storage.jobs.by_helper.h1.active.fit.cover.landfill == false, "кэш лежит в задаче простыми данными")
+      local d = F.wait(job)
+      A.FIT_OPS_TICK = ops_tick
+      prototypes.get_recipe_filtered = old
+      S.eq({ d.detail.fit, d.detail.fit_checked }, { nil, 288 })
+      S.eq(calls, 1, "рецепты перебирались один раз")
+  end },
   { "плитка планеты из мода: имён в коде нет — подложка берётся из default_cover_tile", function()
       local W = F.setup{ items = { ["iron-chest"] = 2 } }
       local T, I = prototypes.tile, prototypes.item

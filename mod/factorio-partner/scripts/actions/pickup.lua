@@ -26,16 +26,19 @@ M.CORPSE_RADIUS = 3   -- труп ищем вокруг pos: место смер
 
 local CORPSE = "character-corpse"   -- тип прототипа (у трупов из модов имя другое, тип тот же)
 
---- Труп по форме цели {name, pos} (ACTIONS.md «pickup»): ближайший к pos труп с этим именем прототипа
---- в радиусе CORPSE_RADIUS, своей силы или neutral, в открытом чанке; непустой — раньше пустого
---- (на одном месте может лежать несколько трупов). → LuaEntity │ nil.
+--- Труп по форме цели {name, pos} (ACTIONS.md «pickup»): ближайший к pos труп в радиусе
+--- CORPSE_RADIUS, своей силы или neutral, в открытом чанке; непустой — раньше пустого (на одном
+--- месте может лежать несколько трупов). Ищем по типу прототипа: имя по умолчанию
+--- ("character-corpse") значит «любой труп персонажа» — у тела из мода имя трупа другое; имя
+--- сравнивается, только когда задано своё. → LuaEntity │ nil.
 local function corpse_near(ctx, t)
   local h = ctx.entity
   local p = util.xy(t.pos)
   local found = h.surface.find_entities_filtered{ type = CORPSE, position = p, radius = M.CORPSE_RADIUS }
   local best, bd, bfull
   for _, e in ipairs(found) do
-    if e.valid and e.name == t.name and inv.allowed_force(h, e) and inv.charted(h, e.position) then
+    if e.valid and (t.name == CORPSE or e.name == t.name) and inv.allowed_force(h, e)
+        and inv.charted(h, e.position) then
       local src = inv.main_inventory(e)
       local full = src ~= nil and src.valid and not src.is_empty()
       local d = util.dist(util.xy(e.position), p)

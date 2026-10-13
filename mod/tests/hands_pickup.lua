@@ -107,6 +107,15 @@ S.suite("hands_pickup", {
       local d2, k2 = C.wait(pickup{ target = { name = "robo-corpse", pos = { x = 6.5, y = 0.5 } } })
       S.eq(k2, "job_done", S.dump(d2))
       S.eq(C.counts(W.main), { coal = 2 })
+      -- имя по умолчанию находит и труп из мода (поиск по типу); своё имя — только такой труп
+      local c2 = S.nauvis.create_entity{ name = "robo-corpse", position = { x = 90.5, y = 0.5 }, force = "player" }
+      c2.inventories = { [defines.inventory.character_corpse] = C.inventory{ size = 20, items = { stone = 3 } } }
+      local plain = corpse({ x = 110.5, y = 0.5 }, { coal = 1 })
+      S.eq(C.wait(pickup{ target = { name = "robo-corpse", pos = { x = 110.5, y = 0.5 } } }).code, "not_found")
+      S.eq(C.counts(plain.get_inventory(defines.inventory.character_corpse)), { coal = 1 })
+      local d3, k3 = C.wait(pickup{ target = { name = "character-corpse", pos = { x = 90.5, y = 0.5 } } })
+      S.eq(k3, "job_done", S.dump(d3))
+      S.eq(C.counts(W.main), { coal = 2, stone = 3 })
   end },
   { "аргументы: ровно одно; цель не труп — bad_args", function()
       C.setup()
