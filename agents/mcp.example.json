@@ -1,0 +1,13 @@
+{
+ "mcpServers": {
+  "partner": {
+   "command": "<python из venv, где установлен пакет server>",
+   "args": ["-m", "factorio_partner.server"],
+   "env": {
+    "FP_RCON_HOST": "127.0.0.1",
+    "FP_RCON_PORT": "27015",
+    "FP_RCON_PASSWORD_FILE": "<путь к файлу с паролем RCON, вне репозитория>"
+   }
+  }
+ }
+}
