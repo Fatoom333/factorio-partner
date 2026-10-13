@@ -770,7 +770,13 @@ class Core:
             if not isinstance(helper, str) or not HELPER_RE.match(helper):
                 raise V.bad("helper", "must match ^[a-z0-9_-]{1,16}$")
             args["helper"] = helper
-        return _admin_result(await self.bridge.request("events", args, channel="poll"))
+        resp = await self.bridge.request("events", args, channel="poll")
+        data = resp.get("data") if isinstance(resp, dict) else None
+        if resp.get("ok") and isinstance(data, dict) and isinstance(data.get("events"), list):
+            # the same `fit: null` as partner_wait adds (ACTIONS.md, revision 3.5)
+            events = [_fit_null(ev) if isinstance(ev, dict) else ev for ev in data["events"]]
+            resp = dict(resp, data=dict(data, events=events))
+        return _admin_result(resp)
 
     async def close(self) -> None:
         await self.bridge.close()

@@ -48,6 +48,8 @@ REQUIRED = (
     # ревизия 3.3: жидкость и выходы с участка, поиск места для чертежа, лента до базы, заметки смены
     "partner_access", "narrow_access", "enclosed", "on_liquid", "fit", "rotate", "partial", "plan_belt",
     "areas", "need", "chosen", "forge_too_old", "только как факты", "без подтверждения хозяина",
+    # ревизия 3.5: стройка ленты встала — осмотреться, переложить остаток, не больше трёх раз подряд
+    '"from":"resume"', "resumed", "unseen", "blocked_total", "трёх перекладок подряд",
 )
 # порядок шагов поручения «добыча с лентой» в примере (PLAN «Волна 4»)
 MINING_ORDER = ("partner_access", "plan_mining", "plan_belt", "collect", "build_ghosts")

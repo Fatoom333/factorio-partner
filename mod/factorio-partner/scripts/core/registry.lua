@@ -245,6 +245,7 @@ function M.set_body(id, entity)
   attach(rec, entity)
   rec.spawned_tick = game.tick
   rec.corpse_pos = nil
+  rec.died_surface = nil -- возрождение: поверхность смерти больше не нужна (PROTOCOL «Уточнения 3.5»)
   rec.away = nil
   rec.away_pos = nil
   rec.away_surface = nil

@@ -108,10 +108,11 @@ def pos_or_player(field: str, v: Any):
 
 
 def pos_or_patch(field: str, v: Any):
-    """``plan_belt.from``: a tile, or ``"patch"`` — the outputs of this helper's last plan_mining."""
+    """``plan_belt.from``: a tile, ``"patch"`` — the outputs of this helper's last plan_mining, or
+    ``"resume"`` — re-lay the unbuilt rest of this helper's last belt plan (revision 3.5)."""
     if isinstance(v, str):
-        if v != "patch":
-            raise bad(field, 'must be {x, y} or "patch"')
+        if v not in ("patch", "resume"):
+            raise bad(field, 'must be {x, y}, "patch" or "resume"')
         return v
     return pos(field, v)
 
@@ -239,7 +240,7 @@ ACTIONS: dict[str, tuple[dict[str, Validator], tuple[str, ...], tuple[tuple[tupl
                     (), ((("area", "near"), True),)),
     "plan_belt": ({"from": pos_or_patch, "to": pos, "belt": name, "lanes": integer(1, BELT_LANES_MAX),
                    "underground": UNDERGROUND, "start_direction": SIDE, "dry_run": boolean},
-                  ("from", "to"), ()),
+                  ("from",), ()),   # `to` is required too, except with from="resume" (check_act)
     "wait": ({"seconds": integer(1, 600)}, ("seconds",), ()),
 }
 
@@ -262,6 +263,9 @@ def check_act(do: Any, args: Any) -> dict:
     for k in required:
         if k not in out:
             raise bad(f"args.{k}", "required")
+    if do == "plan_belt" and out["from"] != "resume" and "to" not in out:
+        # from="resume" takes the target from the remembered plan (ACTIONS.md, revision 3.5)
+        raise bad("args.to", 'required (optional only with from="resume")')
     for group, exactly_one in groups:
         n = sum(1 for k in group if k in out)
         if n > 1:

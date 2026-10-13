@@ -276,7 +276,9 @@ S.suite("belt_plan", {
       S.err(C.act("plan_belt", { from = P(0, 0), to = P(5, 0), lanes = 0 }), "bad_args")
       S.err(C.act("plan_belt", { from = "base", to = P(5, 0) }), "bad_args")
       S.err(C.act("plan_belt", { from = P(0, 0), to = P(5, 0), underground = "always" }), "bad_args")
-      S.err(C.act("plan_belt", { from = P(0, 0) }), "bad_args")
+      -- to обязателен, кроме from = "resume": проверяет само действие (отказ задачи, а не команды)
+      d = X.plan{ from = P(0, 0) }
+      S.eq(d.code, "bad_args")
       S.eq(#X.ghosts(), 0)
   end },
   { "неоткрытые чанки на пути обходятся", function()

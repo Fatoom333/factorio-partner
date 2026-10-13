@@ -3,10 +3,10 @@
 -- чанки), §6.12 (свойства мира — из игры). Поиск пути — решатель мода Wuastbude Belt & Pipe Router
 -- (MIT, scripts/vendor/router), слой игры — scripts/lib/beltpath.lua.
 --
--- args: from: pos │ "patch", to: pos, belt?, lanes? = 1 (1..4), underground? = "auto" │ "never" │ "prefer",
+-- args: from: pos │ "patch" │ "resume", to: pos (у "resume" необязателен), belt?, lanes? = 1 (1..4), underground? = "auto" │ "never" │ "prefer",
 --       start_direction?: "north" │ "east" │ "south" │ "west", dry_run?
 -- done.detail: {ghosts, length, undergrounds, turns, need, area, areas?, path, warnings, lanes,
---               chosen = {belt, underground?}, skipped?, dry_run?}
+--               chosen = {belt, underground?}, skipped?, dry_run?, resumed? = {built, removed, rotate?}}
 -- failed: bad_args, limit (дальше 512 клеток, больше 16 выходов разметки), not_found (нет разметки
 --         для "patch"), not_charted, cannot_place (начало или конец на плитке без опоры; ни один
 --         призрак не встал), path_failed (пути нет или кончился бюджет поиска; detail.reached).
@@ -25,20 +25,38 @@
 --     ленты ищутся по одной, каждая справа от первой (предупреждение `not_bundled`);
 --   * от разметки ("patch") — выходы делятся на `lanes` соседних групп; у группы одна лента идёт до
 --     цели, остальные выходы группы вливаются в неё сбоку у пятна.
+--
+-- Перекладка (`from = "resume"`, ACTIONS.md «Уточнения ревизии 3.5»): «планируем по карте, на месте
+-- перепроверяем». Удачный план запоминается в storage.belt_last[helper] (клетки по лентам, ≤ 4096).
+-- Перекладка берёт его и по каждой ленте:
+--   * построенная часть — непрерывный ряд клеток от начала ленты, где уже стоит настоящая лента;
+--     её конец — новое начало. Если следующая за ним клетка по ходу свободна, поиск идёт от неё
+--     (построенная лента смотрит прямо в новую); иначе — от самой построенной клетки, и если путь
+--     от неё поворачивает, клетка попадает в `resumed.rotate` (построенную ленту план не трогает);
+--   * подземная пара, у которой построен только вход: призрак выхода на месте — он остаётся, пара
+--     достраивается, путь идёт от выхода; призрака выхода нет — путь идёт от клетки перед парой
+--     (предупреждение `dangling_underground:N`: построенный вход остался вне пути);
+--   * свои призраки лент на остальных клетках плана убираются, пометки к сносу, поставленные планом
+--     на этих клетках, снимаются; чужие призраки, призраки других построек и постройки не трогаются;
+--   * клетки плана, построенные не подряд (дальше разрыва), остаются стоять и для нового пути —
+--     обычная помеха (предупреждение `built_apart:N`).
+-- Память после перекладки — построенная часть + новый путь (перекладывать можно снова).
 local beltpath = require("scripts.lib.beltpath")
 local vis = require("scripts.core.vis")
 
 local M = {}
 M.name = "plan_belt"
 M.schema = {
-  from = { type = { "pos", "string" }, values = { "patch" }, required = true },
-  to = { type = "pos", required = true },
+  from = { type = { "pos", "string" }, values = { "patch", "resume" }, required = true },
+  to = { type = "pos" },                         -- обязателен, кроме from = "resume"
   belt = { type = "string", max = 100 },
-  lanes = { type = "int", min = 1, max = 4, default = 1 },
-  underground = { type = "enum", values = { "auto", "never", "prefer" }, default = "auto" },
+  lanes = { type = "int", min = 1, max = 4 },    -- по умолчанию 1 (у "resume" — как в плане)
+  underground = { type = "enum", values = { "auto", "never", "prefer" } }, -- по умолчанию "auto"
   start_direction = { type = "enum", values = { "north", "east", "south", "west" } },
   dry_run = { type = "bool" },
 }
+
+M.MAX_REMEMBERED = 4096       -- клеток плана в storage.belt_last (PROTOCOL §7)
 
 M.MAX_DISTANCE = 512          -- по прямой от начала до конца (ACTIONS.md)
 M.MAX_OUTPUTS = 16            -- выходов разметки на одну задачу
@@ -150,8 +168,197 @@ local function group_outputs(outputs, to, lanes)
   return trunks
 end
 
+--- Подземный конвейер для ленты belt в режиме mode │ nil (не нужен, нет или не исследован).
+local function pick_under(force, belt, mode, warnings)
+  if mode == "never" then return nil end
+  local up = prototypes.entity[belt].related_underground_belt
+  if up == nil then return nil end
+  if beltpath.unlocked(force, up.name) then return up.name end
+  if mode == "prefer" then
+    warnings[#warnings + 1] = "not_researched:" .. up.name
+    return up.name
+  end
+  return nil
+end
+
+-- ------------------------------------------------------------------ перекладка: память и начало
+
+local function cell_ok(c)
+  return type(c) == "table" and type(c.x) == "number" and type(c.y) == "number"
+end
+
+--- Запись плана цела? (storage переживает версии мода: читаем осторожно.)
+local function plan_ok(rec)
+  if type(rec) ~= "table" or type(rec.cells) ~= "table" or type(rec.ends) ~= "table" then return false end
+  if not cell_ok(rec.to) or type(rec.belt) ~= "string" then return false end
+  local total = 0
+  for li, cells in ipairs(rec.cells) do
+    local e = rec.ends[li]
+    if type(cells) ~= "table" or type(e) ~= "table" or not cell_ok(e.start) or not cell_ok(e.goal) then return false end
+    for _, c in ipairs(cells) do
+      if not cell_ok(c) or VEC[c.d] == nil then return false end
+    end
+    total = total + #cells
+  end
+  return #rec.cells > 0 and total <= M.MAX_REMEMBERED
+end
+
+--- plan_belt{from = "resume"}: разобрать запомненный план, убрать недостроенное, подготовить поиск.
+local function start_resume(task, ctx)
+  local a = task.args
+  local h = ctx.entity
+  local surface, force = h.surface, h.force
+  local all = storage.belt_last
+  local rec = type(all) == "table" and all[ctx.helper_id] or nil
+  if not plan_ok(rec) then
+    return failed("bad_args", 'args.from "resume": this helper has no remembered belt plan (run plan_belt first)')
+  end
+  if rec.surface_index ~= surface.index then
+    return failed("bad_args", 'args.from "resume": the remembered belt plan is on another surface')
+  end
+  local to = { x = floor(rec.to.x), y = floor(rec.to.y) }
+  if a.to ~= nil and (floor(a.to.x) ~= to.x or floor(a.to.y) ~= to.y) then
+    return failed("bad_args", 'args.to differs from the remembered plan (omit it with from "resume")')
+  end
+  if a.belt ~= nil and a.belt ~= rec.belt then
+    return failed("bad_args", 'args.belt differs from the remembered plan (omit it with from "resume")')
+  end
+  if a.lanes ~= nil and a.lanes ~= rec.lanes then
+    return failed("bad_args", 'args.lanes differs from the remembered plan (omit it with from "resume")')
+  end
+  local proto = prototypes.entity[rec.belt]
+  if proto == nil or proto.type ~= "transport-belt" then
+    return failed("bad_args", 'args.from "resume": the belt of the remembered plan no longer exists')
+  end
+
+  local warnings = {}
+  local mode = a.underground or rec.underground or "auto"
+  local under = pick_under(force, rec.belt, mode, warnings)
+  local W = beltpath.new_world(rec.belt, under)
+  local env = beltpath.env(W, surface, force)
+  local dry = a.dry_run and true or false
+  local built, removed, apart, dangling = 0, 0, 0, 0
+  local kept, trunks, trunk_of, pending, heads = {}, {}, {}, {}, {}
+
+  for li, cells in ipairs(rec.cells) do
+    local e = rec.ends[li]
+    local n = #cells
+    local L = 0 -- построенная часть: клетки 1..L
+    while L < n and beltpath.built_at(env, cells[L + 1].x, cells[L + 1].y, cells[L + 1].u ~= nil) do L = L + 1 end
+    built = built + L
+    local keep = L -- клетки 1..keep остаются в плане
+    if L > 0 and L < n and cells[L].u == "input" then
+      -- построен только вход подземной пары
+      local out = cells[L + 1]
+      if out.u == "output" and beltpath.own_ghost(env, out.x, out.y, true) ~= nil then
+        keep = L + 1 -- призрак выхода на месте: пара достраивается
+      else
+        keep = L - 1
+        dangling = dangling + 1
+      end
+    end
+    for i = max(keep, L) + 1, n do
+      local c = cells[i]
+      if beltpath.built_at(env, c.x, c.y, c.u ~= nil) then
+        apart = apart + 1
+      elseif dry then
+        if beltpath.own_ghost(env, c.x, c.y, c.u ~= nil) ~= nil then
+          removed = removed + 1
+          beltpath.assume_free(env, c.x, c.y, c.n)
+        end
+      else
+        if beltpath.remove_ghost(env, c.x, c.y, c.u ~= nil) then removed = removed + 1 end
+        if c.n then beltpath.unmark(env, c.x, c.y) end
+      end
+    end
+    kept[li] = {}
+    for i = 1, keep do kept[li][i] = cells[i] end
+
+    -- (e.open — прошлая перекладка оборвала эту ленту и пути не нашла: в памяти только построенное)
+    local done = keep >= n and not e.open
+    if not done and not dry then e.open = true end
+    local start
+    if keep == 0 then
+      start = { x = floor(e.start.x), y = floor(e.start.y), direction = norm_dir(e.start.direction) }
+    else
+      -- built — куда смотрит построенная лента; направление начала решателю не задаём: оно для
+      -- него жёсткое (первый шаг только туда), а путь от свободной клетки волен повернуть сразу
+      start = { x = cells[keep].x, y = cells[keep].y, built = cells[keep].d }
+    end
+    local goal = { x = floor(e.goal.x), y = floor(e.goal.y), direction = norm_dir(e.goal.direction) }
+    if e.feeder == nil then
+      trunks[#trunks + 1] = { start = start, goal = goal, feeders = {}, lane = li, done = done }
+      trunk_of[li] = #trunks
+      if not done then heads[#heads + 1] = { start = start, goal = goal } end
+    elseif not done then
+      start.lane = li
+      start.old_goal = { x = goal.x, y = goal.y, final_dir = norm_dir(e.final_dir) }
+      pending[#pending + 1] = { start = start, group = e.feeder }
+      heads[#heads + 1] = { start = start, goal = goal }
+    end
+  end
+  for _, p in ipairs(pending) do
+    local g = trunk_of[p.group]
+    if g ~= nil then
+      local list = trunks[g].feeders
+      list[#list + 1] = p.start
+    end
+  end
+
+  -- построенная лента смотрит в следующую клетку: если она свободна, новый путь начинается с неё
+  local far = 0
+  local x1, y1, x2, y2 = to.x, to.y, to.x, to.y
+  for _, hd in ipairs(heads) do
+    local s, g = hd.start, hd.goal
+    if s.built then
+      local v = VEC[s.built]
+      local ax, ay = s.x + v[1], s.y + v[2]
+      if not (ax == g.x and ay == g.y) and beltpath.cell(env, ax, ay) > 0 then
+        s.x, s.y, s.built = ax, ay, nil
+      end
+    end
+    far = max(far, abs(s.x - g.x) + abs(s.y - g.y))
+    x1, y1, x2, y2 = min(x1, s.x, g.x), min(y1, s.y, g.y), max(x2, s.x, g.x), max(y2, s.y, g.y)
+  end
+  local margin = 48 + floor(far / 4)
+
+  if not dry then
+    -- память сразу сходится с миром: в плане осталась только построенная часть
+    rec.cells = kept
+    rec.tick = ctx.tick
+  end
+  if apart > 0 then warnings[#warnings + 1] = "built_apart:" .. apart end
+  if dangling > 0 then warnings[#warnings + 1] = "dangling_underground:" .. dangling end
+
+  task.belt = {
+    W = W,
+    mode = under and mode or "never",
+    umode = mode,
+    dry = dry,
+    lanes = rec.lanes,
+    to = to,
+    bounds = { min_x = x1 - margin, min_y = y1 - margin, max_x = x2 + margin, max_y = y2 + margin },
+    stage = "search",
+    routes = {},
+    warnings = warnings,
+    expansions = 0,
+    total = M.TASK_BUDGETS * (M.BASE_EXPANSIONS + M.EXPANSIONS_PER_TILE * far),
+    ticks = 0,
+    phase = "trunk",
+    trunks = trunks,
+    ti = 1, fi = 1,
+    resumed = { built = built, removed = removed },
+  }
+  task.progress_tick = ctx.tick
+  return nil
+end
+
 function M.start(task, ctx)
   local a = task.args
+  if a.from == "resume" then return start_resume(task, ctx) end
+  if a.to == nil then return failed("bad_args", "args.to: required") end
+  a.lanes = a.lanes or 1
+  a.underground = a.underground or "auto"
   local h = ctx.entity
   local surface, force = h.surface, h.force
   local to = { x = floor(a.to.x), y = floor(a.to.y) }
@@ -205,22 +412,12 @@ function M.start(task, ctx)
   if belt == nil then return failed("bad_args", "no transport belt is researched, set args.belt") end
 
   local warnings = {}
-  local under
-  if a.underground ~= "never" then
-    local up = prototypes.entity[belt].related_underground_belt
-    if up ~= nil then
-      if beltpath.unlocked(force, up.name) then
-        under = up.name
-      elseif a.underground == "prefer" then
-        under = up.name
-        warnings[#warnings + 1] = "not_researched:" .. up.name
-      end
-    end
-  end
+  local under = pick_under(force, belt, a.underground, warnings)
 
   local B = {
     W = beltpath.new_world(belt, under),
     mode = under and a.underground or "never",
+    umode = a.underground,
     dry = a.dry_run and true or false,
     lanes = a.lanes,
     to = to,
@@ -261,6 +458,10 @@ local END_TEXT = {
 --- Запустить поиск по заданию spec = {start, goal, kind, clearance?, final_dir?}. → nil │ result (ошибка).
 local function launch(B, env, spec, retries)
   local s, g = spec.start, spec.goal
+  if s.x == g.x and s.y == g.y then
+    return failed("path_failed", "the start and the end of a belt are the same tile",
+      { reason = "unreachable", reached = center(s), left = 0, expanded = B.expansions })
+  end
   local sc, gc = beltpath.cell(env, s.x, s.y), beltpath.cell(env, g.x, g.y)
   if END_TEXT[sc] then
     return failed(sc == beltpath.UNCHARTED and "not_charted" or "cannot_place", "the start " .. END_TEXT[sc],
@@ -292,10 +493,29 @@ local function launch(B, env, spec, retries)
   return nil
 end
 
-local function add_route(B, steps, stats)
+local function point(p)
+  return { x = p.x, y = p.y, direction = p.direction }
+end
+
+--- meta = {start, goal, final_dir?, group?, lane?}: концы ленты — для памяти плана (перекладка).
+local function add_route(B, steps, stats, meta)
   beltpath.commit(B.W, steps)
-  B.routes[#B.routes + 1] = { steps = steps, stats = stats }
+  B.routes[#B.routes + 1] = {
+    steps = steps, stats = stats,
+    start = point(meta.start), goal = point(meta.goal),
+    final_dir = meta.final_dir, group = meta.group, lane = meta.lane,
+  }
   return #B.routes
+end
+
+--- Перекладка: путь начался от построенной ленты (start.built) и сразу повернул — эту ленту надо
+--- повернуть руками (план построенное не трогает).
+local function note_turn(B, start, route)
+  local first = route.edges[1]
+  if start.built and first ~= nil and first.direction ~= start.built then
+    B.rotate = B.rotate or {}
+    B.rotate[#B.rotate + 1] = { pos = center(start), direction = first.direction }
+  end
 end
 
 --- Пачка не сложилась: проба становится первой лентой, остальные ищутся по одной справа от неё.
@@ -313,7 +533,7 @@ local function split_lanes(B)
     }
   end
   local steps, stats = beltpath.route_steps(B.W, route, { skip_first = p.skip_first, skip_last = p.skip_last })
-  B.trunks[1].route = add_route(B, steps, stats)
+  B.trunks[1].route = add_route(B, steps, stats, { start = o, goal = B.to })
   B.arrival = route.edges[#route.edges].direction
   B.phase, B.ti, B.probe = "trunk", 2, nil
   B.warnings[#B.warnings + 1] = "not_bundled"
@@ -355,6 +575,11 @@ local function feeder_goals(B, env, feeder)
     return p.y < q.y
   end)
   for i = #out, M.FEEDER_TRIES + 1, -1 do out[i] = nil end
+  -- перекладка: последним — прежнее место вливания (лента группы могла не меняться)
+  local old = feeder.start.old_goal
+  if old ~= nil and beltpath.cell(env, old.x, old.y) > 0 then
+    out[#out + 1] = { x = old.x, y = old.y, final_dir = old.final_dir }
+  end
   return out
 end
 
@@ -368,9 +593,15 @@ local function next_job(B, env)
   end
   if B.phase == "trunk" then
     local trunk = B.trunks[B.ti]
+    while trunk ~= nil and trunk.done do -- перекладка: эта лента уже построена целиком
+      B.ti = B.ti + 1
+      trunk = B.trunks[B.ti]
+    end
     if trunk ~= nil then
       local goal = { x = B.to.x, y = B.to.y }
-      if B.ti > 1 then
+      if trunk.goal ~= nil then
+        goal = trunk.goal -- перекладка: цель каждой ленты — как в плане
+      elseif B.ti > 1 then
         -- следующие ленты приходят к цели так же, как первая, и встают справа от неё
         local rx, ry = right_of(B.arrival)
         goal = { x = B.to.x + rx * (B.ti - 1), y = B.to.y + ry * (B.ti - 1), direction = B.arrival }
@@ -439,7 +670,11 @@ local function bundle(B, env, route)
   end
   for _, p in ipairs(plans) do
     local steps, stats = beltpath.route_steps(B.W, p.lane, p.opts)
-    add_route(B, steps, stats)
+    local nodes, first = p.lane.nodes, p.lane.edges[1]
+    add_route(B, steps, stats, {
+      start = { x = nodes[1].x, y = nodes[1].y, direction = first and first.direction or nil },
+      goal = { x = nodes[#nodes].x, y = nodes[#nodes].y },
+    })
   end
   return true
 end
@@ -495,7 +730,9 @@ local function on_result(B, env, status, route)
       end
       return nil
     end
-    B.trunks[B.ti].route = add_route(B, steps, stats)
+    local trunk = B.trunks[B.ti]
+    note_turn(B, trunk.start, route)
+    trunk.route = add_route(B, steps, stats, { start = job.start, goal = job.goal, lane = trunk.lane })
     if B.ti == 1 then
       local last = route.edges[#route.edges]
       B.arrival = last and last.direction or job.start.direction or dir_from(B.to.x - job.start.x, B.to.y - job.start.y)
@@ -508,7 +745,10 @@ local function on_result(B, env, status, route)
   local f = B.feeders[B.fi]
   if status == "found" then
     local steps, stats = beltpath.route_steps(B.W, route, { skip_first = job.skip_first, final_dir = job.final_dir })
-    local index = add_route(B, steps, stats)
+    note_turn(B, f.start, route)
+    local index = add_route(B, steps, stats, {
+      start = job.start, goal = job.goal, final_dir = job.final_dir, group = f.group, lane = f.start.lane,
+    })
     B.routes[index].feeder = true
     local routes = B.trunks[f.group].routes
     routes[#routes + 1] = index
@@ -557,6 +797,7 @@ local function scan_tick(B, env, ctx)
   local last = min(#B.flat, B.scan_i + M.SCAN_PER_TICK - 1)
   for i = B.scan_i, last do
     local s = B.flat[i]
+    if beltpath.unseen(env, s.x, s.y) then B.unseen = (B.unseen or 0) + 1 end
     if not B.narrow and s.utype == nil and beltpath.width_at(env, s) <= 2 then B.narrow = true end
     if not B.near_enemy and (i - 1) % M.ENEMY_EVERY == 0 then
       enemies = enemies or enemy_forces(env.force)
@@ -619,6 +860,8 @@ local function detail_of(B)
   if B.marked > 0 then warnings[#warnings + 1] = "marked_for_deconstruction:" .. B.marked end
   if B.skipped > 0 then warnings[#warnings + 1] = "skipped:" .. B.skipped end
   if (B.unmerged or 0) > 0 then warnings[#warnings + 1] = "unmerged_outputs:" .. B.unmerged end
+  if (B.unseen or 0) > 0 then warnings[#warnings + 1] = "unseen:" .. B.unseen end
+  if B.rotate ~= nil then warnings[#warnings + 1] = "rotate_needed:" .. #B.rotate end
 
   local lanes = 0
   for _, r in ipairs(B.routes) do
@@ -636,6 +879,9 @@ local function detail_of(B)
     chosen = { belt = B.W.belt, underground = B.W.under },
     dry_run = B.dry or nil,
   }
+  if B.resumed ~= nil then
+    d.resumed = { built = B.resumed.built, removed = B.resumed.removed, rotate = B.rotate }
+  end
   if #corners > #path then d.path_total = #corners end
   if B.skipped > 0 then d.skipped = B.skipped end
   if (B.merged or 0) > 0 then d.merged = B.merged end
@@ -653,7 +899,72 @@ local function detail_of(B)
   return d
 end
 
-local function place_tick(B, env)
+local function plan_cell(s)
+  return { x = s.x, y = s.y, d = s.dir, u = s.utype, n = s.natural or nil }
+end
+
+--- Запомнить поставленный план в storage.belt_last[helper] (PROTOCOL §7): его читает from = "resume".
+--- План длиннее MAX_REMEMBERED клеток не запоминается (и прежний забывается: он уже не последний).
+local function remember(B, ctx)
+  if type(storage.belt_last) ~= "table" then storage.belt_last = {} end
+  local mem, id = storage.belt_last, ctx.helper_id
+  if B.resumed ~= nil then
+    -- перекладка: в памяти осталась построенная часть — к ней дописывается новый путь
+    local rec = mem[id]
+    if type(rec) ~= "table" or type(rec.cells) ~= "table" then return end
+    for _, r in ipairs(B.routes) do
+      local cells = r.lane and rec.cells[r.lane] or nil
+      if cells ~= nil then
+        for _, s in ipairs(r.steps) do cells[#cells + 1] = plan_cell(s) end
+        rec.ends[r.lane].open = nil
+        if r.group ~= nil then
+          rec.ends[r.lane].goal, rec.ends[r.lane].final_dir = r.goal, r.final_dir
+        end
+      end
+    end
+    local total = 0
+    for _, cells in ipairs(rec.cells) do total = total + #cells end
+    if total > M.MAX_REMEMBERED then
+      mem[id] = nil
+      return
+    end
+    rec.underground, rec.tick = B.umode, ctx.tick
+    return
+  end
+  local total = 0
+  for _, r in ipairs(B.routes) do total = total + #r.steps end
+  if total > M.MAX_REMEMBERED then
+    mem[id] = nil
+    return
+  end
+  local cells, ends = {}, {}
+  for i, r in ipairs(B.routes) do
+    cells[i] = {}
+    for j, s in ipairs(r.steps) do cells[i][j] = plan_cell(s) end
+    local trunk = r.group and B.trunks[r.group] or nil
+    ends[i] = { start = r.start, goal = r.goal, final_dir = r.final_dir, feeder = trunk and trunk.route or nil }
+  end
+  mem[id] = {
+    surface_index = ctx.entity.surface.index, to = center(B.to), belt = B.W.belt, underground = B.umode,
+    lanes = B.lanes, cells = cells, ends = ends, tick = ctx.tick,
+  }
+end
+
+--- Убрать призраки, которые эта задача уже поставила (отказ по времени). → сколько убрано.
+local function unplace(B, env)
+  local n = 0
+  if B.dry or B.flat == nil or B.place_i == nil then return 0 end
+  for i = 1, min(#B.flat, B.place_i - 1) do
+    local s = B.flat[i]
+    if s.placed then
+      if beltpath.remove_ghost(env, s.x, s.y, s.utype ~= nil) then n = n + 1 end
+      if s.natural then beltpath.unmark(env, s.x, s.y) end
+    end
+  end
+  return n
+end
+
+local function place_tick(B, env, ctx)
   B.box = B.box or {}
   B.parts = B.parts or {}
   local last = min(#B.flat, B.place_i + M.PLACE_PER_TICK - 1)
@@ -662,6 +973,7 @@ local function place_tick(B, env)
     local ok, marked = beltpath.place(env, s, B.dry)
     B.marked = B.marked + marked
     if ok then
+      if not B.dry then s.placed = true end
       B.placed = B.placed + 1
       local item, count = beltpath.item_of(s.name)
       if item then B.need[item] = (B.need[item] or 0) + count end
@@ -677,9 +989,11 @@ local function place_tick(B, env)
   B.place_i = last + 1
   if B.place_i <= #B.flat then return nil end
   local detail = detail_of(B)
-  if B.placed == 0 then
+  if B.placed == 0 and not (B.resumed ~= nil and #B.flat == 0) then
+    -- (перекладка, которой нечего достраивать, — не отказ: ghosts = 0)
     return failed("cannot_place", "no belt ghost could be placed", detail)
   end
+  if not B.dry then remember(B, ctx) end
   return { status = "done", detail = detail }
 end
 
@@ -690,24 +1004,33 @@ function M.tick(task, ctx)
   if B == nil then return failed("internal", "plan_belt: state is lost") end
   B.ticks = B.ticks + 1
   task.progress_tick = ctx.tick -- расчёт идёт, тело стоит: «пульс» (ACTIONS.md)
-  if B.ticks > M.MAX_TICKS then
-    task.belt = nil
-    -- дольше лимита времени — тот же отказ, что исчерпанный бюджет поиска (ACTIONS.md, уточнения 3.4)
-    local running = B.stage == "search" and type(B.search) == "table" and tonumber(B.search.expansions) or 0
-    return failed("path_failed", "plan_belt did not finish in time",
-      { reason = "budget", expanded = B.expansions + running, lane = B.ti })
-  end
   local h = ctx.entity
   local env = beltpath.env(B.W, h.surface, h.force)
+  if B.ticks > M.MAX_TICKS then
+    task.belt = nil
+    -- дольше лимита времени — тот же отказ, что исчерпанный бюджет поиска (ACTIONS.md, уточнения 3.4);
+    -- призраки, которые задача успела поставить, она убирает сама (уточнения 3.5)
+    local running = B.stage == "search" and type(B.search) == "table" and tonumber(B.search.expansions) or 0
+    local removed = unplace(B, env) + (B.resumed and B.resumed.removed or 0)
+    return failed("path_failed", "plan_belt did not finish in time",
+      { reason = "budget", expanded = B.expansions + running, lane = B.ti, removed = removed })
+  end
   local result
   if B.stage == "search" then
     result = search_tick(B, env)
   elseif B.stage == "scan" then
     result = scan_tick(B, env, ctx)
   else
-    result = place_tick(B, env)
+    result = place_tick(B, env, ctx)
   end
-  if result ~= nil then task.belt = nil end
+  if result ~= nil then
+    task.belt = nil
+    if result.status == "failed" and B.resumed ~= nil then
+      -- старые призраки уже убраны (иначе дроны достроят ленту в тупик): сказать, сколько
+      result.detail = result.detail or {}
+      result.detail.removed = B.resumed.removed
+    end
+  end
   return result
 end
 
