@@ -47,7 +47,7 @@ MIN_PYTHON = (3, 11)
 # инструмент агента (MCP.md) -> метод Core; служебные — только те, что нужны стенду
 TOOLS = {
     "brief": "op_brief", "state": "op_state", "map": "op_map", "resources": "op_resources",
-    "stock": "op_stock", "find": "op_find", "ghosts": "op_ghosts", "rates": "op_rates",
+    "stock": "op_stock", "find": "op_find", "access": "op_access", "ghosts": "op_ghosts", "rates": "op_rates",
     "recipes": "op_recipes", "act": "op_act", "cancel": "op_cancel", "wait": "op_wait",
     "reflex": "op_reflex", "say": "op_say", "plan": "op_plan",
 }
