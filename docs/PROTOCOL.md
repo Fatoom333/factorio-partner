@@ -248,7 +248,7 @@ MCP-сервер `factorio_partner` (Python) общаются **только** �
 - Файл `control.lua` принадлежит ядру: модули других потоков регистрируются в списке ядра, сами
   `control.lua` не правят (правку просят у владельца ядра).
 - Ключи верхнего уровня `storage`: `proto`, `helpers`, `jobs`, `events`, `recent`, `blobs`,
-  `reservations`, `vision`, `reflexes`, `reflex_state`, `path_requests`. Модуль пишет только под своим ключом;
+  `reservations`, `vision`, `reflexes`, `reflex_state`, `path_requests`, `mining_last` (выходы последней разметки `plan_mining` на помощника: `{surface, outputs=[{pos, direction}], tick}` — их читает `plan_belt{from:"patch"}`). Модуль пишет только под своим ключом;
   миграции — `scripts/core/migrate.lua` (A).
 - **Два вида тела** (флаг запуска напарника `--body character│player`, по умолчанию `character`):
   - `character` — тело без игрока, создаёт `helper_spawn` (всё описанное выше).
