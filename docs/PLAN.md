@@ -136,3 +136,12 @@
 - разметка: мёртвая ветка с именем плитки в `vendor/mpp/layouts/simple.lua` (только Space Exploration)
   — убрать или пометить;
 - сценарии: `plan_belt` в e2e идёт с `underground:"never"` и одной лентой — добавить `auto` и пачку.
+
+## Поток R — перекладка ленты (ревизия 3.5)
+Один поток, файлы: `scripts/actions/plan_belt.lua`, `scripts/lib/beltpath.lua`, одна строка ключа
+`belt_last` в `scripts/core/migrate.lua`, тесты и сценарии `belt_*`, `server/**` (белый список),
+`.claude/agents/partner.md`, `agents/**`, `docs/E2E.md`. Состав: `storage.belt_last`, `from:"resume"`,
+предупреждение `unseen:N`, уборка своих призраков при отказе по времени, `fit:null` в `admin_events`,
+очистка `died_surface` при возрождении, `PYTHONPATH=server` для `agents/tests` в конфиге pytest,
+сценарий `belt_resume` (помощник честно ставит помеху на пути недостроенной ленты → перекладка обходит
+её, старые призраки убраны, построенная часть цела).
