@@ -31,6 +31,11 @@ M.PROGRESS_EVERY = 5 * 60      -- job_progress не чаще раза в 5 с
 
 M.actions = {}                 -- name -> модуль действия (не в storage)
 
+-- Тело-игрок (PROTOCOL §7 «Два вида тела», поток P): scripts/core/attach.lua ставит сюда свои
+-- функции. before_tick(tick) — до действий (сверка с игроком, удержание ходьбы и добычи),
+-- after_tick(tick) — после них (запомнить состояния). Ошибки внутри они ловят сами.
+M.body_hooks = { before_tick = nil, after_tick = nil }
+
 --- Зарегистрировать модуль действия (из control.lua через init.register_action).
 function M.register(mod)
   if type(mod) ~= "table" or type(mod.name) ~= "string" or mod.name == "" then
@@ -245,6 +250,8 @@ end
 
 function M.on_tick(e)
   local tick = e.tick
+  local hooks = M.body_hooks
+  if hooks.before_tick then hooks.before_tick(tick) end
   for helper, q in pairs(J().by_helper) do
     if q.active ~= nil or q.queue[1] ~= nil then
       local rec, entity = registry.alive(helper)
@@ -255,6 +262,7 @@ function M.on_tick(e)
       end
     end
   end
+  if hooks.after_tick then hooks.after_tick(tick) end
 end
 
 -- ------------------------------------------------------------------ операции
