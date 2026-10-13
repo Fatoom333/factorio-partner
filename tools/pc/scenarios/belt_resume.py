@@ -140,7 +140,9 @@ def run(client) -> dict:
     belts, truncated = E.belt_cells(api, watch, [belt])
     if truncated:
         reasons.append("карта обрезала список лент — сверка неполная")
-    built = {c: b for c, b in belts.items() if not b["ghost"]}
+    # у базы на карте есть чужие ленты того же вида: построенным считаем только клетки плана
+    row_set = set(row)
+    built = {c: b for c, b in belts.items() if not b["ghost"] and c in row_set}
     prefix = 0
     while prefix < len(row) and row[prefix] in built:
         prefix += 1
