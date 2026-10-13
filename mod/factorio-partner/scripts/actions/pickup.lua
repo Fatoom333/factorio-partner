@@ -7,8 +7,8 @@
 --   (сторона ≤ 128); живое (PROTOCOL §6.7): берутся только видимые предметы (видимый чанк или
 --   уже в досягаемости помощника), если в области есть только невидимые — not_visible. Обходит
 --   ближайший-первым, к каждому подходит на item_pickup_distance; не больше 500 за задачу.
--- done.detail = {picked: items, left?: items}; инвентарь полон — inventory_full; ничего не
--- подобрано из-за этого — failed{stuck, reason:"inventory_full"}.
+-- done.detail = {picked: items}; инвентарь полон — событие inventory_full и failed{no_space}
+-- (detail: picked и, у трупа, left).
 local util = require("scripts.core.util")
 local inv = require("scripts.lib.inventory")
 
@@ -36,11 +36,12 @@ function M.start(task, ctx)
     task.corpse = t
     return nil
   end
+  local see = inv.viewer(ctx)
   local found = h.surface.find_entities_filtered{ area = a.area, type = "item-entity" }
   local list, hidden = {}, 0
   for _, e in ipairs(found) do
     if e.valid and inv.allowed_force(h, e) and e.stack.valid_for_read and inv.is_normal(e.stack.quality) then
-      if inv.visible(h, e.position) or inv.in_reach(h, e, "reach") then
+      if see(e.position) or inv.in_reach(h, e, "reach") then
         if #list < M.MAX_ITEMS then list[#list + 1] = e end
       else
         hidden = hidden + 1
@@ -97,8 +98,7 @@ local function tick_corpse(task, ctx)
   local detail = { picked = task.picked }
   if next(left) ~= nil then
     detail.left = left
-    if next(task.picked) == nil then return inv.full_result(task, ctx, detail) end
-    inv.inventory_full(task, ctx)
+    return inv.full_result(task, ctx, detail)
   end
   return inv.done(detail)
 end
@@ -145,10 +145,7 @@ local function tick_area(task, ctx)
     -- не влезло: инвентарь полон
     inv.stop_approach(task, ctx)
     local detail = { picked = task.picked }
-    if next(task.picked) == nil then return inv.full_result(task, ctx, detail) end
-    inv.inventory_full(task, ctx)
-    detail.reason = "inventory_full"
-    return inv.done(detail)
+    return inv.full_result(task, ctx, detail)
   end
   -- подобранный предмет из списка убрать, даже если сущность ещё жива до конца тика
   for i = #task.items, 1, -1 do

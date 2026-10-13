@@ -63,6 +63,10 @@ S.suite("schema", {
       S.eq(schema().validate(sch, { target = { unit_number = 12 } }).target, { unit_number = 12 })
       S.eq(schema().validate(sch, { target = { name = "tree-01", pos = { x = 1, y = 2 } } }).target,
         { name = "tree-01", pos = { x = 1, y = 2 } })
+      S.eq(schema().validate(sch, { target = { unit_number = 12, pos = { x = 1, y = 2 } } }).target,
+        { unit_number = 12, pos = { x = 1, y = 2 } }, "unit_number + pos (запасной поиск, ACTIONS.md)")
+      bad(sch, { target = { unit_number = 12, pos = { x = 1 } } }, "args.target.pos")
+      bad(sch, { target = { unit_number = 12, pos = { x = 1, y = 2 }, name = "x" } }, "args.target")
       bad(sch, { target = { unit_number = 1.5 } }, "unit_number")
       bad(sch, { target = { unit_number = 1, name = "x" } }, "args.target")
       bad(sch, { target = { name = "x" } }, "args.target.pos")

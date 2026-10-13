@@ -6,6 +6,7 @@
 -- К хозяину и к сущности подход идёт к их текущей позиции (цель может двигаться).
 local owner = require("scripts.core.owner")
 local util = require("scripts.core.util")
+local target = require("scripts.core.target")
 
 local M = {}
 M.name = "approach"
@@ -20,23 +21,13 @@ local function failed(code, text)
 end
 
 --- Найти цель `target` для помощника entity → LuaEntity | nil, result.
---- Только своя сила или neutral (PROTOCOL §6.6), иначе not_found.
+--- Поиск общий (scripts.core.target.resolve): своя сила или neutral (PROTOCOL §6.6),
+--- иначе not_found; другая поверхность — not_reachable.
 function M.resolve_target(t, entity)
-  local ent
-  if t.unit_number ~= nil then
-    ent = game.get_entity_by_unit_number(t.unit_number)
-  else
-    if prototypes.entity[t.name] == nil then return nil, failed("not_found", "unknown entity") end
-    ent = entity.surface.find_entity(t.name, t.pos)
-    if ent == nil then
-      ent = entity.surface.find_entities_filtered{ name = t.name, position = t.pos, radius = 0.5, limit = 1 }[1]
-    end
-  end
-  if ent == nil or not ent.valid then return nil, failed("not_found", "target not found") end
-  local f = ent.force and ent.force.name
-  if f ~= entity.force.name and f ~= "neutral" then return nil, failed("not_found", "target not found") end
-  if ent.surface.index ~= entity.surface.index then
-    return nil, failed("not_reachable", "target is on another surface")
+  local ent, why = target.resolve(entity.surface, t, entity.force)
+  if ent == nil then
+    if why == "other_surface" then return nil, failed("not_reachable", "target is on another surface") end
+    return nil, failed("not_found", "target not found")
   end
   return ent
 end

@@ -93,7 +93,11 @@ do
   f.set_visible(0, 0, false)                    -- x 0..31 открыт, но не виден
   s.add(G.entity { name = "small-biter", type = "unit", pos = { x = 25.5, y = 10.5 }, force = w.enemy })
   s.add(G.entity { name = "iron-chest", type = "container", pos = { x = 35.5, y = 10.5 }, force = f })
-  local d = require("scripts.perception.map").ops.map({ radius = 5 }, ctx)
+  -- «глаза» помощника (PROTOCOL §6.7): враг ≤ 32 клеток от тела виден и в невидимом чанке
+  local seen = require("scripts.perception.map").ops.map({ radius = 5 }, ctx)
+  G.eq(cell(seen, 25, 10), "X", "enemy near the helper body is visible")
+  -- без помощника в ctx (helper_id=nil) работает только is_chunk_visible
+  local d = require("scripts.perception.map").ops.map({ radius = 5 }, { entity = e })
   G.plain(d)
   G.eq(cell(d, 25, 10), ".", "enemy in not-visible chunk not drawn")
   G.eq(cell(d, 31, 10), ".")
@@ -112,7 +116,7 @@ do
   w.force.set_charted(1, 0, false)
   w.force.set_visible(0, 0, false)
   w.surface.add(G.entity { name = "small-biter", type = "unit", pos = { x = 25.5, y = 10.5 }, force = w.enemy })
-  local d = require("scripts.perception.map").ops.map({ radius = 5 }, ctx)
+  local d = require("scripts.perception.map").ops.map({ radius = 5 }, { entity = e })
   for _, it in ipairs(d.entities) do G.ok(it.name ~= "small-biter", "biter must not be listed") end
   G.eq(cell(d, 30, 10), "@")
 end

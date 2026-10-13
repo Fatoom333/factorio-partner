@@ -49,6 +49,21 @@ S.suite("move_approach", {
       S.eq(B.run(j4, 5).data.code, "not_found")
   end },
 
+  { "approach к постройке, которую движок не находит по unit_number — через pos", function()
+      B.setup()
+      local chest = S.nauvis.create_entity{ name = "iron-chest", position = { x = 15.5, y = 0.5 }, force = "player" }
+      local find = game.get_entity_by_unit_number
+      game.get_entity_by_unit_number = function(n)
+        local e = find and find(n)
+        if e ~= nil and e.type == "container" then return nil end
+        return e
+      end
+      local j0 = B.act("approach", { target = { unit_number = chest.unit_number } }).job
+      S.eq(B.run(j0, 5).data.code, "not_found")
+      local j1 = B.act("approach", { target = { unit_number = chest.unit_number, pos = { x = 15.5, y = 0.5 } } }).job
+      S.eq(B.run(j1, 1000).kind, "job_done")
+  end },
+
   { "цель на другой поверхности -> not_reachable", function()
       B.setup()
       local v = S.surface{ name = "vulcanus" }

@@ -61,7 +61,7 @@ S.suite("move_walk", {
       B.setup()
       S.err(S.req("act", { ["do"] = "walk", args = {} }, "h1"), "bad_args")
       S.err(S.req("act", { ["do"] = "walk", args = { to = "home" } }, "h1"), "bad_args")
-      S.err(S.req("act", { ["do"] = "walk", args = { to = { x = 1, y = 1 }, radius = 65 } }, "h1"), "bad_args")
+      S.err(S.req("act", { ["do"] = "walk", args = { to = { x = 1, y = 1 }, radius = 65 } }, "h1"), "limit")
       S.err(S.req("act", { ["do"] = "walk", args = { to = { x = 1, y = 1 }, speed = 3 } }, "h1"), "bad_args")
   end },
 

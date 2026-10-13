@@ -112,7 +112,7 @@ local function ghosts_op(args, ctx)
     if e then
       have_helper = C.inv_counts(e.get_inventory(defines.inventory.character_main), need)
     end
-    have_stock = stock.scan(surface, force, center, M.STOCK_RADIUS, need).total
+    have_stock = stock.scan(surface, force, center, M.STOCK_RADIUS, need, where.helper_id).total
   end
   local missing = {}
   for name, n in pairs(need) do

@@ -152,8 +152,14 @@ end
 function checkers.target(v, spec, path)
   if type(v) ~= "table" then fail(path, "expected target {unit_number} or {name, pos}") end
   if v.unit_number ~= nil then
-    for k in pairs(v) do if k ~= "unit_number" then fail(path, "unexpected field " .. tostring(k)) end end
+    -- {unit_number, pos?}: pos нужен, когда get_entity_by_unit_number не находит постройку (ACTIONS.md)
+    for k in pairs(v) do
+      if k ~= "unit_number" and k ~= "pos" then fail(path, "unexpected field " .. tostring(k)) end
+    end
     if not is_int(v.unit_number) or v.unit_number < 0 then fail(path .. ".unit_number", "expected integer") end
+    if v.pos ~= nil then
+      return { unit_number = v.unit_number, pos = checkers.pos(v.pos, spec, path .. ".pos") }
+    end
     return { unit_number = v.unit_number }
   end
   for k in pairs(v) do
