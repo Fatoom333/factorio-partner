@@ -269,19 +269,37 @@ S.suite("mining_args", {
       S.eq(tiles, 1)
       S.eq(d2.detail.ghosts, #X.ghosts())
   end },
-  { "лава (Space Age) считается как вода: слой lava_tile ищется, если он есть в игре", function()
+  { "плитки без опоры ищутся по маске бура из прототипа, а не по именам слоёв или плиток (PROTOCOL §6.12)", function()
       X.setup()
       X.patch("iron-ore", 0, 0, 12, 9)
       X.plan{ near = { x = 5, y = 4 }, dry_run = true }
-      S.eq(X.tile_masks[#X.tile_masks], { "water_tile" }, "без Space Age — только вода")
-      prototypes.collision_layer = { lava_tile = { name = "lava_tile" } }
-      X.plan{ near = { x = 5, y = 4 }, dry_run = true, options = { landfill = true } }
-      S.ok(#X.tile_masks >= 2)
-      S.eq(X.tile_masks[#X.tile_masks], { "water_tile", "lava_tile" })
-      -- avoid_water=false и без отсыпки: тайлы вообще не запрашиваются
+      local layers = {}
+      for layer in pairs(prototypes.entity["electric-mining-drill"].collision_mask.layers) do layers[#layers + 1] = layer end
+      table.sort(layers)
+      S.eq(X.tile_masks[#X.tile_masks], layers, "раскладка спрашивает плитки, с которыми сталкивается бур")
+      -- у бура из мода другая маска — запрос другой
+      prototypes.entity["electric-mining-drill"].collision_mask = { layers = { mod_mist_layer = true } }
+      X.plan{ near = { x = 5, y = 4 }, dry_run = true }
+      S.eq(X.tile_masks[#X.tile_masks], { "mod_mist_layer" })
+      -- маски нет вовсе: плитки не запрашиваются с пустым фильтром (он вернул бы всё подряд)
+      prototypes.entity["electric-mining-drill"].collision_mask = nil
       local n = #X.tile_masks
-      X.plan{ near = { x = 5, y = 4 }, dry_run = true, options = { avoid_water = false } }
-      S.eq(#X.tile_masks, n)
+      local d, kind = X.plan{ near = { x = 5, y = 4 }, dry_run = true }
+      S.eq(kind, "job_done", S.dump(d))
+      for i = n + 1, #X.tile_masks do S.ok(#X.tile_masks[i] > 0, "пустой фильтр плиток") end
+  end },
+  { "avoid_water=false без отсыпки: раскладка плитки не запрашивает и on_liquid не пишет", function()
+      X.setup()
+      X.patch("iron-ore", 0, 0, 12, 9)
+      X.pool(0, 0, 3, 3, "lava")
+      -- запросы плиток делает ещё расчёт выходов (маска тела) — их не считаем
+      local body = {}
+      for layer in pairs(prototypes.entity.character.collision_mask.layers) do body[#body + 1] = layer end
+      table.sort(body)
+      local d, kind = X.plan{ near = { x = 8, y = 4 }, dry_run = true, options = { avoid_water = false } }
+      S.eq(kind, "job_done", S.dump(d))
+      for _, mask in ipairs(X.tile_masks) do S.eq(mask, body, "запрос плиток не от расчёта выходов") end
+      for _, w in ipairs(d.detail.warnings) do S.ok(not w:find("^on_liquid"), w) end
   end },
   { "рецепт с другим именем, чем предмет, тоже открывает постройку", function()
       X.setup{ research = { "transport-belt", "small-electric-pole" } }

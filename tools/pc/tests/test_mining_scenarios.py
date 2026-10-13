@@ -33,7 +33,14 @@ class Model:
 
     def __init__(self, patches=None, mod="factorio-partner 0.1.0", belt_dir=None, lose=0, uncovered=0,
                  shift=0, bad_modes=("logistics", "compact_logistics", "sparse_logistics"), broken_mode=None,
-                 occupied=False, existing=0, sparse_drills=None, no_underground=False, never_done=False):
+                 occupied=False, existing=0, sparse_drills=None, no_underground=False, never_done=False,
+                 lava=(), warnings=(), real_warnings=None, access=None, access_fails=None):
+        self.lava = set(lava)             # клетки жидкости на карте (`~`)
+        self.warnings = list(warnings)    # предупреждения разметки (ревизия 3.3)
+        self.real_warnings = real_warnings  # у настоящего прогона другие, чем у сухого
+        self.access = access or {}        # поправки к ответу access
+        self.access_fails = access_fails
+        self.access_calls = []
         self.mod = mod
         self.patches = list(patches if patches is not None else [OIL, PATCH])
         self.ghosts = {}      # (x, y) -> (имя, dir)
@@ -130,7 +137,9 @@ class Model:
             need[name] = need.get(name, 0) + 1
             xs.append(x)
             ys.append(y)
-        warnings = ["uncovered_ore_tiles:%d" % self.uncovered] if self.uncovered else []
+        warnings = list(self.warnings) + (["uncovered_ore_tiles:%d" % self.uncovered] if self.uncovered else [])
+        if not a.get("dry_run") and self.real_warnings is not None:
+            warnings = list(self.real_warnings)
         chosen = {"miner": "electric-mining-drill", "pole": "small-electric-pole"}
         if layout.endswith("logistics"):
             chosen["chest"] = "passive-provider-chest"
@@ -196,7 +205,23 @@ class Model:
             ents = [{"c": "g", "name": v[0], "pos": {"x": k[0], "y": k[1]}, "dir": v[1], "ghost": True}
                     for k, v in self.ghosts.items()
                     if v[0] in args.get("names", [v[0]]) and abs(k[0] - c["x"]) <= r and abs(k[1] - c["y"]) <= r]
-            return ok({"entities": ents[:100], "rows": [], "truncated": len(ents) > 100})
+            x0, y0 = int(math.floor(c["x"])) - r, int(math.floor(c["y"])) - r
+            rows = ["".join("~" if (x0 + i, y0 + j) in self.lava else "." for i in range(2 * r + 1))
+                    for j in range(2 * r + 1)]
+            liquids = {"lava": {"n": len(self.lava), "cover": "foundation", "cover_ok": False}} if self.lava else {}
+            return ok({"entities": ents[:100], "rows": rows, "truncated": len(ents) > 100, "liquids": liquids,
+                       "bbox": {"x0": x0, "y0": y0, "x1": x0 + 2 * r, "y1": y0 + 2 * r}})
+        if op == "access":
+            self.access_calls.append(args)
+            if self.access_fails:
+                return fail(self.access_fails)
+            a = args["area"]
+            assert a["right_bottom"]["x"] - a["left_top"]["x"] <= 128
+            data = {"area": a, "land": 100, "liquid": 0, "liquids": {}, "enclosed": False, "best": "north",
+                    "exits": [{"side": "north", "pos": {"x": 30, "y": -2}, "width": 20, "neck": "wide"}],
+                    "warnings": [], "reachable": True}
+            data.update(self.access)
+            return ok(data)
         if op == "act":
             assert args["do"] == "plan_mining"
             self._plan(args["args"])
@@ -392,3 +417,78 @@ def test_modes_failures(fake_rcon, kw, word):
 def test_modes_no_patch(fake_rcon):
     res = run("mining_modes", Model(patches=[OIL]), fake_rcon)
     assert res["ok"] is False and res["reasons"]
+
+
+# ---------- ревизия 3.3: жидкость и выходы с участка ----------
+
+NARROW = {"exits": [{"side": "west", "pos": {"x": 16, "y": 10}, "width": 2, "neck": "narrow"}], "best": "west"}
+ISLAND = {"exits": [], "enclosed": True, "best": None}
+
+
+@pytest.mark.parametrize("name", ["mining_plan", "mining_modes"])
+def test_liquid_and_access_ok(fake_rcon, name):
+    # лава рядом с бурами, но не под ними; предупреждения согласны с access
+    m = Model(lava={(24, 9), (30, 9)}, warnings=["on_liquid:2", "narrow_access", "access_side:west"], access=NARROW)
+    res = run(name, m, fake_rcon)
+    assert res["ok"] is True, res
+    assert res["liquid"]["cells_in_area"] == 2 and res["liquid"]["drills_on_liquid"] == []
+    assert res["liquid"]["drills_seen"] == res["drills"]["on_map"] > 0
+    assert res["liquid"]["on_liquid"] == ["on_liquid:2"]
+    assert res["access"]["best"] == "west" and res["access"]["best_neck"] == "narrow"
+    # access спрашивается по рамке пятна из resources
+    assert m.access_calls == [{"area": PATCH["area"]}]
+
+
+def test_access_enclosed_ok(fake_rcon):
+    res = run("mining_plan", Model(warnings=["enclosed"], access=ISLAND), fake_rcon)
+    assert res["ok"] is True, res
+    assert res["access"]["enclosed"] is True and res["access"]["exits"] == 0
+
+
+def test_access_skipped_for_window(fake_rcon):
+    m = Model(patches=[HUGE])
+    res = run("mining_plan", m, fake_rcon)
+    assert res["ok"] is True, res
+    assert "skipped" in res["access"] and m.access_calls == []
+
+
+def test_access_skipped_for_clipped_patch(fake_rcon):
+    m = Model(patches=[dict(PATCH, clipped=True)])
+    res = run("mining_plan", m, fake_rcon)
+    assert res["ok"] is True, res
+    assert res["patch"]["clipped"] is True and "skipped" in res["access"] and m.access_calls == []
+
+
+@pytest.mark.parametrize("kw, word", [
+    ({"lava": {(25, 7)}}, "на жидкости"),                                  # центр первого бура — лава
+    ({"lava": {(26, 8)}}, "на жидкости"),                                  # угол бура 3×3 — лава
+    ({"warnings": ["lava_everywhere"]}, "неизвестное предупреждение"),
+    ({"warnings": ["access_side:up"]}, "access_side без стороны"),
+    ({"warnings": ["on_liquid:many"]}, "on_liquid без числа"),
+    ({"access": ISLAND}, "enclosed"),                                      # остров, а разметка молчит
+    ({"warnings": ["enclosed"]}, "enclosed"),                              # разметка говорит «остров», access — нет
+    ({"access": NARROW}, "лучший выход"),                                  # узкий выход, а narrow_access нет
+    ({"warnings": ["narrow_access"]}, "лучший выход"),
+    ({"warnings": ["access_side:east"]}, "access_side"),                   # сторона не та, что у access
+    ({"warnings": ["enclosed", "access_side:north"], "access": ISLAND}, "выходов нет"),
+    ({"real_warnings": ["on_liquid:3"]}, "сухой прогон"),                  # настоящий прогон разошёлся с сухим
+    ({"access_fails": "unknown_op"}, "access по пятну"),
+])
+@pytest.mark.parametrize("name", ["mining_plan", "mining_modes"])
+def test_liquid_and_access_failures(fake_rcon, name, kw, word):
+    res = run(name, Model(**kw), fake_rcon)
+    assert res["ok"] is False, res
+    assert any(word in r for r in res["reasons"]), res["reasons"]
+
+
+def test_modes_reject_done_with_oversized_area(fake_rcon):
+    class Wide(Model):
+        def _layout(self, patch, layout, direction):
+            plan, drills = super()._layout(patch, layout, direction)
+            if layout == "sparse":
+                plan.append(("small-electric-pole", (patch["area"]["left_top"]["x"] + 200.5, 7.5), 0))
+            return plan, drills
+
+    res = run("mining_modes", Wide(), fake_rcon)
+    assert res["ok"] is False
+    assert any("больше 128" in r for r in res["reasons"]), res["reasons"]
