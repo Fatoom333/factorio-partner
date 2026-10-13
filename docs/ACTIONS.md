@@ -95,7 +95,7 @@ return M                          --   и снять своё: mining_state, cra
 | `collect` | `items, center?│near?:"player", radius?=64` | `{collected: items, missing: items, from:[unit]}` | C |
 | `pickup` | `target?` (труп) │ `area?` (предметы на земле) | `{picked: items}` | C |
 | `place` | `item, pos, direction?:0..15, recipe?` | `{unit_number, name, pos}` | F |
-| `build_blueprint` | `blob, anchor:pos, direction?:0│4│8│12, mode?="auto", dry_run?:bool` | `{ghosts:int, skipped:[...], skipped_total, tiles_skipped, missing: items}` + поля `build_ghosts` | F |
+| `build_blueprint` | `blob, anchor:pos, direction?:0│4│8│12, mode?="auto", force?="forced", dry_run?:bool` | `{ghosts:int, skipped:[...], skipped_total, tiles_skipped, missing: items}` + поля `build_ghosts` | F |
 | `build_ghosts` | `area?│radius?=64, mode?="auto"` | `{built:int, left:int, blocked:[...], blocked_total, missing: items}` | F |
 | `deconstruct` | `target│area, filter?:[name]` | `{removed:int, got: items}` (`removed` — только разобранное самим помощником) | F |
 | `wait` | `seconds:1..600` | `{}` — пауза в очереди, никогда не заменяет её | A |
@@ -110,7 +110,15 @@ direction, build_mode=defines.build_mode.normal, skip_fog_of_war=false}` соз�
 → `inv.destroy()` → дальше работает как `build_ghosts` по площади чертежа.
 `anchor` — **центр чертежа** (как `position` у `LuaItemStack.build_blueprint`), `direction` —
 `defines.direction` (0..15). `dry_run=true` — только проверки, без призраков: вернуть
-`{ghosts, skipped, missing}`. `build_mode` `forced`/`superforced` запрещены.
+`{ghosts, skipped, missing}`.
+**Режим постановки `force`** — те же три режима, что у игрока (`defines.build_mode`):
+`"normal"` (клик) — помеха на месте постройки → она в `skipped`; `"forced"` (Shift, **по умолчанию**) —
+ставится всё, что можно, деревья и камни на пути движок помечает к сносу; `"superforced"` (Ctrl+Shift) —
+ещё и призраки отсыпки под постройками на воде, пометка к сносу **построек игрока** на пути, подземные
+конвейеры при пересечении лент. `"superforced"` агент выбирает только по прямой просьбе хозяина или
+после `dry_run`, показав ему, что будет снесено (`detail.to_remove:[{name,pos}]` ≤ 20, `to_remove_total`).
+Помеченное к сносу в области чертежа помощник разбирает сам (как `deconstruct`) **до** стройки,
+плитки кладёт до построек.
 Уточнения v1: `direction` — только 0/4/8/12 (иначе `bad_args`); чертёж ≤ 1000 сущностей и сторона ≤ 128
 (`limit`); **плитки** (отсыпка, бетон, фундамент) ставятся призраками плиток и строятся **раньше**
 сущностей (иначе постройки на воде не встанут); `tiles_skipped` — сколько плиток поставить нельзя; `import_stack` = -1 (часть сущностей
@@ -137,7 +145,9 @@ P.U.M.P., чертёж, или `build_blueprint`). Перед стартом: с
 настроек** (рецепт, фильтры). Переключатель личных дронов (`allow_dispatching_robots`) на время задачи
 принадлежит задаче и возвращается в `stop`. **Призраки плиток** (`tile-ghost`) строятся так же, как
 призраки сущностей (предмет плитки из инвентаря, `revive`), и всегда первыми; сущность, чей призрак
-ждёт плитку под собой, не считается `blocked`, пока плитка не построена.
+ждёт плитку под собой, не считается `blocked`, пока плитка не построена. Сущности своей силы и
+`neutral`, **помеченные к сносу** (`to_be_deconstructed`) и мешающие призраку области, задача разбирает
+сама перед стройкой (игрок поставил чертёж с Shift / Ctrl+Shift); остальные помеченные не трогает.
 
 **`extract` / перенос предметов с данными** — броня (`is_armor`, сетка), чертежи и книги,
 `is_item_with_entity_data` переносятся только целым стаком `LuaItemStack.transfer_stack` /

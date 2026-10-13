@@ -79,7 +79,8 @@
 - **B:** не слать два шумных `stuck` подряд на одно перепланирование при `path_lost`.
 - **F:** убрать из `lib/build.lua` запасные `optional()`/`fallback_vis`/`fallback_target` и их тесты; цель
   в сценариях — `{unit_number, pos}`; **плитки** в `build_blueprint`/`build_ghosts` (ACTIONS; проверить
-  живьём, ставит ли движок призраки построек над водой вместе с призраками отсыпки); живьём — постройки 2×2, повороты 8/12, режимы `robots`/`auto`.
+  живьём: Shift и Ctrl+Shift на воде, деревьях, чужих постройках); режимы `force` в `build_blueprint` и
+  разбор помеченного к сносу в `build_ghosts`; живьём — постройки 2×2, повороты 8/12, режимы `robots`/`auto`.
 - **G, H:** `vis.visible` вместо прямого `is_chunk_visible` (`reflexes/common.lua`, perception).
 - **H:** `flee` пересчитывает кандидатов после `path_failed`. Тесты `core_helpers`/`core_jobs`, которые H
   поправил под смерть и возрождение, остаются за A.
