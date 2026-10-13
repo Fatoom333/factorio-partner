@@ -2,12 +2,14 @@
 
 Ход (сервер без окна, хозяин офлайн, PROTOCOL §4 helper_spawn):
 1. `hello`, `helper_spawn` помощника HELPER (пустой инвентарь).
-2. Сундук берётся честно: `stock` по складам хозяина → `act collect {items:{<сундук>:1}}`.
-   Сундуков на складах нет — запасной путь: `collect` пластин или дерева и `act craft`.
+2. Сундук берётся честно: `stock` по складам хозяина → `act collect {items:{<сундук>:1}}`
+   (не взял — `act extract` из ближайшего сундука по `stock`).
+   Сундуков на складах нет — запасной путь: сырьё со склада тем же способом и `act craft`
+   (сундук из железа, дерева или стали либо стена из каменного кирпича).
 3. `act place {item, pos}` рядом с помощником; `cannot_place` — следующее место из списка.
 4. Сверка: job_done с unit_number; у помощника стало на 1 предмет меньше; `map` видит сундук на месте.
 Остальные сценарии build_* берут отсюда `prepare()` и `place_near()` (загрузка по пути, как _hands).
-Запускать после слияния потоков B, C и X (подход, collect, обзор помощника для stock).
+Живой прогон 2026-10-13 — research/live-f-2026-10-13.md (на main с B и C, без X); повторить после слияния X.
 Только конверты `/partner <JSON>` через live_client (TESTING.md §3).
 """
 from __future__ import annotations
@@ -31,7 +33,10 @@ JOB_TIMEOUT_S = 150.0
 VISIBLE_WAIT_S = 15.0
 CHESTS = ("wooden-chest", "iron-chest", "steel-chest")
 # запасной путь: из чего скрафтить сундук руками
-CRAFT = (("iron-chest", "iron-plate", 8), ("wooden-chest", "wood", 2))
+# (живой замер 2026-10-13: на складах базы не было ни сундуков, ни пластин железа, ни дерева — только
+# сталь и каменный кирпич, поэтому в списке есть и они; стена — такая же постройка 1×1)
+CRAFT = (("iron-chest", "iron-plate", 8), ("wooden-chest", "wood", 2),
+         ("steel-chest", "steel-plate", 8), ("stone-wall", "stone-brick", 5))
 OFFSETS = ((3, 0), (0, 3), (-3, 0), (0, -3), (4, 4), (-4, 4), (4, -4), (-4, -4), (6, 0), (0, 6), (-6, 0), (0, -6))
 
 
@@ -75,14 +80,37 @@ def _stock_total(client, items, result):
     return {}, 128
 
 
+def obtain(client, item, count, radius, result, key):
+    """Взять count предметов item со складов хозяина: `collect`, а если он ничего не взял —
+    `extract` из ближайшего сундука по `stock` (живой замер 2026-10-13: без игроков онлайн `collect`
+    отвечал no_items, хотя `stock` показывал сундук рядом — обзор помощника, ревизия 3.1). → bool."""
+    before = helper_count(client, item)
+    r = act(client, "collect", {"items": {item: count}, "radius": radius})
+    result[key] = brief(r)
+    if helper_count(client, item) - before >= count:
+        return True
+    data = client.call_ok("stock", {"radius": radius, "items": [item], "limit": 50}, HELPER)
+    boxes = [c for c in data.get("containers", []) if (c.get("items") or {}).get(item, 0) >= count]
+    boxes.sort(key=lambda c: c.get("dist", 1e9))
+    for c in boxes[:3]:
+        need = count - (helper_count(client, item) - before)
+        # цель сначала по номеру; на стенде без игроков поиск по номеру бывает not_found — тогда {name, pos}
+        for target in ({"unit_number": c.get("unit")}, {"name": c.get("name"), "pos": c.get("pos")}):
+            r = act(client, "extract", {"target": target, "items": {item: need}})
+            result[key + "_extract"] = brief(r)
+            if code_of(r) != "not_found":
+                break
+        if helper_count(client, item) - before >= count:
+            return True
+    return False
+
+
 def get_chests(client, result, count=1):
     """Честно добыть count одинаковых сундуков в инвентарь помощника. → имя предмета | None."""
     total, radius = _stock_total(client, CHESTS, result)
     for item in CHESTS:
         if total.get(item, 0) >= count:
-            r = act(client, "collect", {"items": {item: count}, "radius": radius})
-            result["collect"] = brief(r)
-            if r["kind"] == "job_done" and (detail_of(r).get("collected") or {}).get(item, 0) >= count:
+            if obtain(client, item, count, radius, result, "collect"):
                 return item
     # запасной путь: сырьё со склада и ручной крафт
     raw_total, radius = _stock_total(client, [c[1] for c in CRAFT], result)
@@ -90,9 +118,7 @@ def get_chests(client, result, count=1):
         need = per * count
         if raw_total.get(raw, 0) < need:
             continue
-        r = act(client, "collect", {"items": {raw: need}, "radius": radius})
-        result["collect_raw"] = brief(r)
-        if r["kind"] != "job_done":
+        if not obtain(client, raw, need, radius, result, "collect_raw"):
             continue
         r = act(client, "craft", {"recipe": item, "count": count})
         result["craft"] = brief(r)
