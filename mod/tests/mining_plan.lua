@@ -46,7 +46,8 @@ S.suite("mining_plan", {
         S.eq(c.force, W.h.force)
         n = n + 1
       end
-      S.eq(n, #ghosts, "одна проверка на призрак")
+      -- расчёт идёт дважды: сухой прогон (область и «встанет ли») и настоящий
+      S.eq(n, 2 * #ghosts, "две проверки на призрак: сухой прогон и настоящий")
       S.eq(t.need, X.ghost_counts(), "need — по одному предмету на призрак")
       S.eq(t.skipped, 0)
       local ok, missed = X.covered(ore, "electric-mining-drill")

@@ -14,6 +14,7 @@
 require("scripts.vendor.mpp.mpp.global_extends")
 local mpp_util = require("scripts.vendor.mpp.mpp.mpp_util")
 local common = require("scripts.vendor.mpp.layouts.common")
+local tiles = require("scripts.perception.tiles")
 
 local M = {}
 
@@ -34,7 +35,7 @@ M.OPTIONS_SCHEMA = {
   lamps = { type = "bool" },         -- lamps next to the power poles
   coverage = { type = "bool" },      -- more drills: cover every ore tile (MPP «overfill»)
   landfill = { type = "bool" },      -- tile ghosts (landfill) under buildings planned on water
-  avoid_water = { type = "bool" },   -- no drills on water (default: true unless landfill)
+  avoid_water = { type = "bool" },   -- no drills on tiles without support: water, lava, ... (default true)
   avoid_cliffs = { type = "bool" },  -- no drills on cliffs (default true)
   deconstruct = { type = "bool" },   -- mark trees and rocks in the way (default true)
   force_pipes = { type = "bool" },   -- pipes between drills even if the ore needs no fluid
@@ -45,6 +46,8 @@ M.OPTIONS_SCHEMA = {
 local DEFAULT_CHEST = "passive-provider-chest"
 local CHEST_TYPES = { ["logistic-container"] = true, ["container"] = true }
 local MAX_WARNINGS = 20
+local MAX_OUTPUTS = 16
+local OUT_VECTOR = { north = { 0, -1 }, east = { 1, 0 }, south = { 0, 1 }, west = { -1, 0 } }
 
 local floor, ceil = math.floor, math.ceil
 
@@ -351,9 +354,14 @@ function M.prepare(p)
     return fail("bad_args", "args.options.force_pipes: layout " .. layout.name .. " places no pipes")
   end
 
+  -- `avoid_water` (default true) means any tile the drill can't stand on without a cover tile
+  -- (PROTOCOL 6.12: the rule is the collision mask of the tile against the mask of the drill, no
+  -- tile names). Only an explicit `landfill = true` turns the default off: cover tiles are then
+  -- planned under the buildings instead.
   local landfill = options.landfill and true or false
   local avoid_water = options.avoid_water
   if avoid_water == nil then avoid_water = not landfill end
+  local avoid_layers = tiles.layer_list(tiles.entity_layers(miner))
   local avoid_cliffs = options.avoid_cliffs
   if avoid_cliffs == nil then avoid_cliffs = true end
   local deconstruct = options.deconstruct
@@ -422,6 +430,8 @@ function M.prepare(p)
       skipped = 0, skipped_names = {},
       need = {}, planned = {},
       warnings = warnings,
+      avoid_layers = avoid_layers, -- mpp_util.unsupported_tiles
+      belts = {},                  -- placed belt ghosts {x, y, direction, kind}: ends of the output lanes
     },
   }
 
@@ -502,13 +512,30 @@ function M.summary(state)
       left_top = { x = floor(b.x1), y = floor(b.y1) },
       right_bottom = { x = ceil(b.x2), y = ceil(b.y2) },
     }
-    if area.right_bottom.x - area.left_top.x > 128 or area.right_bottom.y - area.left_top.y > 128 then
-      warn("area_over_128")
-    end
   end
 
   local need = {}
   for _, name in ipairs(sorted_keys(P.need)) do need[name] = P.need[name] end
+
+  -- Ends of the output belts: a belt that looks towards the output side and has no belt in the
+  -- next tile. (An underground entrance continues under the ground — not an end.)
+  local outputs = {}
+  local out_dir = defines.direction[state.direction_choice]
+  local vec = OUT_VECTOR[state.direction_choice]
+  if out_dir ~= nil and vec ~= nil then
+    local at = {}
+    for _, b in ipairs(P.belts or {}) do at[b[1] .. "," .. b[2]] = true end
+    for _, b in ipairs(P.belts or {}) do
+      if b[3] == out_dir and b[4] ~= "input" and not at[(b[1] + vec[1]) .. "," .. (b[2] + vec[2])] then
+        outputs[#outputs + 1] = { pos = { x = b[1], y = b[2] }, direction = out_dir }
+      end
+    end
+    table.sort(outputs, function(a, b)
+      if a.pos.x ~= b.pos.x then return a.pos.x < b.pos.x end
+      return a.pos.y < b.pos.y
+    end)
+    while #outputs > MAX_OUTPUTS do outputs[#outputs] = nil end
+  end
 
   return {
     ok = not failed and attempt ~= nil and P.placed > 0,
@@ -520,6 +547,7 @@ function M.summary(state)
     need = need,
     area = area,
     warnings = warnings,
+    outputs = outputs,
     choices = {
       miner = state.miner_choice, belt = state.belt_choice, pole = state.pole_choice,
       pipe = state.pipe_choice, chest = state.logistics_choice,

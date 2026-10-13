@@ -6,6 +6,9 @@ local err = require("scripts.core.err")
 local core_owner = require("scripts.core.owner")
 local jobs = require("scripts.core.jobs")
 local vis = require("scripts.core.vis")
+-- Реестр помощников ядра: нужен только для поля `state.body`; без него — запасное значение.
+local registry_ok, core_registry = pcall(require, "scripts.core.registry")
+if not registry_ok then core_registry = nil end
 
 local M = {}
 local C = {}
@@ -424,6 +427,33 @@ local function near(e, helper_id)
   return { enemies = enemies, containers = containers }
 end
 
+-- Вид тела и счётчик ошибок модулей — данные ядра (поток V1). Зовём под pcall с запасным
+-- значением: тесты восприятия идут и без ядра, а сбой чужого модуля не должен ронять `state`.
+-- (`core_registry` подключён при загрузке файла: `require` в рантайме Factorio запрещён.)
+local function core_call(mod, fn, ...)
+  if type(mod) ~= "table" or type(mod[fn]) ~= "function" then return nil end
+  local ok, v = pcall(mod[fn], ...)
+  if ok then return v end
+  return nil
+end
+
+-- "character" │ "player" (PROTOCOL §7 «Два вида тела»).
+local function body_kind(helper_id)
+  local kind = core_call(core_registry, "body_kind", helper_id)
+  if kind == "player" or kind == "character" then return kind end
+  if core_call(core_registry, "is_player_body", helper_id) == true then return "player" end
+  local hs = storage.helpers
+  local rec = type(hs) == "table" and hs[helper_id] or nil
+  if type(rec) == "table" and rec.player_index ~= nil then return "player" end
+  return "character"
+end
+
+local function module_errors()
+  local n = core_call(err, "module_errors")
+  if type(n) == "number" then return n end
+  return 0
+end
+
 local function state_op(args, ctx)
   args = C.check_args(args)
   C.allow_only(args, {})
@@ -461,6 +491,8 @@ local function state_op(args, ctx)
     players = players_list(e),
     near = near(e, helper_id),
     vision = C.vision_on(helper_id),
+    body = body_kind(helper_id),
+    module_errors = module_errors(),
     tick = game.tick,
     seq = C.last_seq(),
   }

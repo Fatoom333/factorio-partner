@@ -8,6 +8,11 @@
    Обязаны встать `compact` и `sparse`; `sparse` ставит не больше буров, чем `simple`.
 3. `compact` ставится по-настоящему и сверяется с игрой (операция `ghosts`, число буров, покрытие —
    функция `verify` из mining_plan); в `need` есть что-то сверх бура, ленты и столба (подземная лента).
+4. Ревизия 3.3 (на Вулканусе жидкость — лава): предупреждения всех режимов — только известного вида,
+   область каждого `done` не больше 128; у поставленного `compact` ни один бур не стоит на клетке,
+   которую карта до разметки рисовала жидкостью (`~` или `,`), а `enclosed` / `narrow_access` /
+   `access_side` согласны с операцией `access` по рамке пятна; сухой и настоящий прогон дают одни и те
+   же предупреждения. Имён плиток в сценарии нет.
 Общие шаги — из mining_plan.py (загрузка по пути). Только конверты `/partner <JSON>`.
 """
 from __future__ import annotations
@@ -63,6 +68,9 @@ def run(client) -> dict:
         if r["kind"] == "job_done":
             if not (d.get("ghosts") or 0) > 0 or not d.get("need") or d.get("layout") != layout:
                 reasons.append(f"{layout}: done, но ответ пустой или не того режима: {modes[layout]}")
+            P.check_warnings(d, reasons)
+            if d.get("area") and max(P.side(d["area"])) > 128:
+                reasons.append(f"{layout}: done с областью больше 128: {d['area']}")
         elif layout in MUST:
             reasons.append(f"{layout}: обязан встать, а итог {r['kind']} {P.code_of(r)} {P.text_of(r)}")
         elif r["kind"] != "job_failed" or P.code_of(r) != "bad_args":
@@ -77,13 +85,22 @@ def run(client) -> dict:
     if not reasons:
         dry_detail = P.detail_of(dry[REAL])
         area = dry_detail.get("area")
-        before = P.ghosts_in(client, area) if area and max(P.side(area)) <= 128 else {}
+        area_ok = bool(area) and max(P.side(area)) <= 128
+        before = P.ghosts_in(client, area) if area_ok else {}
+        # жидкость снимаем с карты до разметки: призраки закрашивают клетки под собой
+        cells, tile_names = P.liquid_cells(client, area) if area_ok else (set(), [])
+        result["liquid_tiles"] = tile_names
         real = P.act(client, "plan_mining", P.plan_args(patch, REAL, DIRECTION))
         result["plan"] = P.brief(real)
         detail = P.detail_of(real)
         # сборные ленты compact идут поперёк — сторону ленты сверяет mining_plan (simple)
         P.verify(client, patch, before, real, result, reasons, direction=DIRECTION, belts=False)
         if real["kind"] == "job_done":
+            # ревизия 3.3: буры не стоят на жидкости (на Вулканусе — на лаве), предупреждения о
+            # жидкости и выходах известного вида и согласны с операцией access
+            P.check_liquid_and_access(client, patch, detail, cells, result, reasons)
+            if detail.get("warnings") != dry_detail.get("warnings"):
+                reasons.append(f"{REAL}: предупреждения {detail.get('warnings')}, а сухой прогон обещал {dry_detail.get('warnings')}")
             if detail.get("ghosts") != dry_detail.get("ghosts"):
                 reasons.append(f"{REAL}: призраков {detail.get('ghosts')}, а сухой прогон обещал {dry_detail.get('ghosts')}")
             chosen = detail.get("chosen") or {}

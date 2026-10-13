@@ -8,6 +8,7 @@ local M = {}
 M.MAX_RADIUS = 128
 M.DEFAULT_RADIUS = 64
 M.MAX_PATCHES = 20
+M.CLIP_RING = 2         -- на сколько клеток шире круга ищем, чтобы заметить обрезанное пятно
 
 local floor = math.floor
 local OFF = 1048576     -- 2^20: сдвиг координат в ключе
@@ -15,29 +16,38 @@ local MUL = 4194304     -- 2^22
 
 local function key(x, y) return (x + OFF) * MUL + (y + OFF) end
 
--- Кластеры из списка клеток {x, y, amount} одного имени → массив пятен.
+-- Кластеры из списка клеток {x, y, amount, out?} одного имени → массив пятен.
+-- Клетка с `out = true` лежит за кругом поиска: в `tiles`, `amount`, центр и область она не входит,
+-- но связывает пятно и помечает его `clipped = true` (пятно обрезано кругом, числа — нижняя оценка).
+-- Пятно целиком за кругом в ответ не попадает.
 function M.cluster(cells)
   local by_key = {}
   for i, c in ipairs(cells) do by_key[key(c.x, c.y)] = i end
   local seen = {}
   local patches = {}
-  for i, start in ipairs(cells) do
+  for i in ipairs(cells) do
     if not seen[i] then
       seen[i] = true
       local stack = { i }
       local n, amount, sx, sy = 0, 0, 0, 0
-      local minx, miny, maxx, maxy = start.x, start.y, start.x, start.y
+      local minx, miny, maxx, maxy
+      local clipped = false
       while #stack > 0 do
         local j = stack[#stack]
         stack[#stack] = nil
         local c = cells[j]
-        n = n + 1
-        amount = amount + (c.amount or 0)
-        sx, sy = sx + c.x, sy + c.y
-        if c.x < minx then minx = c.x end
-        if c.y < miny then miny = c.y end
-        if c.x > maxx then maxx = c.x end
-        if c.y > maxy then maxy = c.y end
+        if c.out then
+          clipped = true
+        else
+          n = n + 1
+          amount = amount + (c.amount or 0)
+          sx, sy = sx + c.x, sy + c.y
+          if minx == nil then minx, miny, maxx, maxy = c.x, c.y, c.x, c.y end
+          if c.x < minx then minx = c.x end
+          if c.y < miny then miny = c.y end
+          if c.x > maxx then maxx = c.x end
+          if c.y > maxy then maxy = c.y end
+        end
         for dx = -1, 1 do
           for dy = -1, 1 do
             if dx ~= 0 or dy ~= 0 then
@@ -50,11 +60,14 @@ function M.cluster(cells)
           end
         end
       end
-      patches[#patches + 1] = {
-        tiles = n, amount = amount,
-        center = { x = sx / n + 0.5, y = sy / n + 0.5 },
-        area = { left_top = { x = minx, y = miny }, right_bottom = { x = maxx + 1, y = maxy + 1 } },
-      }
+      if n > 0 then
+        patches[#patches + 1] = {
+          tiles = n, amount = amount,
+          center = { x = sx / n + 0.5, y = sy / n + 0.5 },
+          area = { left_top = { x = minx, y = miny }, right_bottom = { x = maxx + 1, y = maxy + 1 } },
+          clipped = clipped or nil,
+        }
+      end
     end
   end
   return patches
@@ -74,10 +87,13 @@ local function resources_op(args, ctx)
   local surface, force, center = where.surface, where.force, where.center
   local view = C.chunk_view(force, surface)
 
-  local filter = { position = center, radius = radius, type = "resource" }
+  -- Ищем чуть шире круга: клетки в кольце CLIP_RING за ним в числа не входят, но показывают, что
+  -- пятно продолжается за кругом (`clipped`).
+  local filter = { position = center, radius = radius + M.CLIP_RING, type = "resource" }
   if name then filter.name = name end
   local found = surface.find_entities_filtered(filter)
 
+  local r2 = radius * radius
   local by_name, order = {}, {}
   for _, e in ipairs(found) do
     if e.valid then
@@ -86,7 +102,11 @@ local function resources_op(args, ctx)
         local n = e.name
         local list = by_name[n]
         if not list then list = {}; by_name[n] = list; order[#order + 1] = n end
-        list[#list + 1] = { x = floor(p.x), y = floor(p.y), amount = e.amount or 0 }
+        local dx, dy = p.x - center.x, p.y - center.y
+        list[#list + 1] = {
+          x = floor(p.x), y = floor(p.y), amount = e.amount or 0,
+          out = (dx * dx + dy * dy > r2) or nil,
+        }
       end
     end
   end
@@ -114,6 +134,7 @@ local function resources_op(args, ctx)
       tiles = p.tiles,
       amount = p.amount,
       dist = C.round(p.dist),
+      clipped = p.clipped,
     }
   end
   return { patches = out, truncated = #all > #out }
