@@ -85,7 +85,12 @@ def test_examples_have_calls_for_the_whole_order():
     order = [steps.index(s) for s in lint.MINING_ORDER]
     assert order == sorted(order), steps
     # лента: сначала пробный прогон, от выходов разметки; длинная лента строится по кускам
-    belts = [raw for raw in does if '"do":"plan_belt"' in raw]
+    all_belts = [raw for raw in does if '"do":"plan_belt"' in raw]
+    belts = [raw for raw in all_belts if '"from":"resume"' not in raw]
+    # ревизия 3.5: перекладка — отдельный вызов без to, после него снова стройка
+    relays = [i for i, raw in enumerate(does) if '"from":"resume"' in raw]
+    assert len(relays) == 1 and '"to"' not in does[relays[0]]
+    assert any('"do":"build_ghosts"' in raw for raw in does[relays[0] + 1:])
     assert '"dry_run":true' in belts[0] and '"dry_run"' not in belts[-1]
     assert all('"from":"patch"' in raw for raw in belts)
     assert sum(1 for raw in does if '"do":"build_ghosts"' in raw) >= 3
@@ -125,6 +130,16 @@ def test_prompt_has_the_rules_of_revision_3_3():
         assert word in flat, word
     assert "Покажи хозяину длину и предупреждения" in flat
     assert flat.index("Покажи хозяину длину и предупреждения") < flat.index("Тот же вызов без `dry_run` → призраки")
+    # (3а) ревизия 3.5: стройка ленты встала — осмотреться, переложить остаток, снова строить; не больше трёх раз
+    for word in ('`"from":"resume"`', "`resumed`", "`unseen:N`", "`blocked_total`", "`flee`", "`reflex_done`",
+                 "`path_failed`", "`detail.removed`", "`resumed.rotate`"):
+        assert word in flat, word
+    i_stop = flat.index("Стройка ленты встала — перекладывай остаток, а не бросай")
+    i_look, i_relay = flat.index("Осмотрись: `partner_state`", i_stop), flat.index('`plan_belt` с `"from":"resume"`', i_stop)
+    i_build, i_limit = flat.index("Снова `build_ghosts`", i_stop), flat.index("Не больше трёх перекладок подряд на одну ленту", i_stop)
+    assert i_stop < i_look < i_relay < i_build < i_limit      # осмотреться → переложить → строить → предел
+    assert "`partner_map` вокруг места, где встал" in flat
+    assert "скажи хозяину, где встал и почему" in flat
     # (4) умолчание plan_mining — по исследованиям: сверить need со складами и задать имена самому
     assert "лучшее из открытого исследованиями, склады при этом не смотрятся" in flat
     assert "сверь `need` со складами" in flat and "задай имена сам" in flat

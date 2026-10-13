@@ -140,6 +140,7 @@ function M.new_world(belt, under)
     tile_u = {},     -- [имя плитки] = мешает подземному участку
     tile_c = {},     -- [key] = флаги плитки клетки: 0 │ 1 (мешает ленте) + 2 (мешает подземному)
     rejected = {},   -- [ключ подземного участка] = true: отвергнут (сам себе мешает)
+    seen = {},       -- [ключ чанка] = есть ли у силы текущий обзор чанка (предупреждение unseen)
     checks = 0,      -- сколько раз спросили движок (для отчёта и тестов)
   }
 end
@@ -167,6 +168,20 @@ local function charted(env, x, y)
   return v
 end
 M.charted = charted
+
+--- Клетка лежит в чанке без текущего обзора (план там — «по карте», PROTOCOL «Уточнения 3.5»).
+function M.unseen(env, x, y)
+  local cx, cy = floor(x / 32), floor(y / 32)
+  local k = key(cx, cy)
+  local W = env.W
+  if W.seen == nil then W.seen = {} end
+  local v = W.seen[k]
+  if v == nil then
+    v = env.force.is_chunk_visible(env.surface, { x = cx, y = cy }) and true or false
+    W.seen[k] = v
+  end
+  return not v
+end
 
 --- Плитка клетки: мешает ленте, мешает подземному участку, имя.
 --- Клетка спрашивается у движка один раз за задачу (кэш W.tile_c): повторный вызов — например, из
@@ -602,6 +617,7 @@ function M.place(env, step, dry)
     end
   end
   local position = { x = step.x + 0.5, y = step.y + 0.5 }
+  if dry and env.W.assumed and env.W.assumed[key(step.x, step.y)] then return true, marked end
   env.W.checks = env.W.checks + 1
   if not surface.can_place_entity{
     name = step.name, position = position, direction = step.dir, force = force,
@@ -621,6 +637,62 @@ function M.place(env, step, dry)
     type = step.utype, -- подземный конвейер: "input" │ "output"
   }
   return ghost ~= nil, marked
+end
+
+-- ------------------------------------------------------------------ перекладка (plan_belt from:"resume")
+
+local BELT_TYPES = { ["transport-belt"] = true, ["underground-belt"] = true }
+
+--- Свой (силы хозяина) призрак ленты в клетке │ nil. under: true — только подземного конвейера,
+--- false — только ленты, nil — любой из двух.
+function M.own_ghost(env, x, y, under)
+  local want
+  if under ~= nil then want = under and "underground-belt" or "transport-belt" end
+  for _, e in ipairs(env.surface.find_entities_filtered{ area = cell_area(x, y), type = "entity-ghost" }) do
+    if e.valid and e.type == "entity-ghost" and e.force ~= nil and e.force.name == env.force.name
+      and BELT_TYPES[e.ghost_type] and (want == nil or e.ghost_type == want) then
+      return e
+    end
+  end
+  return nil
+end
+
+--- Убрать свой призрак ленты в клетке (under — как у own_ghost). Чужие призраки, призраки других
+--- построек и сами постройки не трогает. → убран ли.
+function M.remove_ghost(env, x, y, under)
+  local g = M.own_ghost(env, x, y, under)
+  if g == nil then return false end
+  g.destroy{ raise_destroy = true }
+  return true
+end
+
+--- Стоит ли в клетке настоящая (построенная) лента своей силы; under — ждём подземный конвейер.
+function M.built_at(env, x, y, under)
+  local want = under and "underground-belt" or "transport-belt"
+  for _, e in ipairs(env.surface.find_entities_filtered{ area = cell_area(x, y), type = want }) do
+    if e.valid and e.type == want and e.force ~= nil and e.force.name == env.force.name then return true end
+  end
+  return false
+end
+
+--- Снять пометки к сносу с деревьев и камней клетки (их ставил план). → сколько снято.
+function M.unmark(env, x, y)
+  local n = 0
+  for _, e in ipairs(env.surface.find_entities_filtered{ area = cell_area(x, y) }) do
+    if e.valid and is_natural(e) and e.to_be_deconstructed() then
+      if pcall(function() e.cancel_deconstruction(env.force) end) then n = n + 1 end
+    end
+  end
+  return n
+end
+
+--- Считать клетку свободной, не спрашивая движок: сухой прогон перекладки — призрак, который
+--- настоящий прогон убрал бы, помехой не считается.
+function M.assume_free(env, x, y, natural)
+  local W = env.W
+  W.cells[key(x, y)] = natural and M.NATURAL or M.FREE
+  W.assumed = W.assumed or {}
+  W.assumed[key(x, y)] = true
 end
 
 --- Ширина прохода поперёк хода в клетке шага (сама клетка + свободные соседи, до 2 с каждой стороны).

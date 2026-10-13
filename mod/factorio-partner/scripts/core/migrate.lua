@@ -69,6 +69,7 @@ function M.ensure_shape()
   -- mining_last[helper] = { surface, outputs = { {pos = {x, y}, direction}, ... }, tick } — выходы
   -- последней разметки: пишет plan_mining, читает plan_belt{from:"patch"}. Ядро только держит
   -- форму: запись не таблица — убрать, outputs не таблица — пустой список.
+  ensure(s, "belt_last", {}) -- последний план plan_belt помощника: пишет и читает поток лент (PROTOCOL §7)
   local ml = ensure(s, "mining_last", {})
   for helper, last in pairs(ml) do
     if type(last) ~= "table" then

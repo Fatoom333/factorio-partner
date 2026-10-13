@@ -131,12 +131,24 @@ end
 --- X.setup{ research = {...} } → W (как C.setup): мод, хозяин, помощник h1 в (0, 0).
 function X.setup(opts)
   opts = opts or {}
-  X.blocked, X.checks, X.marked = {}, {}, {}
+  X.blocked, X.checks, X.marked, X.unmarked = {}, {}, {}, {}
   local W = C.setup(opts)
   X.prototypes()
   X.W = W
   S.nauvis.tiles = {}
   S.nauvis.can_place = can_place
+  -- призрак знает, что в нём (ghost_name, ghost_type), как в игре
+  local create = S.nauvis.create_entity
+  S.nauvis.create_entity = function(params)
+    local e = create(params)
+    if e ~= nil and params.name == "entity-ghost" then
+      local proto = prototypes.entity[params.inner_name]
+      e.type = "entity-ghost" -- (общая заглушка берёт тип из params.type — у подземного это "input")
+      e.ghost_name, e.ghost_type = params.inner_name, proto and proto.type or nil
+      if params.type ~= nil then e.belt_to_ground_type = params.type end
+    end
+    return e
+  end
   local force = game.forces.player
   force.is_enemy = function(other) return other ~= nil and other.name == "enemy" end
   X.forget("fast-transport-belt", "fast-underground-belt")
@@ -160,6 +172,10 @@ local function with_marks(e)
     marked = true
     X.marked[#X.marked + 1] = { name = e.name, x = math.floor(e.position.x), y = math.floor(e.position.y), force = force }
     return true
+  end
+  e.cancel_deconstruction = function(force)
+    marked = false
+    X.unmarked[#X.unmarked + 1] = { name = e.name, x = math.floor(e.position.x), y = math.floor(e.position.y), force = force }
   end
   return e
 end
@@ -245,6 +261,41 @@ function X.continuous(ghosts, max_under)
     end
   end
   return true
+end
+
+--- Призрак в клетке (сущность мира) │ nil; force — имя силы (по умолчанию любая).
+function X.ghost_at(x, y, force)
+  for _, e in ipairs(S.nauvis._entities) do
+    if e.valid and e.type == "entity-ghost" and math.floor(e.position.x) == x and math.floor(e.position.y) == y
+      and (force == nil or e.force.name == force) then
+      return e
+    end
+  end
+  return nil
+end
+
+--- Все призраки мира сейчас: {name, x, y, direction, type, force}.
+function X.live_ghosts()
+  local out = {}
+  for _, e in ipairs(S.nauvis._entities) do
+    if e.valid and e.type == "entity-ghost" then
+      out[#out + 1] = {
+        name = e.ghost_name, x = math.floor(e.position.x), y = math.floor(e.position.y),
+        direction = e.direction, type = e.belt_to_ground_type, force = e.force.name,
+      }
+    end
+  end
+  return out
+end
+
+--- «Построить» призрак клетки: призрак исчезает, на его месте настоящая лента или подземный конвейер.
+function X.build(x, y)
+  local g = X.ghost_at(x, y)
+  if g == nil then error("нет призрака в клетке " .. x .. "," .. y, 2) end
+  local name, dir, kind = g.ghost_name, g.direction, g.belt_to_ground_type
+  g.destroy()
+  if kind ~= nil then return X.underground(x, y, dir, kind, nil, name) end
+  return X.belt(x, y, dir, name)
 end
 
 --- Клетка есть среди призраков?
