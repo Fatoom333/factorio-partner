@@ -145,7 +145,7 @@ def build_server(core: Core, admin: bool = False) -> FastMCP:
     async def partner_act(helper: Helper, key: Key, do: str,
                           args: dict[str, Any] | None = None, replace: bool = False) -> dict:
         """Поставить задачу в очередь: walk, approach, follow, mine, craft, insert, extract, collect,
-        pickup, place, build_blueprint, build_ghosts, deconstruct, plan_mining, plan_belt, wait.
+        pickup, place, rotate, build_blueprint, build_ghosts, deconstruct, plan_mining, plan_belt, wait.
         Ответ — {job, queued_before}; итог придёт событием job_done / job_failed. Для build_blueprint
         вместо blob передай plan (id из partner_plan); search / rotate — поиск места, где чертёж
         встаёт целиком (ответ detail.fit; не нашлось — fit: null), partial — обрезанный чертёж, только

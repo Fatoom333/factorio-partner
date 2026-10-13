@@ -92,6 +92,7 @@ return M                          --   и снять своё: mining_state, cra
 | `craft` | `recipe, count:int` | `{crafted: items}` (опрос очереди: событий крафта нет) | C |
 | `insert` | `target, items` | `{inserted: items}` | C |
 | `extract` | `target, items?` (нет → всё), `equip?:bool` | `{extracted: items}` | C |
+| `rotate` | `target, direction:0│4│8│12` | `{name, pos, direction, was}` | C |
 | `collect` | `items, center?│near?:"player", radius?=64` | `{collected: items, missing: items, from:[unit]}` | C |
 | `pickup` | `target?` (труп: `{name:"character-corpse", pos}`) │ `area?` (предметы на земле) | `{picked: items}` | C |
 | `place` | `item, pos, direction?:0..15, recipe?` | `{unit_number, name, pos}` | F |
@@ -322,9 +323,12 @@ P.U.M.P., чертёж, или `build_blueprint`). Перед стартом: с
   остаётся помехой, предупреждение `built_apart:N`.
 - Подземная пара с построенным входом: призрак выхода есть — пара достраивается, путь идёт от выхода;
   нет — путь от клетки перед парой, предупреждение `dangling_underground:N`.
-- Построенную ленту помощник не поворачивает: если новый путь должен уйти вбок прямо от неё, в ответе
-  `resumed.rotate:{pos, direction}` и предупреждение `rotate_needed:N` — агент говорит хозяину (открытый
-  вопрос: дать ли помощнику право повернуть свою последнюю ленту).
+- Планировщик построенную ленту не трогает: если новый путь должен уйти вбок прямо от неё, в ответе
+  `resumed.rotate:[{pos, direction}]` и предупреждение `rotate_needed:N` — агент поворачивает её сам
+  действием `rotate` (решение автора 14.10) и называет клетку хозяину.
+- **`rotate`** — повернуть постройку своей силы, как клавишей R: помощник подходит на `reach_distance`,
+  цель должна поддерживать поворот (`supports_direction`, `rotatable`). Чужая сила и нейтральные —
+  `bad_args`/`not_found`; игра не дала повернуть — `failed{cannot_place}`; уже смотрит туда — `done`.
 - `detail.removed` — старые призраки плюс поставленные этой задачей; есть у любого отказа после старта.
   Нечего достраивать → `job_done` с `ghosts:0` без `area`. У `resume` можно передать `underground`.
 - `unseen:N` считается по `force.is_chunk_visible`; на сервере без игроков почти весь путь будет `unseen`
