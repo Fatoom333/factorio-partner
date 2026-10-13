@@ -479,7 +479,9 @@ local function reconcile(plan, created)
   end
   for _, it in ipairs(plan) do
     local best, bd
-    for _, c in ipairs(by_name[it.name] or {}) do
+    -- клетка, пропущенная ещё оценкой (liquid, exists, ...), призрака не ждёт: иначе она заняла бы
+    -- призрак соседней клетки (partial: пропуск на воде «съедал» постройку на суше)
+    for _, c in ipairs(it.reason == nil and by_name[it.name] or {}) do
       if not c.used then
         local d = util.dist(c.pos, it.pos)
         if d <= M.MATCH_DIST and (bd == nil or d < bd) then best, bd = c, d end
@@ -488,6 +490,8 @@ local function reconcile(plan, created)
     if best ~= nil then
       best.used = true
       it.reason = best.why
+    elseif it.reason ~= nil then
+      -- причина из оценки остаётся
     else
       it.reason = it.reason or "cannot_place"
     end
