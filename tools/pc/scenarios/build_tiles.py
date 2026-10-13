@@ -5,7 +5,7 @@
    кирпич) и один сундук (как в build_place).
 2. Чертёж: сундук 1×1 и ряд из трёх плиток под ним и по бокам. Место — `dry_run`, пока оценка не
    скажет: 1 призрак постройки, 3 призрака плиток, ничего не пропущено и не помечено к сносу.
-3. `act build_blueprint {mode:"hand"}`. Сверка: job_done; `tiles` = {плитка: 3}; `built` = 4,
+3. `act build_blueprint {mode:"hand"}`. Сверка: job_done; `tiles` = 3; `built` = 4,
    из них `tiles_built` = 3; `tiles_first` = true (ни одна постройка не поставлена раньше последней
    плитки); у помощника убыло 3 предмета плитки и 1 сундук; сундук виден на карте.
 4. Повторный `dry_run` там же: плитки уже лежат → `tiles` пусто и `tiles_skipped` = 0 (мод читает
@@ -72,9 +72,10 @@ def liquid_probe(client, result, chest, reasons):
         if r["kind"] is None or P.code_of(r) in BAD_CODES:
             reasons.append(f"замер на лаве, {key}: {rec[key]}")
     d = rec["run"]["detail"]
-    rec["facts"] = {"tile_ghost_placed": bool((d.get("tiles") or {}).get(tile)), "entity_ghost_placed": bool(d.get("ghosts")),
+    rec["facts"] = {"tile_ghost_placed": bool(d.get("tiles")), "entity_ghost_placed": bool(d.get("ghosts")),
                     "tiles_built": d.get("tiles_built", 0), "built": d.get("built", 0),
-                    "tiles_first": d.get("tiles_first")}
+                    "tiles_first": d.get("tiles_first"), "on_liquid": d.get("on_liquid", 0),
+                    "liquids": d.get("liquids") or {}}
     result["liquid"] = rec
 
 
@@ -110,7 +111,7 @@ def run(client) -> dict:
         dry_log.append({"anchor": a, "kind": r["kind"], "code": P.code_of(r), "ghosts": d.get("ghosts"),
                         "tiles": d.get("tiles"), "tiles_skipped": d.get("tiles_skipped"),
                         "skipped": d.get("skipped_total"), "to_remove": d.get("to_remove_total")})
-        if (r["kind"] == "job_done" and d.get("ghosts") == 1 and (d.get("tiles") or {}).get(tile) == 3
+        if (r["kind"] == "job_done" and d.get("ghosts") == 1 and d.get("tiles") == 3
                 and not d.get("skipped_total") and not d.get("to_remove_total") and not d.get("tiles_skipped")):
             anchor = a
             break
@@ -131,7 +132,7 @@ def run(client) -> dict:
         reasons.append(f"build_blueprint не done: {result['build']}")
     else:
         for key, want in (("ghosts", 1), ("built", 4), ("left", 0), ("tiles_built", 3), ("tiles_first", True),
-                          ("tiles_skipped", 0), ("tiles", {tile: 3})):
+                          ("tiles_skipped", 0), ("tiles", 3), ("on_liquid", 0)):
             if d.get(key) != want:
                 reasons.append(f"{key} = {d.get(key)}, а не {want}")
     after = {tile_item: P.helper_count(client, tile_item), chest: P.helper_count(client, chest)}

@@ -280,9 +280,22 @@ end
 
 -- ------------------------------------------------------------------ досягаемость и подход
 
+-- Деревья, камни и рыба копаются рукой только вблизи — как руда, с resource_reach_distance (2.7),
+-- а не с reach_distance (10): ACTIONS.md «Подход». Живой замер 2026-10-13 (2.0.77): с 5–9 клеток
+-- `can_reach_entity` для камня и дерева = false, а `selected` + `mining_state` ничего не добывают.
+-- Это типы прототипов, а не имена: камни и деревья планет из модов подпадают сами.
+M.NEAR_ONLY = { tree = true, ["simple-entity"] = true, fish = true }
+M.NEAR_MARGIN = 0.3   -- запас к resource_reach_distance
+
+--- Вид досягаемости для добычи/разбора сущности рукой: "near" (вплотную) │ "reach".
+function M.dig_kind(e)
+  if M.NEAR_ONLY[e.type] then return "near" end
+  return "reach"
+end
+
 --- Досягаемость персонажа с бонусами силы (PROTOCOL §6.3).
 function M.reach(h, kind)
-  if kind == "resource" then return h.resource_reach_distance end
+  if kind == "resource" or kind == "near" then return h.resource_reach_distance end
   if kind == "pickup" then return h.item_pickup_distance end
   if kind == "build" then return h.build_distance end
   return h.reach_distance
@@ -294,6 +307,12 @@ function M.in_reach(h, e, kind)
   if kind == "reach" or kind == nil then
     local ok, r = pcall(function() return h.can_reach_entity(e) end)
     if ok and type(r) == "boolean" then return r end
+  end
+  if kind == "near" then
+    -- движок сам знает размер камня; если он говорит «нет» — по расстоянию до центра с запасом
+    local ok, r = pcall(function() return h.can_reach_entity(e) end)
+    if ok and r == true then return true end
+    return util.dist(util.xy(h.position), util.xy(e.position)) <= M.reach(h, kind) - M.NEAR_MARGIN
   end
   return util.dist(util.xy(h.position), util.xy(e.position)) <= M.reach(h, kind)
 end
@@ -323,6 +342,9 @@ function M.approach(task, ctx, e, kind)
   local dist
   if kind == "resource" then
     dist = reach - 0.5 - tries * 0.5
+  elseif kind == "near" then
+    -- почти на предел: ближе мешает сама сущность (камень занимает пару клеток)
+    dist = reach - M.NEAR_MARGIN - 0.4 - tries * 0.4
   elseif kind == "pickup" then
     dist = reach * 0.6 - tries * 0.2
   else
