@@ -123,12 +123,12 @@ S.suite("hands_mine", {
       S.eq(C.wait(mine{ target = { unit_number = hid.unit_number }, count = 1 }).code, "not_charted")
       S.eq(enemy.valid and far.valid and hid.valid, true)
   end },
-  { "полный инвентарь: событие inventory_full и failed{stuck, reason}", function()
+  { "полный инвентарь: событие inventory_full и failed{no_space, reason}", function()
       local W = C.setup{ size = 1, items = { stone = 50 } }
       C.resource("iron-ore", { x = 5.5, y = 0.5 }, 10)
       local job = mine{ resource = "iron-ore", count = 2 }
       local d = C.wait(job)
-      S.eq({ d.code, d.detail.reason }, { "stuck", "inventory_full" })
+      S.eq({ d.code, d.detail.reason }, { "no_space", "inventory_full" })
       local ev = C.events("inventory_full")
       S.eq(#ev, 1)
       S.eq(ev[1].data, { job = job })

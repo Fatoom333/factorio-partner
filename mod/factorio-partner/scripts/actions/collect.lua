@@ -7,9 +7,12 @@
 -- задачи резервирует нужное за собой (storage.reservations, снимается в конце). Обходит склады
 -- жадно — ближайший к помощнику, где ещё есть нужное; к каждому подходит на reach_distance.
 -- done.detail = {collected: items, missing: items, from: [unit_number]}; ничего не собрано →
--- failed{no_items} с той же detail; полный инвентарь — inventory_full, итог с тем, что успел.
+-- failed{no_items} с той же detail; полный инвентарь — событие inventory_full и failed{no_space}
+-- (detail — что успел собрать). Остался только неделимый стак (предмет с данными/портящийся
+-- больше остатка заявки) — failed{no_items, detail.reason="whole_stacks_only"}.
 local reserve = require("scripts.core.reserve")
 local util = require("scripts.core.util")
+local target = require("scripts.core.target")
 local inv = require("scripts.lib.inventory")
 local extract = require("scripts.actions.extract")
 local C = require("scripts.perception.state").common
@@ -21,7 +24,7 @@ M.schema = {
   items = { type = "items", required = true, min_kinds = 1 },
   center = { type = "pos" },
   near = { type = "string", values = { "player" } },
-  radius = { type = "number", min = 1, default = 64 },
+  radius = { type = "number", min = 1, max = 128, default = 64 },
 }
 
 M.MAX_RADIUS = 128
@@ -57,8 +60,12 @@ local function finish(task, ctx)
   release(task, ctx)
   inv.stop_approach(task, ctx)
   local detail = result(task)
+  if task.full then return inv.full_result(task, ctx, detail) end
   if next(task.collected) == nil then
-    if task.full then return inv.full_result(task, ctx, detail) end
+    if task.split then
+      detail.reason = "whole_stacks_only"
+      return inv.failed("no_items", "items with data or spoilage move only as whole stacks", detail)
+    end
     return inv.failed("no_items", "nothing to collect in range", detail)
   end
   return inv.done(detail)
@@ -74,7 +81,7 @@ function M.start(task, ctx)
   local h = ctx.entity
   local filter = {}
   for name in pairs(a.items) do filter[name] = true end
-  local scan = stock.scan(h.surface, h.force, where.center, a.radius, filter)
+  local scan = stock.scan(h.surface, h.force, where.center, a.radius, filter, ctx.helper_id)
 
   -- сколько можно взять: видимое на складах минус чужой резерв
   task.want = {}
@@ -115,10 +122,8 @@ local function next_container(task, h, need)
   end
   if best == nil then return nil end
   table.remove(task.plan, bi)
-  local e = game.get_entity_by_unit_number(best.unit)
-  if e == nil or not e.valid or e.surface.index ~= h.surface.index or not inv.allowed_force(h, e) then
-    return next_container(task, h, need)
-  end
+  local e = target.resolve(h.surface, { unit_number = best.unit, pos = best.pos }, h.force)
+  if e == nil then return next_container(task, h, need) end
   return e
 end
 
@@ -142,6 +147,7 @@ function M.tick(task, ctx)
   if src ~= nil then
     -- свой резерв на эти предметы на время переноса снят не будет: reserved_by_others его не видит
     local got, _, flags = extract.take(task, ctx, src, need)
+    if flags.split then task.split = true end
     if next(got) ~= nil then
       task.from[#task.from + 1] = task.cur.unit_number
       for name, n in pairs(got) do inv.add(task.collected, name, n) end

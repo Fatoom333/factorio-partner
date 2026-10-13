@@ -25,7 +25,11 @@ local function setup(entities, opts)
     items = { "iron-plate", "iron-gear-wheel", "iron-ore", "copper-ore", "uranium-ore", "stone" },
     fluids = { "crude-oil", "sulfuric-acid", "water" },
   }
-  return surf, force, L.character(force, surf, { x = 5, y = 5 })
+  local h = L.character(force, surf, { x = 5, y = 5 })
+  -- тело помощника в storage.helpers: «глаза» core.vis (≤ 32 клеток от тела)
+  storage = storage or {}
+  storage.helpers = { h1 = { state = "alive", entity = h } }
+  return surf, force, h
 end
 
 local function call(args, helper)

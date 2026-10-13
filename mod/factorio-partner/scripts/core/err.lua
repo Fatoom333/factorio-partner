@@ -7,7 +7,7 @@ M.CODES = {
   bad_request = true, version_mismatch = true, unknown_op = true, bad_args = true,
   no_helper = true, helper_exists = true, cooldown = true, no_player = true, limit = true,
   not_found = true, not_reachable = true, no_items = true, cannot_place = true,
-  not_charted = true, not_visible = true, reserved = true, path_failed = true, stuck = true,
+  not_charted = true, not_visible = true, reserved = true, path_failed = true, stuck = true, no_space = true,
   cancelled = true, too_large = true, internal = true,
 }
 

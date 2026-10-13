@@ -279,8 +279,19 @@ class Core:
             return await self._mod("map", args, h)
         return await self._tool("partner_map", helper, key, a, run)
 
-    async def op_resources(self, helper, key, radius=None, name=None, near_player=False) -> dict:
-        a = {"radius": radius, "name": name, "near_player": near_player}
+    @staticmethod
+    def _where(args: dict, center, near) -> None:
+        """center? | near? (STATE.md): the centre of a read — a position or the owner."""
+        if center is not None and near is not None:
+            raise V.bad("args", "use only one of center / near")
+        if center is not None:
+            args["center"] = V.pos("center", center)
+        if near is not None:
+            args["near"] = V.enum("player")("near", near)
+
+    async def op_resources(self, helper, key, radius=None, name=None, center=None,
+                           near=None) -> dict:
+        a = {"radius": radius, "name": name, "center": center, "near": near}
 
         async def run(h):
             args: dict = {}
@@ -288,27 +299,29 @@ class Core:
                 args["radius"] = V.number(1, 128)("radius", radius)
             if name is not None:
                 args["name"] = V.name("name", name)
-            if V.boolean("near_player", near_player):
-                args["near"] = "player"
+            self._where(args, center, near)
             return await self._mod("resources", args, h)
         return await self._tool("partner_resources", helper, key, a, run)
 
-    async def op_stock(self, helper, key, radius=None, items=None, near_player=False) -> dict:
-        a = {"radius": radius, "items": items, "near_player": near_player}
+    async def op_stock(self, helper, key, radius=None, items=None, limit=None, center=None,
+                       near=None) -> dict:
+        a = {"radius": radius, "items": items, "limit": limit, "center": center, "near": near}
 
         async def run(h):
             args: dict = {}
             if radius is not None:
                 args["radius"] = V.number(1, 128)("radius", radius)
             if items is not None:
-                args["items"] = V.check_types("items", items)
-            if V.boolean("near_player", near_player):
-                args["near"] = "player"
+                args["items"] = V.check_names("items", items)
+            if limit is not None:
+                args["limit"] = V.integer(1, 200)("limit", limit)
+            self._where(args, center, near)
             return await self._mod("stock", args, h)
         return await self._tool("partner_stock", helper, key, a, run)
 
-    async def op_ghosts(self, helper, key, radius=None, area=None) -> dict:
-        a = {"radius": radius, "area": area}
+    async def op_ghosts(self, helper, key, radius=None, area=None, center=None,
+                        near=None) -> dict:
+        a = {"radius": radius, "area": area, "center": center, "near": near}
 
         async def run(h):
             if radius is not None and area is not None:
@@ -318,6 +331,7 @@ class Core:
                 args["radius"] = V.number(1, 128)("radius", radius)
             if area is not None:
                 args["area"] = V.area("area", area)
+            self._where(args, center, near)
             return await self._mod("ghosts", args, h)
         return await self._tool("partner_ghosts", helper, key, a, run)
 
@@ -336,7 +350,7 @@ class Core:
             elif area is not None:
                 raise V.bad("area", "only for scope=area")
             if items is not None:
-                args["items"] = V.check_types("items", items)
+                args["items"] = V.check_names("items", items)
             if top is not None:
                 args["top"] = V.integer(1, 100)("top", top)
             if surface is not None:

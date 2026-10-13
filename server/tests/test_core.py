@@ -92,12 +92,58 @@ async def test_map_near_player(core, fake):
 
 
 async def test_resources_stock_near_player(core, fake):
-    await core.op_resources("h1", KEY, radius=100, name="iron-ore", near_player=True)
+    await core.op_resources("h1", KEY, radius=100, name="iron-ore", near="player")
     assert last_env(fake, "resources")["args"] == {"radius": 100, "name": "iron-ore", "near": "player"}
     await core.op_stock("h1", KEY, items=["iron-plate"])
     assert last_env(fake, "stock")["args"] == {"items": ["iron-plate"]}
     e = await code_of(core.op_resources("h1", KEY, radius=129))
     assert e.code == "limit"
+
+
+async def test_resources_stock_ghosts_center_or_near(core, fake):
+    c = {"x": 5, "y": -3}
+    await core.op_resources("h1", KEY, center=c)
+    assert last_env(fake, "resources")["args"] == {"center": c}
+    await core.op_stock("h1", KEY, center=c, limit=10)
+    assert last_env(fake, "stock")["args"] == {"limit": 10, "center": c}
+    await core.op_stock("h1", KEY, near="player")
+    assert last_env(fake, "stock")["args"] == {"near": "player"}
+    await core.op_ghosts("h1", KEY, radius=20, center=c)
+    assert last_env(fake, "ghosts")["args"] == {"radius": 20, "center": c}
+    await core.op_ghosts("h1", KEY, near="player")
+    assert last_env(fake, "ghosts")["args"] == {"near": "player"}
+    for call in (core.op_resources("h1", KEY, center=c, near="player"),
+                 core.op_stock("h1", KEY, center=c, near="player"),
+                 core.op_ghosts("h1", KEY, center=c, near="player")):
+        assert (await code_of(call)).code == "bad_args"
+    assert (await code_of(core.op_stock("h1", KEY, near="helper"))).code == "bad_args"
+    assert (await code_of(core.op_stock("h1", KEY, limit=201))).code == "limit"
+
+
+async def test_rates_stock_items_up_to_100(core, fake):
+    names = [f"item-{i}" for i in range(100)]
+    await core.op_rates("h1", KEY, items=names, top=100)
+    assert last_env(fake, "rates")["args"]["items"] == names
+    await core.op_stock("h1", KEY, items=names)
+    assert last_env(fake, "stock")["args"]["items"] == names
+    too_many = names + ["one-more"]
+    assert (await code_of(core.op_rates("h1", KEY, items=too_many))).code == "limit"
+    assert (await code_of(core.op_stock("h1", KEY, items=too_many))).code == "limit"
+    assert (await code_of(core.op_rates("h1", KEY, top=101))).code == "limit"
+
+
+async def test_act_target_with_pos_and_follow_bounds(core, fake):
+    t = {"unit_number": 77, "pos": {"x": 1.5, "y": 2.5}}
+    await core.op_act("h1", KEY, "extract", {"target": t})
+    assert last_env(fake, "act")["args"]["args"]["target"] == t
+    e = await code_of(core.op_act("h1", KEY, "extract", {"target": {"unit_number": 5, "name": "x"}}))
+    assert e.code == "bad_args"
+    e = await code_of(core.op_act("h1", KEY, "follow", {"duration_s": 3601}))
+    assert e.code == "limit"
+    e = await code_of(core.op_act("h1", KEY, "follow", {"distance": 33}))
+    assert e.code == "limit"
+    e = await code_of(core.op_act("h1", KEY, "follow", {"distance": 0}))
+    assert e.code == "bad_args"
 
 
 async def test_ghosts_and_rates(core, fake):

@@ -57,6 +57,6 @@ S.suite("move_follow", {
       B.setup()
       S.err(S.req("act", { ["do"] = "follow", args = { distance = 0 } }, "h1"), "bad_args")
       S.err(S.req("act", { ["do"] = "follow", args = { duration_s = 1.5 } }, "h1"), "bad_args")
-      S.err(S.req("act", { ["do"] = "follow", args = { duration_s = 3601 } }, "h1"), "bad_args")
+      S.err(S.req("act", { ["do"] = "follow", args = { duration_s = 3601 } }, "h1"), "limit")
   end },
 })
