@@ -55,7 +55,7 @@ S.suite("hands_collect", {
   end },
   { "аргументы: radius > 128 — limit, лишнее — bad_args, near только player", function()
       C.setup()
-      S.eq(C.wait(collect{ items = { coal = 1 }, radius = 200 }).code, "limit")
+      S.err(C.act("collect", { items = { coal = 1 }, radius = 200 }), "limit")
       S.err(C.act("collect", { items = { coal = 1 }, near = "base" }), "bad_args")
       S.err(C.act("collect", { items = { coal = 1 }, radius = 0 }), "bad_args")
       S.err(C.act("collect", {}), "bad_args")
