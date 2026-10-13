@@ -7,8 +7,14 @@
 # 2. По SSH (`pc`) кладёт пакет в D:\Temp\fp-live-<N>, разворачивает сервер без окна на копии сейва
 #    (жёсткие ссылки на моды, auto_pause:false, всё на 127.0.0.1, RCON 27100+N, игра 34200+N,
 #    пароль генерируется на ПК в файл).
-# 3. Запускает сценарий через live_client.py (только конверты /partner).
-# 4. /quit, забирает results-<N>.json и журналы в -OutDir, удаляет папку слота (если не -Keep).
+# 3. Запускает сценарий через live_client.py (только конверты /partner); сценарий с RUNNER = "server"
+#    идёт через server_client.py — настоящий пакет server/factorio_partner (bridge + core) против RCON слота.
+# 4. /quit, проверка вынесенного журнала игры по log_must_not_match сценария, забирает results-<N>.json
+#    и журналы в -OutDir, удаляет папку слота (если не -Keep).
+# forge на ПК (для partner_plan): пути — в tools/pc/pc.local.json (forge, forge_home, forge_profile) или
+# в переменных окружения запуска FP_FORGE, FACTORIO_FORGE_HOME, FP_FORGE_PROFILE; в git их нет.
+# -Local: сценарий исполняется на этой машине через SSH-туннель к RCON слота (forge — здешний, пути
+# только из тех же переменных окружения); сервер игры и журнал — по-прежнему на ПК.
 # Код выхода: 0 — сценарий ok, 1 — сценарий не ok, 2 — сбой стенда.
 
 [CmdletBinding()]
@@ -44,7 +50,16 @@ param(
     [string]$Python = 'python',
 
     # Не удалять папку слота на ПК (для разбора). Сервер всё равно останавливается.
-    [switch]$Keep
+    [switch]$Keep,
+
+    # Исполнять сценарий на ЭТОЙ машине, а не на ПК: RCON слота пробрасывается SSH-туннелем
+    # (127.0.0.1 здесь <-> 127.0.0.1 на ПК, наружу RCON по-прежнему не слушает). Нужно, когда настоящий
+    # forge с профилем сейва стоит на этой машине: тогда partner_plan зовёт его. Пути forge — из
+    # окружения запуска (FP_FORGE, FACTORIO_FORGE_HOME, FP_FORGE_PROFILE), как у самого сервера.
+    [switch]$Local,
+
+    # Python 3.11+ на этой машине с зависимостями пакета сервера — для -Local. Пусто — как -Python.
+    [string]$LocalPython
 )
 
 Set-StrictMode -Version 2.0
@@ -62,6 +77,9 @@ if (-not $OutDir) {
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 $Work = Join-Path $OutDir 'build'
 New-Item -ItemType Directory -Force -Path $Work | Out-Null
+$LocalDir = Join-Path $OutDir 'local'      # -Local: «папка слота» на этой машине (пароль, out\, fp-home\)
+$Tunnel = $null
+if (-not $LocalPython) { $LocalPython = $Python }
 
 function Invoke-Pc([string]$Script) {
     # Многострочный PowerShell на ПК: только через -EncodedCommand (PS 5.1 съедает кавычки в аргументах ssh).
@@ -80,6 +98,45 @@ function Invoke-Stand([string]$Action) {
     $ErrorActionPreference = 'Continue'
     & ssh -o BatchMode=yes $SshHost "powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $Remote\stand\stand.ps1 -Action $Action" | Out-Host
     return $LASTEXITCODE
+}
+
+function Test-LocalPort([int]$Port) {
+    $c = New-Object Net.Sockets.TcpClient
+    try { $c.Connect('127.0.0.1', $Port); return $true } catch { return $false } finally { $c.Close() }
+}
+
+function Invoke-LocalRun {
+    # Сценарий на этой машине: одноразовый пароль слота забирается в папку результатов (удаляется в
+    # finally), RCON ПК виден здесь только на 127.0.0.1 через SSH-туннель. В игру по-прежнему уходят
+    # только конверты /partner: шлют их те же live_client.py и пакет сервера.
+    $port = 27100 + $Slot
+    New-Item -ItemType Directory -Force -Path (Join-Path $LocalDir 'out') | Out-Null
+    if (Test-LocalPort $port) { throw "порт $port на этой машине уже занят — туннель не открыть" }
+    $ErrorActionPreference = 'Continue'
+    & scp -q -o BatchMode=yes "${SshHost}:$RemoteFwd/rcon.pw" (Join-Path $LocalDir 'rcon.pw')
+    if ($LASTEXITCODE -ne 0) { throw 'не удалось забрать файл пароля слота' }
+    $script:Tunnel = Start-Process -FilePath 'ssh' -PassThru -WindowStyle Hidden -ArgumentList @(
+        '-N', '-o', 'BatchMode=yes', '-o', 'ExitOnForwardFailure=yes',
+        '-L', "127.0.0.1:${port}:127.0.0.1:${port}", $SshHost)
+    $deadline = (Get-Date).AddSeconds(20)
+    while (-not (Test-LocalPort $port)) {
+        if ($script:Tunnel.HasExited -or (Get-Date) -gt $deadline) { throw 'SSH-туннель к RCON слота не поднялся' }
+        Start-Sleep -Milliseconds 300
+    }
+    $runner = [string](& $Python (Join-Path $Here 'pack.py') scenario-runner --name $Scenario)
+    $client = if ($runner.Trim() -eq 'server') { 'server_client.py' } else { 'live_client.py' }
+    Write-Host "слот $Slot`: сценарий $Scenario исполняется на этой машине ($client), RCON — через туннель"
+    & $LocalPython (Join-Path $Here $client) run --slot $Slot --dir $LocalDir --scenario $Scenario --timeout $TimeoutSec | Out-Host
+    return $LASTEXITCODE
+}
+
+function Close-LocalRun {
+    if ($script:Tunnel -and -not $script:Tunnel.HasExited) {
+        Stop-Process -Id $script:Tunnel.Id -Force -ErrorAction SilentlyContinue
+    }
+    foreach ($p in @((Join-Path $LocalDir 'rcon.pw'), (Join-Path $LocalDir 'fp-home\helpers.json'))) {
+        if (Test-Path -LiteralPath $p) { Remove-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue }
+    }
 }
 
 # Остановить серверы этого слота (только factorio.exe из папки слота) и удалить папку слота.
@@ -129,7 +186,7 @@ try {
     if ((Invoke-Stand 'deploy') -ne 0) { throw 'сервер не поднялся' }
 
     # 3. Сценарий.
-    $code = Invoke-Stand 'run'
+    $code = if ($Local) { Invoke-LocalRun } else { Invoke-Stand 'run' }
     $status = if ($code -eq 0) { 0 } elseif ($code -eq 1) { 1 } else { 2 }
 }
 catch {
@@ -140,7 +197,10 @@ finally {
     if ($deployed) {
         # 4. Остановка, сбор, уборка.
         if ((Invoke-Stand 'stop') -ne 0) { Write-Host 'остановка вернула ошибку — уборка всё равно' }
-        foreach ($f in @("results-$Slot.json", "live-$Slot.log", "factorio-$Slot.log")) {
+        # server-/calls- есть только у сценариев с RUNNER = "server" (журнал сервера и вызовы помощника,
+        # без ключей и пароля); нет файла — scp молча пропускает.
+        foreach ($f in @("results-$Slot.json", "live-$Slot.log", "factorio-$Slot.log",
+                "server-$Slot.log", "calls-$Slot.jsonl")) {
             $ErrorActionPreference = 'Continue'
             & scp -q -o BatchMode=yes "${SshHost}:$RemoteFwd/out/$f" "$OutDir" 2>$null
         }
@@ -150,6 +210,22 @@ finally {
         else {
             Write-Host "папка слота оставлена: $Remote (-Keep)"
         }
+    }
+    if ($Local) {
+        # Итог сценария лежит здесь; журнал игры уже вынесен с ПК вычищенным — проверяем его тем же
+        # check-log, что и стенд на ПК, и складываем всё в -OutDir.
+        $ErrorActionPreference = 'Continue'
+        $localOut = Join-Path $LocalDir 'out'
+        $gameLog = Join-Path $OutDir "factorio-$Slot.log"
+        if ((Test-Path -LiteralPath $localOut) -and (Test-Path -LiteralPath (Join-Path $localOut "results-$Slot.json"))) {
+            if (Test-Path -LiteralPath $gameLog) { Copy-Item -LiteralPath $gameLog -Destination $localOut -Force }
+            & $Python (Join-Path $Here 'live_client.py') check-log --slot $Slot --dir $LocalDir | Out-Host
+            foreach ($f in @("results-$Slot.json", "live-$Slot.log", "server-$Slot.log", "calls-$Slot.jsonl")) {
+                $src = Join-Path $localOut $f
+                if (Test-Path -LiteralPath $src) { Copy-Item -LiteralPath $src -Destination $OutDir -Force }
+            }
+        }
+        Close-LocalRun
     }
     Remove-Item -LiteralPath $Work -Recurse -Force -ErrorAction SilentlyContinue
 }
