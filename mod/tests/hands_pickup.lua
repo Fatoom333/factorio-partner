@@ -59,6 +59,55 @@ S.suite("hands_pickup", {
       S.eq(C.data_destroyed, 0)
       S.ok(W.h.can_reach_entity(c))
   end },
+  { "труп по форме {name:\"character-corpse\", pos}: место из события смерти, неточное до 3 клеток", function()
+      local W = C.setup()
+      local c = corpse({ x = 20.3, y = 0.7 }, { coal = 30, stone = 2 })
+      rawset(c, "unit_number", nil)   -- у трупа в игре номера нет
+      local d, kind = C.wait(pickup{ target = { name = "character-corpse", pos = { x = 21.5, y = 2 } } })
+      S.eq(kind, "job_done", S.dump(d))
+      S.eq(d.detail, { picked = { coal = 30, stone = 2 } })
+      S.ok(c.get_inventory(defines.inventory.character_corpse).is_empty())
+      S.ok(W.h.can_reach_entity(c))
+      S.eq(C.counts(W.main), { coal = 30, stone = 2 })
+  end },
+  { "труп по {name, pos}: из нескольких — непустой и ближний; чужой силы и в неоткрытом чанке не берётся", function()
+      local W = C.setup()
+      local empty = corpse({ x = 20.5, y = 0.5 }, {})
+      local full = corpse({ x = 21.5, y = 0.5 }, { coal = 5 })
+      local full_far = corpse({ x = 22.5, y = 0.5 }, { stone = 7 })
+      local d = C.wait(pickup{ target = { name = "character-corpse", pos = { x = 20.5, y = 0.5 } } })
+      S.eq(d.detail, { picked = { coal = 5 } })
+      S.ok(empty.valid and full.valid and full_far.valid)
+      S.eq(C.counts(full_far.get_inventory(defines.inventory.character_corpse)), { stone = 7 })
+      -- дальше 3 клеток от pos — not_found
+      S.eq(C.wait(pickup{ target = { name = "character-corpse", pos = { x = 30, y = 0.5 } } }).code, "not_found")
+      -- чужая сила
+      local e = S.nauvis.create_entity{ name = "character-corpse", position = { x = 50.5, y = 0.5 }, force = "enemy" }
+      e.inventories = { [defines.inventory.character_corpse] = C.inventory{ size = 20, items = { coal = 1 } } }
+      S.eq(C.wait(pickup{ target = { name = "character-corpse", pos = { x = 50.5, y = 0.5 } } }).code, "not_found")
+      -- неоткрытый чанк
+      local hid = corpse({ x = 70.5, y = 0.5 }, { coal = 1 })
+      game.forces.player.uncharted[S.chunk_key(S.nauvis, { x = 2, y = 0 })] = true
+      S.eq(C.wait(pickup{ target = { name = "character-corpse", pos = { x = 70.5, y = 0.5 } } }).code, "not_charted")
+      S.eq(C.counts(hid.get_inventory(defines.inventory.character_corpse)), { coal = 1 })
+      S.eq(C.counts(W.main), { coal = 5 })
+  end },
+  { "труп по {name, pos}: имя не трупа — bad_args с подсказкой формы; неизвестное имя — not_found; труп из мода", function()
+      local W = C.setup()
+      C.chest({ x = 3.5, y = 0.5 }, { coal = 1 })
+      local d = C.wait(pickup{ target = { name = "iron-chest", pos = { x = 3.5, y = 0.5 } } })
+      S.eq(d.code, "bad_args")
+      S.ok(d.text:find("character-corpse", 1, true), d.text)
+      S.eq(C.wait(pickup{ target = { name = "no-such-thing", pos = { x = 3.5, y = 0.5 } } }).code, "not_found")
+      S.err(C.act("pickup", { target = { name = "character-corpse" } }), "bad_args")
+      -- труп персонажа из мода: имя другое, тип тот же
+      prototypes.entity["robo-corpse"] = { name = "robo-corpse", type = "character-corpse" }
+      local c = S.nauvis.create_entity{ name = "robo-corpse", position = { x = 6.5, y = 0.5 }, force = "player" }
+      c.inventories = { [defines.inventory.character_corpse] = C.inventory{ size = 20, items = { coal = 2 } } }
+      local d2, k2 = C.wait(pickup{ target = { name = "robo-corpse", pos = { x = 6.5, y = 0.5 } } })
+      S.eq(k2, "job_done", S.dump(d2))
+      S.eq(C.counts(W.main), { coal = 2 })
+  end },
   { "аргументы: ровно одно; цель не труп — bad_args", function()
       C.setup()
       local ch = C.chest({ x = 3.5, y = 0.5 }, { coal = 1 })

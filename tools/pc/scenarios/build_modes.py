@@ -11,8 +11,11 @@ Ctrl+Shift) записано в ACTIONS.md со слов игрока. Здес�
 * `own` — своя постройка 2×2 (печь), которую помощник сам поставил через `place`.
 
 Для каждого места и режима: `dry_run` (оценка мода) → настоящая постановка с `mode: hand` →
-осмотр (`map`, `ghosts`). В запись идут: сколько призраков встало, какие призраки плиток добавил
-движок (`tiles`), что помечено к сносу (`to_remove`), что помощник разобрал (`removed`) и построил.
+осмотр (`map`, `ghosts`). В запись идут: сколько призраков встало, сколько призраков плиток добавил
+движок (`tiles`), что помечено к сносу (`to_remove`), что помощник разобрал (`removed`) и построил,
+а на лаве — клетки без возможной подложки (`on_liquid`, `liquids`) и найденный сдвиг (`fit`).
+Ревизия 3.3: на плитке без возможной подложки forced/superforced не ставят чертёж вовсе
+(`cannot_place`), normal пропускает клетку с причиной `liquid`.
 
 Итог `ok` — это «сценарий отработал и мод вёл себя согласованно», а не «движок совпал с контрактом»:
 совпадение с контрактом — в `facts` и `contract` (true/false по каждому утверждению), расхождения
@@ -91,20 +94,23 @@ def trial(client, blob, place, mode, anchor, obstacle=None):
 
 def fact(t):
     d = t["run"]["detail"]
-    return {"result": t["run"]["code"] or t["run"]["kind"], "ghosts": d.get("ghosts"), "tiles": d.get("tiles") or {},
-            "marked": d.get("to_remove_total", 0), "marked_names": sorted({e["name"] for e in d.get("to_remove") or []}),
-            "removed": d.get("removed", 0), "built": d.get("built", 0), "missing": d.get("missing") or {},
-            "skipped": [s.get("reason") for s in d.get("skipped") or []],
-            "obstacle_left": t["after"].get("obstacle_left"), "built_on_map": t["after"]["built"]}
+    out = {"result": t["run"]["code"] or t["run"]["kind"], "ghosts": d.get("ghosts"), "tiles": d.get("tiles") or 0,
+           "marked": d.get("to_remove_total", 0), "marked_names": sorted({e["name"] for e in d.get("to_remove") or []}),
+           "removed": d.get("removed", 0), "built": d.get("built", 0), "missing": d.get("missing") or {},
+           "skipped": [s.get("reason") for s in d.get("skipped") or []],
+           "obstacle_left": t["after"].get("obstacle_left"), "built_on_map": t["after"]["built"]}
+    if d.get("on_liquid"):
+        out.update(on_liquid=d.get("on_liquid"), liquids=d.get("liquids") or {}, fit=d.get("fit"))
+    return out
 
 
 def mismatch(t):
     """Где оценка dry_run разошлась с настоящей постановкой."""
     a, b = t["dry_run"]["detail"], t["run"]["detail"]
     out = {}
-    for key in ("ghosts", "to_remove_total", "tiles", "tiles_skipped", "skipped_total"):
+    for key in ("ghosts", "to_remove_total", "tiles", "tiles_skipped", "skipped_total", "on_liquid"):
         x, y = a.get(key), b.get(key)
-        if (x or 0) != (y or 0) and (x or {}) != (y or {}):
+        if (x or 0) != (y or 0):
             out[key] = {"dry_run": x, "run": y}
     return out
 
@@ -190,12 +196,17 @@ def run(client) -> dict:
     def got(place, mode, key, default=None):
         return ((facts.get(place) or {}).get(mode) or {}).get(key, default)
 
-    # утверждения ACTIONS.md ревизии 3.2 (None — место не нашлось, проверить нечем)
+    # утверждения ACTIONS.md ревизии 3.3 (None — место не нашлось, проверить нечем)
+    lava = "lava" in facts
     result["contract"] = {
         "normal_marks_nothing": all(f.get("marked", 0) == 0 for p in facts.values() for m, f in p.items() if m == "normal"),
         "normal_on_obstacle_places_no_ghost": None if "rock" not in facts else got("rock", "normal", "ghosts") == 0,
-        "forced_on_lava_puts_tile_ghosts": None if "lava" not in facts else bool(got("lava", "forced", "tiles")),
-        "forced_on_lava_tile_names": got("lava", "forced", "tiles"),
+        "normal_on_lava_skips_cell": None if not lava else got("lava", "normal", "skipped") == ["liquid"],
+        "forced_on_lava_puts_tile_ghosts": None if not lava else bool(got("lava", "forced", "tiles")),
+        "forced_on_lava_refuses_whole": None if not lava else (
+            got("lava", "forced", "result") == "cannot_place" and bool(got("lava", "forced", "on_liquid"))),
+        "forced_on_lava_liquids": got("lava", "forced", "liquids"),
+        "forced_on_lava_gives_fit": None if not lava else got("lava", "forced", "fit") is not None,
         "forced_marks_rock": None if "rock" not in facts else got("rock", "forced", "marked", 0) > 0,
         "forced_marks_tree": None if "tree" not in facts else got("tree", "forced", "marked", 0) > 0,
         "forced_marks_own_building": None if "own" not in facts else got("own", "forced", "marked", 0) > 0,
@@ -215,6 +226,16 @@ def run(client) -> dict:
             elif t[step]["code"] in BAD_CODES:
                 reasons.append(f"{tag}: {step} → {t[step]['code']} ({t[step].get('text')})")
         d = t["run"]["detail"]
+        if d.get("on_liquid") and t["force"] != "normal" and t["run"]["kind"] is not None:
+            # клетка без возможной подложки: чертёж не ставится вовсе, оценка говорит то же без ошибки
+            if t["run"]["code"] != "cannot_place":
+                reasons.append(f"{tag}: on_liquid = {d.get('on_liquid')}, а итог {t['run']['code'] or t['run']['kind']}")
+            if t["after"]["ghosts"] or t["after"]["built"]:
+                reasons.append(f"{tag}: чертёж не должен встать, а на карте {t['after']}")
+            if not isinstance(d.get("liquids"), dict) or not d.get("liquids"):
+                reasons.append(f"{tag}: нет detail.liquids: {d.get('liquids')}")
+            if t["dry_run"]["kind"] != "job_done":
+                reasons.append(f"{tag}: dry_run при on_liquid должен быть done, а он {t['dry_run']['code']}")
         if t["run"]["kind"] == "job_done":
             # согласованность мода: готово — значит, всё поставленное построено и помеченное разобрано
             if d.get("left") != 0:
