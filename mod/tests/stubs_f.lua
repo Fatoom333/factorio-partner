@@ -123,8 +123,10 @@ function F.prototypes()
   T["grass-1"] = { name = "grass-1", collision_mask = { layers = { ground_tile = true } } }
   T["stone-path"] = { name = "stone-path", collision_mask = { layers = { ground_tile = true } } }
   T["landfill"] = { name = "landfill", collision_mask = { layers = { ground_tile = true } } }
-  T["water"] = { name = "water", collision_mask = { layers = { water_tile = true } }, default_cover_tile = T["landfill"] }
-  T["lava"] = { name = "lava", collision_mask = { layers = { water_tile = true, lava_tile = true } } }
+  -- жидкости: по ним не ходят (слой player, как у тела) и на них не строят (слой water_tile)
+  T["water"] = { name = "water", collision_mask = { layers = { water_tile = true, player = true } }, default_cover_tile = T["landfill"] }
+  T["lava"] = { name = "lava", collision_mask = { layers = { water_tile = true, lava_tile = true, player = true } } }
+  prototypes.entity["character"].collision_mask = { layers = { player = true } }
   tile_item("stone-brick", "stone-path", { water_tile = true })
   tile_item("landfill", "landfill", { ground_tile = true })
   -- отсыпка кладётся только на воду (на лаву — нет), как в игре
@@ -158,6 +160,11 @@ end
 function F.mark(e)
   rawset(e, "_marked", true)
   rawset(e, "to_be_deconstructed", function() return rawget(e, "_marked") == true end)
+  rawset(e, "cancel_deconstruction", function(force)
+    if force == nil then error("cancel_deconstruction: force is required", 2) end
+    rawset(e, "_marked", false)
+    F.unmarked[#F.unmarked + 1] = { name = e.name, force = force.name or force }
+  end)
   return e
 end
 
@@ -516,6 +523,10 @@ local function fake_script_inventory(size)
   end
   function st.get_blueprint_tiles() return bp.tiles end
   function st.set_blueprint_tiles(t) bp.tiles = t end
+  function st.set_blueprint_entities(t)
+    bp.entities = t
+    F.bp_set_entities = F.bp_set_entities + 1
+  end
   function st.build_blueprint(p) return engine_build(bp, p) end
   local binv = { valid = true, [1] = st }
   function binv.destroy()
@@ -548,6 +559,7 @@ function F.setup(opts)
   F.blueprints, F.bp_calls, F.imported = {}, {}, {}
   F.bp_created, F.bp_destroyed, F.tile_ghosts, F.bp_shift = 0, 0, 0, nil
   F.proxy, F.bp_return_existing, F.ghost_restored = nil, false, 0
+  F.unmarked, F.bp_set_entities = {}, 0
   F.physics = true
   -- как в игре (живой замер 2026-10-13): камни и деревья достаются только с resource_reach_distance
   F.reach_only_openable = false

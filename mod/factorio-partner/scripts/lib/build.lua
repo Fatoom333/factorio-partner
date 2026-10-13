@@ -10,6 +10,10 @@
 -- * разбор руками M.dig_new/M.dig_step (selected + mining_state до исчезновения) — общий для
 --   deconstruct и для разбора помеченного к сносу перед стройкой;
 -- * личные дроны M.robots, проверка «призрак заблокирован» M.blocked (ghost_revive);
+-- * свойства плиток из игры (PROTOCOL §6.12, имён плиток в коде нет): M.masks_collide, M.cover_tile
+--   (default_cover_tile), M.cover_available (предмет подложки открыт силе, есть у помощника или на
+--   складах), M.liquid_under (под постройкой плитка, на которой она не стоит);
+-- * пометки к сносу, которые поставила сама задача: M.marked_raw / M.unmark (cancel_deconstruction);
 -- * помехи области M.survey/M.waits_for: помеченные к сносу сущности и призраки плиток под
 --   постройками (призрак, который их ждёт, — не «заблокирован»);
 -- * постройка призрака руками M.revive (сущность) и M.revive_tile (плитка): досягаемость →
@@ -43,7 +47,7 @@ M.MAX_MARKED = 500           -- столько помеченных к снос�
 M.DIG_MIN_TIMEOUT = 300      -- тиков без исчезновения цели разбора до пропуска
 M.EPS = 0.05                 -- зазор при сравнении площадей
 M.REACH_MARGIN = 0.5         -- запас к reach_distance при разборе руками
-M.NEAR_MARGIN = 0.3          -- запас к resource_reach_distance (камни, деревья)
+M.NEAR_MARGIN = inv.NEAR_MARGIN  -- запас к resource_reach_distance (камни, деревья)
 
 local function chunk_of(pos)
   return { x = math.floor(pos.x / 32), y = math.floor(pos.y / 32) }
@@ -152,6 +156,110 @@ function M.aside_point(h, proto, pos, dir)
   if d < 0.05 then dx, dy, d = 1, 0, 1 end
   local r = math.sqrt(hx * hx + hy * hy) + 1.5
   return { x = pos.x + dx / d * r, y = pos.y + dy / d * r }
+end
+
+-- ------------------------------------------------------------------ плитки: свойства из игры
+-- PROTOCOL §6.12: имён плиток, планет и жидкостей в коде нет. «Плитка без опоры» для постройки —
+-- та, чья маска столкновений пересекается с маской постройки (вода, лава, мазут, плитки планет из
+-- модов); чем её накрыть — default_cover_tile; доступна ли подложка — её предмет открыт силе
+-- (рецепт) либо уже есть у помощника или на складах силы.
+
+local function pread(obj, field)
+  local ok, v = pcall(function() return obj[field] end)
+  if ok then return v end
+  return nil
+end
+
+local function layers_of(mask)
+  if type(mask) ~= "table" then return nil end
+  return mask.layers or mask
+end
+
+--- Пересекаются ли две маски столкновений (CollisionMask или её layers).
+function M.masks_collide(a, b)
+  a, b = layers_of(a), layers_of(b)
+  if a == nil or b == nil then return false end
+  for layer, on in pairs(a) do
+    if on and b[layer] then return true end
+  end
+  return false
+end
+
+--- Прототип плитки в клетке (x, y — любая точка клетки) или nil.
+function M.tile_proto_at(surface, x, y)
+  local ok, t = pcall(function() return surface.get_tile(math.floor(x), math.floor(y)) end)
+  if not ok or t == nil then return nil end
+  return prototypes.tile[t.name]
+end
+
+--- Плитка-подложка, которой игра накрывает эту плитку (default_cover_tile), или nil.
+function M.cover_tile(tp)
+  if tp == nil or pread(tp, "allows_being_covered") == false then return nil end
+  local c = pread(tp, "default_cover_tile")
+  if c == nil then return nil end
+  local name = type(c) == "string" and c or pread(c, "name")
+  if type(name) ~= "string" then return nil end
+  return prototypes.tile[name]
+end
+
+--- Предмет открыт силе: включён рецепт с таким именем или любой рецепт, который его даёт.
+local function item_known(force, item)
+  local r = force.recipes[item]
+  if r ~= nil and r.enabled == true then return true end
+  local ok, list = pcall(function()
+    return prototypes.get_recipe_filtered{
+      { filter = "has-product-item", elem_filters = { { filter = "name", name = item } } },
+    }
+  end)
+  if ok and list ~= nil then
+    for name in pairs(list) do
+      local fr = force.recipes[name]
+      if fr ~= nil and fr.enabled == true then return true end
+    end
+  end
+  return false
+end
+
+--- Сколько предмета лежит на складах силы на этой поверхности (логистические сети).
+local function stored(h, item)
+  local n = 0
+  pcall(function()
+    local nets = h.force.logistic_networks[h.surface.name]
+    for _, net in pairs(nets or {}) do
+      if net.valid then n = n + net.get_item_count{ name = item, quality = M.NORMAL } end
+    end
+  end)
+  return n
+end
+
+--- Подложка cover (прототип плитки) доступна: её предмет открыт силе, есть у помощника или на
+--- складах. cache — таблица на время одной оценки ({имя плитки: bool}).
+function M.cover_available(h, cover, cache)
+  local name = cover.name
+  if cache ~= nil and cache[name] ~= nil then return cache[name] end
+  local ok = false
+  local main = h.get_main_inventory()
+  for _, it in ipairs(M.place_items(cover)) do
+    if item_known(h.force, it.name) or inv.count(main, it.name) >= it.count or stored(h, it.name) >= it.count then
+      ok = true
+      break
+    end
+  end
+  if cache ~= nil then cache[name] = ok end
+  return ok
+end
+
+--- Под постройкой есть клетка, плитка которой ей мешает (без опоры)? → bool, имя плитки.
+function M.liquid_under(surface, proto, pos, dir)
+  local hx, hy = M.half_size(proto, dir)
+  local mask = pread(proto, "collision_mask")
+  for cx = math.floor(pos.x - hx + M.EPS), math.floor(pos.x + hx - M.EPS) do
+    for cy = math.floor(pos.y - hy + M.EPS), math.floor(pos.y + hy - M.EPS) do
+      local tp = M.tile_proto_at(surface, cx, cy)
+      if tp ~= nil and M.masks_collide(mask, tp.collision_mask) then return true, tp.name end
+    end
+  end
+  return false
 end
 
 -- ------------------------------------------------------------------ подход к точке
@@ -290,11 +398,11 @@ end
 -- Камни, деревья и рыба копаются рукой только вблизи — как руда, с resource_reach_distance (2.7),
 -- а не с reach_distance (10). Живой замер 2026-10-13 (2.0.77): с 5–9 клеток `can_reach_entity`
 -- для камня и дерева = false, а `selected` + `mining_state` ничего не добывают.
-local NEAR_ONLY = { tree = true, ["simple-entity"] = true, fish = true }
+-- Список типов — один на «руки» и стройку: scripts/lib/inventory.lua (NEAR_ONLY).
 
 --- Досягаемость для разбора этой сущности и запас к ней.
 function M.dig_reach(h, e)
-  if NEAR_ONLY[e.type] then return h.resource_reach_distance, M.NEAR_MARGIN end
+  if inv.NEAR_ONLY[e.type] then return h.resource_reach_distance, M.NEAR_MARGIN end
   return h.reach_distance, M.REACH_MARGIN
 end
 
@@ -423,6 +531,40 @@ function M.marked(h, area)
     end
   end
   return out
+end
+
+--- Всё помеченное к сносу в области (своя сила и neutral) — без отбора «можно ли разобрать руками»:
+--- по этому списку задача узнаёт, какие пометки поставила она сама. → {LuaEntity, ...}
+function M.marked_raw(h, area)
+  local out = {}
+  local found = h.surface.find_entities_filtered{
+    area = { { area.left_top.x - 2, area.left_top.y - 2 }, { area.right_bottom.x + 2, area.right_bottom.y + 2 } },
+    to_be_deconstructed = true, force = { h.force.name, "neutral" },
+  }
+  for _, e in ipairs(found) do
+    if e.valid and e ~= h and M.is_marked(e) then out[#out + 1] = e end
+  end
+  return out
+end
+
+function M.mark_key(e)
+  return M.ghost_key(e.name, util.xy(e.position))
+end
+
+--- Снять пометки к сносу со списка сущностей (те, что ещё стоят и ещё помечены). force_name — сила,
+--- от имени которой пометка ставилась. Тело помощника не нужно: зовётся и после его смерти.
+--- → сколько снято.
+function M.unmark(list, force_name)
+  local n = 0
+  local force = force_name and game.forces[force_name] or nil
+  if type(list) ~= "table" or force == nil then return 0 end
+  for _, e in ipairs(list) do
+    if e ~= nil and e.valid and M.is_marked(e) then
+      local ok = pcall(function() e.cancel_deconstruction(force) end)
+      if ok then n = n + 1 end
+    end
+  end
+  return n
 end
 
 --- Снимок помех области: sv.marked — помеченное к сносу, sv.tiles["x,y"] = true (призрак плитки
@@ -605,20 +747,19 @@ end
 
 -- ------------------------------------------------------------------ движок призраков
 
--- Поля сверх контракта появляются, только когда им есть что сказать: removed — сколько помеченного
--- к сносу помощник разобрал сам; not_removed:[{name,pos,reason}] — что разобрать не вышло; tiles_built — сколько из built было плиток; tiles_first — ни одна
--- постройка не была поставлена руками раньше последней плитки.
+-- Поля по ACTIONS.md «build_ghosts»: built, tiles_built (сколько из built — плитки), left, removed
+-- (сколько помеченного к сносу помощник разобрал сам), not_removed (сколько не смог), blocked,
+-- blocked_total, missing. Сверх контракта, только когда есть что сказать: not_removed_list:
+-- [{name,pos,reason}] (≤ 20) и tiles_first — ни одна постройка не поставлена руками раньше
+-- последней плитки.
 local function detail_of(g)
   local d = {
-    built = g.built, left = g.left, blocked = g.blocked, blocked_total = g.blocked_total,
-    missing = g.missing,
+    built = g.built, tiles_built = g.tiles_built or 0, left = g.left,
+    removed = g.removed or 0, not_removed = g.not_removed_total or 0,
+    blocked = g.blocked, blocked_total = g.blocked_total, missing = g.missing,
   }
-  if (g.removed or 0) > 0 then d.removed = g.removed end
-  if (g.not_removed_total or 0) > 0 then
-    d.not_removed, d.not_removed_total = g.not_removed, g.not_removed_total
-  end
+  if (g.not_removed_total or 0) > 0 then d.not_removed_list = g.not_removed end
   if (g.tiles_built or 0) > 0 then
-    d.tiles_built = g.tiles_built
     d.tiles_first = g.first_entity_tick == nil or g.last_tile_tick == nil or g.last_tile_tick <= g.first_entity_tick
   end
   return d
@@ -719,7 +860,13 @@ local function scan(task, ctx)
           checks = checks + 1
           if checks <= M.MAX_BLOCK_CHECKS and M.blocked(surface, e) then
             -- мешает само тело помощника — это не «заблокирован»: отойдём
-            if M.body_inside(h, proto, en.pos, e.direction) then body = true else reason = "blocked" end
+            if M.body_inside(h, proto, en.pos, e.direction) then
+              body = true
+            elseif M.liquid_under(surface, proto, en.pos, e.direction) then
+              reason = "liquid"    -- под призраком плитка без опоры, а призрака подложки нет
+            else
+              reason = "blocked"
+            end
           end
         end
       end

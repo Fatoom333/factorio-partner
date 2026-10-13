@@ -39,8 +39,11 @@ def test_modes_records_engine_facts(fake_rcon, monkeypatch):
     assert res["contract"] == {
         "normal_marks_nothing": True,
         "normal_on_obstacle_places_no_ghost": True,
+        "normal_on_lava_skips_cell": True,
         "forced_on_lava_puts_tile_ghosts": False,
-        "forced_on_lava_tile_names": {},
+        "forced_on_lava_refuses_whole": True,
+        "forced_on_lava_liquids": {"lava": 1},
+        "forced_on_lava_gives_fit": True,
         "forced_marks_rock": True,
         "forced_marks_tree": None,
         "forced_marks_own_building": False,
@@ -50,8 +53,14 @@ def test_modes_records_engine_facts(fake_rcon, monkeypatch):
     facts = res["facts"]
     assert facts["rock"]["normal"]["result"] == "cannot_place" and facts["rock"]["normal"]["obstacle_left"] == 1
     assert facts["rock"]["forced"] == {
-        "result": "job_done", "ghosts": 1, "tiles": {}, "marked": 1, "marked_names": ["big-volcanic-rock"],
+        "result": "job_done", "ghosts": 1, "tiles": 0, "marked": 1, "marked_names": ["big-volcanic-rock"],
         "removed": 1, "built": 1, "missing": {}, "skipped": [], "obstacle_left": 0, "built_on_map": 1}
+    # лава: forced не ставит чертёж вовсе и предлагает сдвиг; normal пропускает клетку
+    lava = facts["lava"]
+    assert lava["forced"]["result"] == "cannot_place" and lava["forced"]["on_liquid"] == 1
+    assert lava["forced"]["fit"]["shift"] in ({"dx": 1, "dy": 0}, {"dx": 0, "dy": 1})
+    assert lava["normal"]["result"] == "cannot_place" and lava["normal"]["skipped"] == ["liquid"]
+    assert lava["superforced"]["liquids"] == {"lava": 1}
     assert facts["own"]["forced"]["result"] == "cannot_place"
     assert facts["own"]["superforced"]["marked_names"] == ["stone-furnace"]
     assert facts["own"]["superforced"]["removed"] == 1 and facts["own"]["superforced"]["built_on_map"] == 1
@@ -72,7 +81,8 @@ def test_modes_other_engine_behaviour_is_recorded_not_failed(fake_rcon, monkeypa
     res = run("build_modes", m, fake_rcon)
     assert res["ok"] is True, res.get("reasons")
     c = res["contract"]
-    assert c["forced_on_lava_puts_tile_ghosts"] is True and c["forced_on_lava_tile_names"] == {"foundation": 1}
+    assert c["forced_on_lava_puts_tile_ghosts"] is True and c["forced_on_lava_refuses_whole"] is False
+    assert c["forced_on_lava_gives_fit"] is False and c["forced_on_lava_liquids"] is None
     assert c["forced_marks_own_building"] is True and c["superforced_marks_own_building"] is True
     lava = res["facts"]["lava"]["forced"]
     assert lava["result"] == "no_items" and lava["missing"] == {"foundation": 1} and lava["ghosts"] == 1
@@ -118,11 +128,11 @@ def test_modes_helpers():
     assert s.cell({"x": -66.1, "y": 45}) == {"x": -66.5, "y": 45.5}
     cells = [{"x": 0.5, "y": 0.5}, {"x": 1.5, "y": 0.5}, {"x": 3.5, "y": 0.5}, {"x": 3.5, "y": 4.5}]
     assert s.spread(cells, 3) == [cells[0], cells[2], cells[3]]
-    t = {"dry_run": {"detail": {"ghosts": 1, "tiles": {"foundation": 1}, "to_remove_total": 0}},
-         "run": {"detail": {"ghosts": 0, "tiles": {}, "skipped_total": 1}}}
-    assert s.mismatch(t) == {"ghosts": {"dry_run": 1, "run": 0}, "tiles": {"dry_run": {"foundation": 1}, "run": {}},
-                             "skipped_total": {"dry_run": None, "run": 1}}
-    same = {"dry_run": {"detail": {"ghosts": 1, "tiles": {}, "skipped": {}}}, "run": {"detail": {"ghosts": 1, "tiles": {}}}}
+    t = {"dry_run": {"detail": {"ghosts": 1, "tiles": 1, "to_remove_total": 0}},
+         "run": {"detail": {"ghosts": 0, "tiles": 0, "skipped_total": 1, "on_liquid": 1}}}
+    assert s.mismatch(t) == {"ghosts": {"dry_run": 1, "run": 0}, "tiles": {"dry_run": 1, "run": 0},
+                             "skipped_total": {"dry_run": None, "run": 1}, "on_liquid": {"dry_run": None, "run": 1}}
+    same = {"dry_run": {"detail": {"ghosts": 1, "tiles": 0, "skipped": {}}}, "run": {"detail": {"ghosts": 1, "tiles": 0}}}
     assert s.mismatch(same) == {}
 
 
@@ -156,13 +166,13 @@ def test_tiles_ok(fake_rcon, monkeypatch):
     assert (res["tile_item"], res["tile"], res["item"]) == ("refined-concrete", "refined-concrete", "steel-chest")
     assert res["anchor"] == {"x": 14.5, "y": -4.5}
     d = res["build"]["data"]["detail"]
-    assert (d["ghosts"], d["tiles"], d["built"], d["tiles_built"], d["tiles_first"]) == (1, {"refined-concrete": 3}, 4, 3, True)
+    assert (d["ghosts"], d["tiles"], d["built"], d["tiles_built"], d["tiles_first"]) == (1, 3, 4, 3, True)
     assert res["inventory"]["before"] == {"refined-concrete": 5, "steel-chest": 1}
     assert res["inventory"]["after"] == {"refined-concrete": 2, "steel-chest": 0}
     # плитки лежат под сундуком и по бокам, плюс две от чертежа из одних плиток
     assert {c for c, n in m.tiles.items() if n == "refined-concrete"} == {(13, -5), (14, -5), (15, -5), (14, -3), (15, -3)}
     assert m.entities == {(14.5, -4.5): "steel-chest"}
-    assert res["dry_run_again"]["detail"]["tiles"] == {} and res["dry_run_again"]["detail"]["ghosts"] == 0
+    assert res["dry_run_again"]["detail"]["tiles"] == 0 and res["dry_run_again"]["detail"]["ghosts"] == 0
     assert res["tiles_only"]["data"]["detail"]["tiles_built"] == 2
     assert m.stock["refined-concrete"] == 45
 
@@ -177,8 +187,8 @@ def test_tiles_liquid_probe_records_engine_answer(fake_rcon, monkeypatch):
     liquid = res["liquid"]
     assert liquid["anchor"] == {"x": 3.5, "y": -10.5} and liquid["run"]["code"] == "cannot_place"
     assert liquid["facts"] == {"tile_ghost_placed": False, "entity_ghost_placed": False, "tiles_built": 0, "built": 0,
-                               "tiles_first": None}
-    assert liquid["dry_run"]["detail"]["tiles_skipped"] == 1
+                               "tiles_first": None, "on_liquid": 1, "liquids": {"lava": 1}}
+    assert liquid["dry_run"]["detail"]["tiles_skipped"] == 1 and liquid["dry_run"]["kind"] == "job_done"
     # ничего из воздуха: отсыпка взята со склада и осталась у помощника
     assert m.inv.get("landfill") == 1 and m.stock["landfill"] == 9
 

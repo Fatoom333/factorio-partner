@@ -8,7 +8,8 @@
 --   соседние клетки той же руды вокруг неё), дерево, камень или своя постройка — копаем, пока не
 --   исчезнет; count для не-руды не используется. mined — весь прирост инвентаря.
 -- Честно (PROTOCOL §6.5): только `selected` + `mining_state`, время и выход тратит движок;
--- `mine_entity` запрещён. Подход сам: руда — resource_reach_distance, остальное — reach_distance.
+-- `mine_entity` запрещён. Подход сам: руда, а также деревья и камни — resource_reach_distance
+-- (с reach_distance движок их не добывает, замер волны 3), своя постройка — reach_distance.
 -- Контроль прироста: нет прироста дольше 3× времени добычи (≥ 5 с) — клетку пропускаем
 -- (до 5 раз, потом stuck); полный инвентарь — событие inventory_full и failed{stuck}.
 local util = require("scripts.core.util")
@@ -194,7 +195,8 @@ function M.tick(task, ctx)
     return inv.failed("not_found", "target disappeared", { mined = mined(task, h, gained) })
   end
 
-  local r = inv.approach(task, ctx, task.cur, task.mode == "resource" and "resource" or "reach")
+  -- руда — resource_reach_distance; деревья и камни — тоже вплотную ("near"); постройка — reach
+  local r = inv.approach(task, ctx, task.cur, task.mode == "resource" and "resource" or inv.dig_kind(task.cur))
   if r == nil then
     stop_mining(task, h)
     task.last_gain_tick = ctx.tick

@@ -26,8 +26,11 @@ class Model:
     плитки, лава, камни и деревья, пометки к сносу. «Движок» постановки чертежа ведёт себя так, как
     показал живой прогон 2026-10-13 (2.0.77): normal — помеха → призрака нет; forced — камни и
     деревья помечаются, свои постройки нет, на лаве без исследованной подложки ничего не встаёт;
-    superforced — помечаются ещё и свои постройки. Флаги ломают отдельные части (для тестов
-    «сценарий замечает поломку»).
+    superforced — помечаются ещё и свои постройки. Мод — по ACTIONS.md ревизии 3.3: клетка на лаве
+    без возможной подложки в forced/superforced → чертёж не ставится вовсе (`cannot_place`,
+    `on_liquid`, `liquids`, `fit`), с `partial` — обрезанный, в normal — пропуск клетки; свои пометки
+    к сносу снимаются при сбое и отмене. Флаги ломают отдельные части (для тестов «сценарий
+    замечает поломку»).
     """
 
     SIZE = {"stone-furnace": 2}
@@ -41,7 +44,8 @@ class Model:
     def __init__(self, stock=None, blocked=(), mod="factorio-partner 0.1.0", break_place=None,
                  keep_ghosts=False, lose_item=False, decon_fails=False, collect_blind=False,
                  lava=(), naturals=None, lava_cover=None, forced_marks_own=False, dig_fails=False,
-                 tiles_last=False, ignore_tiles=False, layout_shift=0.0, robots=0, armor=None):
+                 tiles_last=False, ignore_tiles=False, layout_shift=0.0, robots=0, armor=None,
+                 keep_marks=False, pause_far=None, no_fit=False, ignore_partial=False, place_on_liquid=False):
         self.mod = mod
         self.stock = dict(stock if stock is not None else {"wooden-chest": 5})
         self.inv = {}
@@ -76,6 +80,12 @@ class Model:
         self.armor = armor
         self.rot_shift = 0
         self.spawned = False
+        self.keep_marks = keep_marks         # мод не снимает свои пометки к сносу при сбое и отмене
+        self.pause_far = pause_far           # стройка руками дальше стольких клеток «идёт», пока её не отменят
+        self.no_fit = no_fit                 # мод не ищет сдвиг
+        self.ignore_partial = ignore_partial # мод не ставит обрезанный чертёж
+        self.place_on_liquid = place_on_liquid   # мод ставит чертёж, хотя под клеткой нет подложки
+        self.pending = None                  # (job, do, свои пометки) — задача, которая ещё идёт
 
     # ---- события
     def _emit(self, kind, data):
@@ -149,19 +159,21 @@ class Model:
     def _give(self, name, n=1):
         self.inv[name] = self.inv.get(name, 0) + n
 
-    def _plan(self, a):
-        """Что «движок» поставит по чертежу в режиме force: (ghosts, skipped, tiles, tiles_skipped, to_mark)."""
+    def _plan(self, a, anchor=None, direction=None):
+        """Что «движок» поставит по чертежу в режиме force:
+        (ghosts, skipped, tiles, tiles_skipped, to_mark, wet) — wet: клетки без возможной подложки."""
         bp = load("build_ghosts").decode_blueprint(self.blobs[a["blob"]])["blueprint"]
         mode = a.get("force", "forced")
-        ents, tiles = self._layout(bp, a["anchor"], a.get("direction", 0))
+        ents, tiles = self._layout(bp, anchor or a["anchor"], a.get("direction", 0) if direction is None else direction)
         occupied = self._occupied()
-        tile_ghosts, tiles_skipped = {}, 0
+        tile_ghosts, tiles_skipped, wet = {}, 0, set()
         if not self.ignore_tiles:
             for cell, name in tiles:
                 if self.tiles.get(cell) == name:
                     continue
                 if cell in self.lava:
                     tiles_skipped += 1
+                    wet.add(cell)
                 else:
                     tile_ghosts[cell] = name
         ghosts, skipped, to_mark = [], [], {}
@@ -184,7 +196,8 @@ class Model:
                         marks[okey] = oname
                 if c in self.lava and c not in tile_ghosts:
                     if mode == "normal" or self.lava_cover is None:
-                        reason = "cannot_place"
+                        reason = "liquid"
+                        wet.add(c)
                     else:
                         tile_ghosts[c] = self.lava_cover
             if reason:
@@ -193,9 +206,9 @@ class Model:
             else:
                 ghosts.append((key, name))
                 to_mark.update(marks)
-        return ghosts, skipped, tile_ghosts, tiles_skipped, to_mark
+        return ghosts, skipped, tile_ghosts, tiles_skipped, to_mark, wet
 
-    def _summary(self, ghosts, skipped, tile_ghosts, tiles_skipped, to_mark):
+    def _summary(self, ghosts, skipped, tile_ghosts, tiles_skipped, to_mark, wet=()):
         tiles = {}
         for name in tile_ghosts.values():
             tiles[name] = tiles.get(name, 0) + 1
@@ -206,9 +219,41 @@ class Model:
             item = self.TILE_ITEM[name]
             need[item] = need.get(item, 0) + n
         missing = {k: n - self.inv.get(k, 0) for k, n in need.items() if n > self.inv.get(k, 0)}
-        return {"ghosts": len(ghosts), "skipped": skipped, "skipped_total": len(skipped), "tiles": tiles,
-                "tiles_skipped": tiles_skipped, "missing": missing, "to_remove_total": len(to_mark),
-                "to_remove": [{"name": n, "pos": {"x": k[0], "y": k[1]}} for k, n in to_mark.items()]}
+        s = {"ghosts": len(ghosts), "skipped": skipped, "skipped_total": len(skipped), "tiles": len(tile_ghosts),
+             "tiles_skipped": tiles_skipped, "missing": missing, "to_remove_total": len(to_mark),
+             "on_liquid": len(wet),
+             "to_remove": [{"name": n, "pos": {"x": k[0], "y": k[1]}} for k, n in to_mark.items()]}
+        if wet:
+            s["liquids"] = {"lava": len(wet)}
+        return s
+
+    def _fit(self, a):
+        """Ближайший сдвиг, при котором чертёж встаёт целиком: кольца вокруг anchor в пределах search;
+        с rotate — ещё повороты (зеркала в модели нет: mirror всегда false). → fit | None."""
+        search = a.get("search", 16)
+        base = a.get("direction", 0)
+        dirs = [base] + ([(base + 4 * k) % 16 for k in (1, 2, 3)] if a.get("rotate") else [])
+        if self.no_fit:
+            return None
+        for r in range(0, search + 1):
+            ring = [(dx, dy) for dx in range(-r, r + 1) for dy in range(-r, r + 1) if max(abs(dx), abs(dy)) == r]
+            ring.sort(key=lambda c: (c[0] ** 2 + c[1] ** 2, c[1], c[0]))
+            for dx, dy in ring:
+                for d in dirs:
+                    if r == 0 and d == base:
+                        continue
+                    anchor = {"x": a["anchor"]["x"] + dx, "y": a["anchor"]["y"] + dy}
+                    _, skipped, _, tiles_skipped, _, wet = self._plan(a, anchor, d)
+                    if not skipped and not tiles_skipped and not wet:
+                        fit = {"anchor": anchor, "shift": {"dx": dx, "dy": dy}}
+                        if a.get("rotate"):
+                            fit.update(direction=d, mirror=False)
+                        return fit
+        return None
+
+    def _unmark(self, own):
+        if not self.keep_marks:
+            self.marked -= set(own)
 
     def _build(self, area, mode):
         """Стройка призраков области: снос помеченного → плитки → постройки. → (code | None, detail)."""
@@ -219,7 +264,8 @@ class Model:
         ghosts = {k: n for k, n in self.ghosts.items() if inside(*k)}
         tile_ghosts = {c: n for c, n in self.tile_ghosts.items() if inside(c[0] + 0.5, c[1] + 0.5)}
         total = len(ghosts) + len(tile_ghosts)
-        detail = {"built": 0, "left": total, "blocked": [], "blocked_total": 0, "missing": {}}
+        detail = {"built": 0, "tiles_built": 0, "left": total, "removed": 0, "not_removed": 0,
+                  "blocked": [], "blocked_total": 0, "missing": {}}
         if mode == "robots" and not self.robots:
             return "no_items", detail
         if self.keep_ghosts:
@@ -270,12 +316,10 @@ class Model:
                 built += 1
             else:
                 missing[name] = missing.get(name, 0) + 1
-        detail = {"built": built, "left": total - built - len(blocked), "blocked": blocked,
+        detail = {"built": built, "tiles_built": tiles_built, "left": total - built - len(blocked),
+                  "removed": removed, "not_removed": 0, "blocked": blocked,
                   "blocked_total": len(blocked), "missing": missing}
-        if removed:
-            detail["removed"] = removed
         if tiles_built:
-            detail["tiles_built"] = tiles_built
             detail["tiles_first"] = not self.tiles_last
         return (None if detail["left"] == 0 else "no_items"), detail
 
@@ -349,21 +393,34 @@ class Model:
         if do == "build_blueprint":
             if a["blob"] not in self.blobs:
                 return self._failed(do, "bad_args")
-            ghosts, skipped, tile_ghosts, tiles_skipped, to_mark = self._plan(a)
-            s = self._summary(ghosts, skipped, tile_ghosts, tiles_skipped, to_mark)
+            ghosts, skipped, tile_ghosts, tiles_skipped, to_mark, wet = self._plan(a)
+            s = self._summary(ghosts, skipped, tile_ghosts, tiles_skipped, to_mark, wet)
+            partial = a.get("partial") and not self.ignore_partial
+            if wet and a.get("force", "forced") != "normal" and not partial and not self.place_on_liquid:
+                # клетки без возможной подложки: чертёж не ставится вовсе, в detail — сдвиг (ACTIONS.md)
+                fit = self._fit(a)
+                if fit:
+                    s["fit"] = fit
+                return self._done(do, s) if a.get("dry_run") else self._failed(do, "cannot_place", s)
             if a.get("dry_run"):
                 return self._done(do, s)
             if not ghosts and not tile_ghosts:
                 return self._failed(do, "cannot_place", s)
             self.ghosts.update(dict(ghosts))
             self.tile_ghosts.update(tile_ghosts)
+            own = set(to_mark) - self.marked
             self.marked.update(to_mark)
             xs = [k[0] for k, _ in ghosts] + [c[0] + 0.5 for c in tile_ghosts]
             ys = [k[1] for k, _ in ghosts] + [c[1] + 0.5 for c in tile_ghosts]
             area = {"left_top": {"x": min(xs) - 1.5, "y": min(ys) - 1.5}, "right_bottom": {"x": max(xs) + 1.5, "y": max(ys) + 1.5}}
+            far = math.hypot(a["anchor"]["x"] - self.pos["x"], a["anchor"]["y"] - self.pos["y"])
+            if self.pause_far is not None and a.get("mode", "auto") == "hand" and far > self.pause_far:
+                self.pending = (self.job, do, own)   # помощник ещё идёт: итога нет, пока задачу не отменят
+                return None
             code, detail = self._build(area, a.get("mode", "auto"))
-            detail.update({k: s[k] for k in ("ghosts", "skipped", "skipped_total", "tiles", "tiles_skipped",
-                                             "to_remove", "to_remove_total")})
+            detail.update({k: s[k] for k in s if k != "missing"})
+            if code:
+                self._unmark(own)
             return self._failed(do, code, detail) if code else self._done(do, detail)
         if do == "build_ghosts":
             code, detail = self._build(a.get("area"), a.get("mode", "auto"))
@@ -445,6 +502,12 @@ class Model:
             evs = [e for e in self.events if e["seq"] > args["since"]]
             return ok({"seq": self.seq, "events": evs, "lost": False})
         if op == "cancel":
+            if self.pending and self.pending[0] == args.get("job"):
+                job, do, own = self.pending
+                self.pending = None
+                self._unmark(own)
+                self._emit("job_failed", {"job": job, "do": do, "code": "cancelled", "text": "cancelled", "detail": {}})
+                return ok({"cancelled": [job]})
             return ok({"cancelled": []})
         return fail("unknown_op")
 
