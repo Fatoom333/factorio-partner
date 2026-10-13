@@ -45,7 +45,8 @@ class Model:
                  keep_ghosts=False, lose_item=False, decon_fails=False, collect_blind=False,
                  lava=(), naturals=None, lava_cover=None, forced_marks_own=False, dig_fails=False,
                  tiles_last=False, ignore_tiles=False, layout_shift=0.0, robots=0, armor=None,
-                 keep_marks=False, pause_far=None, no_fit=False, ignore_partial=False, place_on_liquid=False):
+                 keep_marks=False, pause_far=None, no_fit=False, ignore_partial=False, place_on_liquid=False,
+                 no_unmarked=False):
         self.mod = mod
         self.stock = dict(stock if stock is not None else {"wooden-chest": 5})
         self.inv = {}
@@ -81,6 +82,7 @@ class Model:
         self.rot_shift = 0
         self.spawned = False
         self.keep_marks = keep_marks         # мод не снимает свои пометки к сносу при сбое и отмене
+        self.no_unmarked = no_unmarked       # мод до 3.4: в detail нет числа снятых пометок
         self.pause_far = pause_far           # стройка руками дальше стольких клеток «идёт», пока её не отменят
         self.no_fit = no_fit                 # мод не ищет сдвиг
         self.ignore_partial = ignore_partial # мод не ставит обрезанный чертёж
@@ -252,8 +254,12 @@ class Model:
         return None
 
     def _unmark(self, own):
-        if not self.keep_marks:
-            self.marked -= set(own)
+        """→ сколько своих пометок снято (detail.unmarked, ревизия 3.4)."""
+        if self.keep_marks:
+            return 0
+        n = len(self.marked & set(own))
+        self.marked -= set(own)
+        return n
 
     def _build(self, area, mode):
         """Стройка призраков области: снос помеченного → плитки → постройки. → (code | None, detail)."""
@@ -420,7 +426,9 @@ class Model:
             code, detail = self._build(area, a.get("mode", "auto"))
             detail.update({k: s[k] for k in s if k != "missing"})
             if code:
-                self._unmark(own)
+                n = self._unmark(own)
+                if not self.no_unmarked:
+                    detail["unmarked"] = n
             return self._failed(do, code, detail) if code else self._done(do, detail)
         if do == "build_ghosts":
             code, detail = self._build(a.get("area"), a.get("mode", "auto"))
@@ -505,8 +513,9 @@ class Model:
             if self.pending and self.pending[0] == args.get("job"):
                 job, do, own = self.pending
                 self.pending = None
-                self._unmark(own)
-                self._emit("job_failed", {"job": job, "do": do, "code": "cancelled", "text": "cancelled", "detail": {}})
+                n = self._unmark(own)
+                self._emit("job_failed", {"job": job, "do": do, "code": "cancelled", "text": "cancelled",
+                                          "detail": {} if self.no_unmarked else {"unmarked": n}})
                 return ok({"cancelled": [job]})
             return ok({"cancelled": []})
         return fail("unknown_op")

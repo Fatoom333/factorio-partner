@@ -620,8 +620,11 @@ local function liquid_result(task, fit, limited)
   local d = task.bp
   d.fit = fit
   if limited then d.fit_limit = true end
+  -- fit_checked есть всегда, когда чертёж не встал из-за плиток без опоры (0 — поиск не шёл,
+  -- search = 0). JSON из Lua не несёт null: сдвиг не найден = fit_checked есть, а fit нет; поле
+  -- `fit: null` по этому признаку дописывает сервер (ACTIONS.md, уточнения 3.4).
   local f = task.fit
-  if f ~= nil then d.fit_checked = f.checked end
+  d.fit_checked = f ~= nil and f.checked or 0
   task.fit = nil
   if task.args.dry_run then return B.done(d) end
   return B.failed("cannot_place", "blueprint has " .. tostring(d.on_liquid) ..
@@ -672,9 +675,10 @@ end
 -- ------------------------------------------------------------------ пометки задачи
 
 --- Снять пометки к сносу, которые поставила эта задача (failed, cancel, stuck — ACTIONS.md).
+--- Число снятых копится в task.unmarked (пометок не ставили — nil) и уходит в detail.unmarked.
 local function unmark(task)
   if task.marks ~= nil then
-    B.unmark(task.marks, task.marks_force)
+    task.unmarked = (task.unmarked or 0) + B.unmark(task.marks, task.marks_force)
     task.marks = nil
   end
 end
@@ -798,6 +802,7 @@ local function place(task, ctx, st, plan, tplan, area, pre)
         on_liquid = wet, liquids = liquids,
       })
       s.ghosts = 0
+      s.unmarked = task.unmarked
       return { rolled_back = true, summary = s }
     end
   end
@@ -911,10 +916,14 @@ end
 
 --- Отмена, сбой, застревание: снять свои пометки к сносу, подход, переключатель дронов.
 --- Пометки снимаются первыми и без тела помощника (stop зовётся и после его смерти).
+--- → {unmarked = N}, если задача ставила пометки: ядро дописывает это в detail события job_failed
+--- (failed от самой задачи, cancel, stuck — ACTIONS.md, уточнения 3.4).
 function M.stop(task, ctx)
   unmark(task)
   task.fit = nil
   if task.g ~= nil then B.ghosts_stop(task, ctx) else B.stop_approach(task, ctx) end
+  if task.unmarked ~= nil then return { unmarked = task.unmarked } end
+  return nil
 end
 
 return M

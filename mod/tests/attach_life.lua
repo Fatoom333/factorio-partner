@@ -199,6 +199,8 @@ S.suite("attach_life", {
       S.eq(P.rec().state, "away")
       S.eq(P.rec().away, "player_left")
       S.eq(S.okr(S.req("helper_list")).helpers[1].pos, { x = 20, y = 0 }, "последнее место — где погиб")
+      S.eq(S.okr(S.req("helper_list")).helpers[1].surface, "nauvis", "и поверхность, где погиб (away_surface)")
+      S.eq(P.rec().away_surface, "nauvis")
       P.tick(50)
       P.join(friend, { character = false })
       P.tick(5)

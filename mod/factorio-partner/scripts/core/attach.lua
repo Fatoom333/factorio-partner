@@ -108,7 +108,9 @@ local function lose(id, rec, reason)
     reserve.release_all(id)
     rec.away_pos, rec.away_surface = last_place(rec, e)
   elseif state == "dead" and gone then
-    rec.away_pos, rec.away_surface = rec.died_pos, nil
+    -- поверхность смерти (died_surface); у записи из сейва старой версии её нет — тогда по игроку
+    local _, by_player = last_place(rec, nil)
+    rec.away_pos, rec.away_surface = rec.died_pos, rec.died_surface or by_player
   elseif state == "away" and reason == "player_removed" then
     -- уже ждал тело: игрок удалён — оно не вернётся, агент должен это узнать
   else

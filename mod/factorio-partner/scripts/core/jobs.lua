@@ -99,11 +99,20 @@ local function normalize_result(res)
   return out
 end
 
-local function safe_stop(task, ctx)
+--- stop может вернуть таблицу простых полей — они дописываются в detail итога (то, что известно
+--- только после уборки: например, сколько своих пометок к сносу снято). Поля итога не затираются.
+local function safe_stop(task, ctx, res)
   local mod = M.actions[task["do"]]
   if not mod then return end
   local ok, e = pcall(mod.stop, task, ctx)
   if not ok then err.count_module_error() end
+  if ok and res ~= nil and type(e) == "table" then
+    local extra = util.plain(e, 2)
+    if type(res.detail) ~= "table" then res.detail = {} end
+    for k, v in pairs(extra or {}) do
+      if type(k) == "string" and res.detail[k] == nil then res.detail[k] = v end
+    end
+  end
   if not ok then log("[factorio-partner] stop " .. tostring(task["do"]) .. " failed: " .. err.clean_text(err.is(e) and e.text or e)) end
 end
 
@@ -124,7 +133,7 @@ local function finish_active(q, res, ctx)
   if task == nil then return end
   res = normalize_result(res)
   q.active = nil
-  if res.status == "failed" then safe_stop(task, ctx) end
+  if res.status == "failed" then safe_stop(task, ctx, res) end
   reserve.release_area(task.helper)
   emit_result(task, res)
 end

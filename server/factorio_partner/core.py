@@ -475,10 +475,13 @@ class Core:
             return self._stamp(await self._mod("cancel", args, h, mutating=True))
         return await self._tool("partner_cancel", helper, key, a, run)
 
-    async def op_reflex(self, helper, key, set) -> dict:  # noqa: A002
+    async def op_reflex(self, helper, key, set=None) -> dict:  # noqa: A002
         a = {"set": set}
 
         async def run(h):
+            if set is None:
+                # revision 3.4: `reflexes{}` without `set` only reads the current set
+                return await self._mod("reflexes", {}, h)
             rset = V.check_reflexes(set)
             return await self._mod("reflexes", {"set": rset}, h, mutating=True)
         return await self._tool("partner_reflex", helper, key, a, run)
@@ -569,7 +572,7 @@ class Core:
                     if ev["seq"] <= cursor:
                         continue
                     cursor = ev["seq"]
-                    items.append((ev, "mod"))
+                    items.append((_fit_null(ev), "mod"))
                     if ev.get("loud"):
                         n_loud += 1
                         if n_loud >= LOUD_MAX:
@@ -771,6 +774,20 @@ class Core:
 
     async def close(self) -> None:
         await self.bridge.close()
+
+
+def _fit_null(ev: dict) -> dict:
+    """ACTIONS.md (revision 3.4): a `build_blueprint` result whose shift search found nothing carries
+    ``detail.fit = null``. The mod's JSON has no null (a Lua table cannot hold one): it sends
+    ``fit_checked`` without ``fit`` — the field is added here, so the agent always sees it."""
+    data = ev.get("data")
+    if ev.get("kind") not in ("job_done", "job_failed") or not isinstance(data, dict):
+        return ev
+    detail = data.get("detail")
+    if (data.get("do") == "build_blueprint" and isinstance(detail, dict)
+            and "fit_checked" in detail and "fit" not in detail):
+        return dict(ev, data=dict(data, detail=dict(detail, fit=None)))
+    return ev
 
 
 def _admin_result(resp: dict) -> dict:

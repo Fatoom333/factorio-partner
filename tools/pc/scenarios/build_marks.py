@@ -90,6 +90,11 @@ def judge(tag, trial, reasons):
     if p["marks_left"]:
         reasons.append(f"{tag}: пометка к сносу не снята — помощник разобрал помеху сам "
                        f"(removed = {p['detail'].get('removed')}, на карте осталось {p['obstacle_left']})")
+    # ревизия 3.4: число снятых своих пометок — в detail итога (failed, cancel, stuck)
+    if trial["run"]["kind"] == "job_failed":
+        n = d.get("unmarked")
+        if not isinstance(n, (int, float)) or isinstance(n, bool) or n < 1:
+            reasons.append(f"{tag}: в detail нет числа снятых пометок (unmarked = {n!r})")
     if d.get("to_remove_total") is not None and d.get("to_remove_total") < 1:
         reasons.append(f"{tag}: чертёж ничего не пометил (to_remove_total = {d.get('to_remove_total')}) — проверять нечего")
 

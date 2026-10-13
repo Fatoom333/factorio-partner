@@ -36,12 +36,15 @@ S.suite("misc", {
       S.err(S.req("reflexes", { set = { { type = "flee", radius = 99 } } }, "h1"), "limit")
       S.err(S.req("reflexes", { set = { { type = "flee", radius = 0 } } }, "h1"), "bad_args")
       S.err(S.req("reflexes", { set = { { radius = 1 } } }, "h1"), "bad_args")
-      S.err(S.req("reflexes", {}, "h1"), "bad_args")
+      -- без set — только чтение: текущий набор, ничего не меняется (EVENTS.md, уточнения 3.4)
+      S.eq(S.okr(S.req("reflexes", {}, "h1")).set, { { type = "flee", radius = 20 }, { type = "flee", radius = 5 } })
+      S.eq(#storage.reflexes.h1, 2)
       local many = {}
       for i = 1, 17 do many[i] = { type = "flee" } end
       S.err(S.req("reflexes", { set = many }, "h1"), "limit")
       S.eq(#storage.reflexes.h1, 2, "неудачная замена не трогает старый набор")
       S.okr(S.req("reflexes", { set = {} }, "h1"))
+      S.eq(S.okr(S.req("reflexes", {}, "h1")).set, {}, "пустой набор — пустой список")
       calls = {}
       S.tick(20)
       S.eq(calls, {})

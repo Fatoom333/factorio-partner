@@ -409,6 +409,7 @@ S.suite("build_blueprint", {
       S.eq(#F.bp_calls, 1)
       S.eq({ #F.ghosts(), #F.tile_ghosts_left() }, { 0, 0 })
       S.eq({ tree.valid, rawget(tree, "_marked"), #F.unmarked }, { true, false, 1 })
+      S.eq(d.detail.unmarked, 1, "откат: число снятых пометок")
       S.eq(C.counts(W.main), { ["iron-chest"] = 2, landfill = 1 })
   end },
   { "forced на воде без отсыпки в инвентаре: призраки стоят (не blocked), no_items с missing", function()
@@ -458,7 +459,11 @@ S.suite("build_blueprint", {
         for y = -10, 10 do F.set_tile(x, y, "lava") end
       end
       local d0 = F.wait(bp{ dry_run = true, search = 0 })
-      S.eq({ d0.detail.on_liquid, d0.detail.liquids, d0.detail.fit, d0.detail.fit_checked }, { 2, { lava = 2 }, nil, nil })
+      -- поиск не шёл: fit нет, fit_checked = 0 (по нему сервер дописывает fit: null)
+      S.eq({ d0.detail.on_liquid, d0.detail.liquids, d0.detail.fit, d0.detail.fit_checked }, { 2, { lava = 2 }, nil, 0 })
+      local f0, k0 = F.wait(bp{ mode = "hand", search = 0 })
+      S.eq({ k0, f0.code, f0.detail.fit, f0.detail.fit_checked, f0.detail.unmarked },
+        { "job_failed", "cannot_place", nil, 0, nil })
       -- суша начинается в 10 клетках по вертикали: search 4 не дотягивается, search 16 находит
       local d4 = F.wait(bp{ dry_run = true, search = 4 })
       S.eq({ d4.detail.fit, d4.detail.fit_checked }, { nil, 80 })
@@ -673,6 +678,7 @@ S.suite("build_blueprint", {
       S.eq(C.result(job).code, "cancelled")
       S.eq({ rawget(tree, "_marked"), rawget(rock, "_marked"), rawget(old, "_marked") }, { false, false, true })
       S.eq(#F.unmarked, 2)
+      S.eq(C.result(job).detail.unmarked, 2, "cancel: detail.unmarked — только свои пометки")
       S.eq(F.unmarked[1].force, "player")
       S.ok(tree.valid and rock.valid and old.valid)
       S.eq(storage.jobs.by_helper.h1.active, nil)
@@ -686,6 +692,7 @@ S.suite("build_blueprint", {
       S.eq({ kind, d.code }, { "job_failed", "no_items" })
       S.eq({ d.detail.to_remove_total, d.detail.removed, d.detail.not_removed }, { 1, 0, 1 })
       S.eq({ tree.valid, rawget(tree, "_marked"), #F.unmarked }, { true, false, 1 })
+      S.eq(d.detail.unmarked, 1, "failed: detail.unmarked")
       -- stuck от ядра (60 с без прогресса): тот же stop
       local jobs = require("scripts.core.jobs")
       for _, g in ipairs(F.ghosts()) do g.destroy() end
@@ -699,6 +706,7 @@ S.suite("build_blueprint", {
       S.eq(q.active.job, job2)
       jobs.fail_all("h1", "stuck", "no progress for 60 s", W.h)
       S.eq({ C.result(job2).code, rawget(far2, "_marked"), far2.valid }, { "stuck", false, true })
+      S.eq(C.result(job2).detail.unmarked, 1, "stuck: detail.unmarked")
       -- тело погибло: stop зовётся без тела — пометки всё равно снимаются
       for _, g in ipairs(F.ghosts()) do g.destroy() end
       local far3 = S.nauvis.create_entity{ name = "tree-01", position = { x = 110.5, y = 0.5 }, force = "neutral" }
@@ -707,6 +715,13 @@ S.suite("build_blueprint", {
       S.eq(rawget(far3, "_marked"), true)
       jobs.fail_all("h1", "no_helper", "helper is absent or dead", nil)
       S.eq({ C.result(job3).code, rawget(far3, "_marked") }, { "no_helper", false })
+      S.eq(C.result(job3).detail.unmarked, 1)
+      -- чертёж встал, помечать было нечего: unmarked = 0 (поля нет, только если до постановки не дошло)
+      for _, g in ipairs(F.ghosts()) do g.destroy() end
+      local job4 = bp{ anchor = { x = 131, y = 0.5 }, mode = "hand" }
+      F.run(2)
+      jobs.fail_all("h1", "cancelled", "cancelled", W.h)
+      S.eq({ C.result(job4).code, C.result(job4).detail.unmarked }, { "cancelled", 0 })
   end },
   { "три длинных списка в detail урезаются, событие остаётся целым", function()
       F.setup()

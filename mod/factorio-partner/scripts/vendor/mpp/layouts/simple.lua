@@ -1881,8 +1881,10 @@ function layout:placement_landfill(state)
 	end
 	
 	local fill_tiles, tile_progress = state.fill_tiles, state.fill_tile_progress or 1
-	local landfill = state.is_space and state.space_landfill_choice or "landfill"
-	local landfill_tile = prototypes.tile[landfill]
+	-- [partner] Space Exploration only (state.is_space): the adapter never sets is_space, so every
+	-- is_space branch below is dead code; the cover tile comes from the game (default_cover_tile),
+	-- no tile name is hardcoded here
+	local landfill_tile = state.is_space and prototypes.tile[state.space_landfill_choice] or nil
 
 	local conv = coord_convert[state.direction_choice]
 	local gx, gy = state.coords.ix1 - 1, state.coords.iy1 - 1
@@ -1894,6 +1896,7 @@ function layout:placement_landfill(state)
 			right_bottom={c.x2+m.area+1, c.y2+m.area+1}
 		}
 		if state.is_space then
+			-- [partner] dead branch (Space Exploration only), the adapter never gets here
 			fill_tiles = surface.find_tiles_filtered{area=area, name="se-space"}
 		else
 			fill_tiles = mpp_util.unsupported_tiles(state, area) -- [partner] any tile the drill collides with (rules from the game)

@@ -18,7 +18,7 @@ S.suite("dispatch", {
       local r = S.call{ v = 1, id = "r-1", op = "hello", args = {} }
       S.eq({ r.v, r.id, r.ok, r.tick, r.seq }, { 1, "r-1", true, 0, 0 })
       S.eq(r.data.proto, 1)
-      S.eq(r.data.mod, "0.4.0")
+      S.eq(r.data.mod, "0.4.1")
       S.eq(r.data.owner, "Tartaluga")
       S.eq(r.data.players, { { index = 1, name = "Tartaluga", online = true, surface = "nauvis", pos = { x = 1.3, y = -3 } } })
       S.eq(r.data.helpers, {})

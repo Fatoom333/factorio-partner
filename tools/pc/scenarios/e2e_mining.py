@@ -13,7 +13,11 @@
 4. `access {area}` — суша и выходы с участка: остров без выходов (`enclosed`) сценарий не размечает.
 5. Та же разметка без `dry_run` — призраки стоят (сила хозяина); ленты разметки смотрят в заданную сторону.
 6. Лента от добычи: `plan_belt {from: "patch", to, belt, underground: "never", dry_run}` до свободной
-   площадки за краем разметки, потом без `dry_run` — призраки ленты стоят.
+   площадки за краем разметки, потом без `dry_run` — призраки ленты стоят. Между ними — сухой прогон
+   к тому же концу с `underground: "auto"` и пачкой `lanes: 2` (ревизия 3.4): ответ сверяется с
+   контрактом; подземный не исследован или вторая лента не дошла — это факт прогона
+   (`belt_auto.facts`), а не провал. Строится одна лента без подземных: на пачку предметов руками за
+   прогон не собрать.
 7. Предметы честно (на разметку и на ленту): `collect` со складов, поход к дальним складам, чего нет —
    сырьё и `craft`.
 8. `build_ghosts {area, mode: "hand"}` по области разметки, потом по области (или кускам) ленты.
@@ -64,6 +68,61 @@ def plan_args(win, chosen, dry_run=False):
     if dry_run:
         args["dry_run"] = True
     return args
+
+
+def probe_auto(api, chosen, to, result, reasons):
+    """Сухой прогон `plan_belt` с `underground: "auto"` и пачкой из двух лент к тому же концу.
+    Провал — только ответ не по контракту; чего на сейве нет (подземный не исследован, второй ленте нет
+    места) — пишется фактом в `result["belt_auto"]["facts"]`."""
+    args = dict(belt_args(to, chosen, dry_run=True), underground="auto", lanes=2)
+    r = api.act("plan_belt", args, BELT_TIMEOUT_S)
+    d = E.detail_of(r)
+    picked = E.as_map(d.get("chosen"))
+    need = E.as_map(d.get("need"))
+    warnings = E.as_list(d.get("warnings"))
+    facts = []
+    info = {"kind": r["kind"], "code": E.code_of(r), "text": E.text_of(r), "lanes": d.get("lanes"),
+            "ghosts": d.get("ghosts"), "undergrounds": d.get("undergrounds"), "chosen": picked or None,
+            "need": need or None, "warnings": warnings, "facts": facts}
+    result["belt_auto"] = info
+    if r["kind"] == "job_failed" and E.code_of(r) in ("path_failed", "cannot_place"):
+        # пачке из двух лент у этого конца нет места — так бывает и в игре; одна лента проверена ниже
+        facts.append(f"пачка из двух лент не проложена: {E.code_of(r)} "
+                     f"({d.get('reason') or E.text_of(r)}, лента {d.get('lane')})")
+        return
+    if r["kind"] != "job_done":
+        reasons.append(f"plan_belt (auto, lanes 2, dry_run) не done: {E.code_of(r)} {E.text_of(r)}")
+        return
+    under = picked.get("underground")
+    if not d.get("dry_run"):
+        reasons.append("plan_belt (auto, lanes 2) с dry_run ответил без dry_run")
+    if d.get("lanes") not in (1, 2):
+        reasons.append(f"plan_belt (auto, lanes 2): lanes={d.get('lanes')!r}, ждали 1 или 2")
+    elif d["lanes"] == 1:
+        facts.append("до цели дошла одна лента из двух")
+    if picked.get("belt") != chosen["belt"]:
+        reasons.append(f"plan_belt (auto, lanes 2): chosen={picked!r}, ждали ленту {chosen['belt']}")
+    pairs = d.get("undergrounds") or 0
+    if not under:
+        facts.append("подземный конвейер для этой ленты на сейве не исследован: chosen без underground")
+        if pairs:
+            reasons.append(f"подземный не выбран, а пар подземных {pairs}")
+    elif not pairs:
+        facts.append(f"подземный {under} исследован, помех на пути нет — auto его не поставил")
+    else:
+        facts.append(f"подземных пар {pairs} ({under})")
+    extra = sorted(set(need) - {chosen["belt"], under})
+    if extra:
+        reasons.append(f"plan_belt (auto, lanes 2): в need лишнее {extra}")
+    if under and bool(pairs) != (under in need):
+        reasons.append(f"plan_belt (auto, lanes 2): пар подземных {pairs}, а need {need}")
+    if d.get("skipped"):
+        facts.append(f"пропущено клеток: {d.get('skipped')}")
+    elif not need.get(chosen["belt"]) or sum(need.values()) != d.get("ghosts"):
+        reasons.append(f"plan_belt (auto, lanes 2): need {need} не сходится с числом призраков {d.get('ghosts')}")
+    for w in ("not_bundled", "not_researched"):
+        if any(str(x).startswith(w) for x in warnings):
+            facts.append(f"предупреждение {w}")
 
 
 def belt_args(to, chosen, dry_run=False):
@@ -165,6 +224,7 @@ def plan_route(api, chosen, area, resource, log, result, reasons):
                        f"(пробовал {len(tries)})")
         return None
     to, dry = picked
+    probe_auto(api, chosen, to, result, reasons)
     # ленты, которые уже стоят там, где пройдёт новая (постройки базы): в сверку они не идут
     old = E.belt_cells(api, belt_areas(dry), [chosen["belt"]])[0] if dry.get("area") else {}
     result["belts_before"] = len(old)

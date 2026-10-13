@@ -136,6 +136,8 @@ def test_marks_ok(fake_rcon, monkeypatch):
     # отмена: призрак появился, задача отменена, пометки нет
     assert cancelled["anchor"] == {"x": -12.5, "y": 3.5} and cancelled["placed"] is True
     assert cancelled["run"]["code"] == "cancelled" and cancelled["probe"]["marks_left"] is False
+    # ревизия 3.4: число снятых своих пометок — в detail и при сбое, и при отмене
+    assert failed["run"]["detail"]["unmarked"] == 1 and cancelled["run"]["detail"]["unmarked"] == 1
     # замер: повторная постановка помечает камень заново, помощник его разбирает и строит
     assert res["recovery"]["ok"] is True and res["recovery"]["obstacle_left"] == 0 and res["recovery"]["built_on_map"] == 1
     assert m.marked == set()
@@ -153,6 +155,14 @@ def test_marks_left_is_failure(fake_rcon, monkeypatch):
     assert sum("пометка к сносу не снята" in r for r in res["reasons"]) == 2, res["reasons"]
     assert res["failed"]["probe"]["marks_left"] is True and res["cancelled"]["probe"]["marks_left"] is True
     assert "recovery" not in res
+
+
+def test_marks_without_unmarked_count_is_failure(fake_rcon, monkeypatch):
+    """Мод до 3.4: пометки снимает, но числа снятых в detail нет."""
+    _no_wait(monkeypatch)
+    res = run("build_marks", marks_world(no_unmarked=True), fake_rcon)
+    assert res["ok"] is False
+    assert sum("unmarked" in r for r in res["reasons"]) == 2, res["reasons"]
 
 
 def test_marks_job_ends_before_cancel_is_failure(fake_rcon, monkeypatch):
