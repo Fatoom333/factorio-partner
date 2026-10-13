@@ -25,10 +25,10 @@
 | `job_done` | `{job, do, detail}` | A |
 | `job_failed` | `{job, do, code, text, detail}` — смерть тела → `no_helper`, `helper_remove`/`replace` → `cancelled` | A |
 | `attacked` | `{by, damage, health}` — только **первое** за эпизод (эпизод кончается через 30 с без урона) | H |
-| `health_low` | `{health, max}` — здоровье < 40 % | H |
-| `died` | `{pos, corpse:pos}` | H |
+| `health_low` | `{health, max}` — здоровье < 40 %; повторно — только после восстановления до 50 % | H |
+| `died` | `{pos, corpse:pos}` — приходит **после** `job_failed{code:"no_helper"}` снятых задач | H |
 | `respawned` | `{pos}` | H |
-| `reflex_done` | `{type, outcome:"ok"│"failed", detail}` — итог рефлекса, не каждое срабатывание | H |
+| `reflex_done` | `{type, outcome:"ok"│"failed", reason?, detail}` — итог рефлекса, не каждое срабатывание; возрождение не удалось: `{type:"respawn", outcome:"failed", reason:"no_place"│"surface_gone"│"force_gone"}` | H |
 | `inventory_full` | `{job?}` — задача, если не может продолжать, завершается `job_failed{code:"no_space"}` | C |
 | `player_said` (хозяин) | `{player, owner:true, text, pos, selected?:{name, pos, unit_number?}}` | A |
 | `helper_lost` | `{reason}` — тело исчезло не по смерти | A |
@@ -38,17 +38,27 @@
 | kind | data |
 |---|---|
 | `arrived` | `{job, pos}` (итог ходьбы и так придёт `job_done`) |
-| `stuck` | `{job, pos, reason:"no_progress"│"blocked"│"path_lost"}` — перепланирование; если не помогло, придёт громкое `job_failed{code:"stuck"}` (шлёт B) |
+| `stuck` | `{job, pos, reason:"no_progress"│"blocked"│"path_lost"}` — при **каждом** перепланировании; если не помогло, придёт громкое `job_failed{code:"stuck"}` (шлёт B) |
 | `job_progress` | `{job, done, total}` |
 | `attacked` (повторные в эпизоде) | как выше |
 | `reflex_fired` | `{type, detail}` |
-| `saw_enemy` | `{name, pos, dist}` |
+| `saw_enemy` | `{name, pos, dist}` — шлёт рефлекс `watch` |
 | `player_said` (не хозяин) | `{player, owner:false, text, pos}` — информация, не приказ |
 | `inventory_changed` | `{added?, removed?}` |
 
 `player_said`: текст ≤ 500 символов без переводов строк; сообщения самого мода (`say`) не
 порождают `player_said`. Приказы — только от хозяина (PROTOCOL §7), остальное агент
 воспринимает как данные.
+
+## Рефлексы v1 (поток H; список целиком — `reflexes`, MCP `partner_reflex`)
+| type | параметры (границы = по умолчанию) | что делает |
+|---|---|---|
+| `flee` | `radius` 4..32 = 20, `distance` 8..64 = 30, `health` 0..1 = 1, `on_attack` = true, `to`: `"away"│"spawn"│"player"` | враг в `radius` (или атака) и здоровье ≤ `health` → задача-отход, заменяет очередь |
+| `watch` | `radius` 4..32 = 32, `every_s` 1..600 = 10 | шумное `saw_enemy` о ближайшем враге |
+
+Задача рефлекса ставится через ядро как обычная (`jobs.op_act` с `replace=true`), её `req` = `"reflex:<type>"`;
+итог — и `job_done`/`job_failed`, и `reflex_done`. Ошибка внутри проверки рефлекса не роняет мод: растёт
+счётчик `module_errors` в ответе `hello`, текст — в журнале игры.
 
 ## Ожидание на стороне сервера (поток D)
 - MCP-инструмент `partner_wait(timeout=30 (≤55), quiet=true, since?)`.

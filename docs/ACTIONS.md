@@ -9,12 +9,24 @@
 - `target` = `{unit_number:int, pos:pos}` │ `{name:string, pos:pos}` — сущность на поверхности помощника
   (поиск: `game.get_entity_by_unit_number`, а если nil — `find_entities_filtered{position=pos, radius=2}`
   с тем же `unit_number`: в 2.0 первый находит только сущности с флагом `get-by-unit-number`),
-  **своей силы или `neutral`**, иначе `not_found`.
+  **своей силы или `neutral`**, иначе `not_found`. `unit_number` — целое ≥ 1. `pos` обязателен в форме
+  `{name, pos}` и желателен в форме `{unit_number, pos}`: без него сущность, которую движок не отдаёт по
+  номеру, — `not_found`. Сущность на другой поверхности — тоже `not_found` (номер не раскрывает чужую
+  поверхность). Призрак как `target` — `bad_args` (для призраков есть `build_ghosts`).
 - `items` = `{[item_name]: count}`, count — целое 1..100000; качество всегда `normal`.
 - Нарушение схемы: верхняя граница (`max`, длина, число имён) → `limit`, всё остальное → `bad_args`
   (PROTOCOL §3). Взаимоисключающие аргументы (`target│to`) — ровно один, иначе `bad_args` в `start`.
 - Предметы с данными (`is_item_with_entity_data`, броня, чертежи) и портящиеся — только целым стаком
-  (`transfer_stack`/`swap_stack`); вставка такого предмета в машину — `bad_args` (в v1).
+  (`transfer_stack`/`swap_stack`); вставка такого предмета в машину — `bad_args` (в v1). Если заявка
+  меньше неделимого стака, `insert`/`extract`/`collect` его не берут: остаток в `detail`, а при итоге
+  `failed{no_items}` — `detail.reason = "whole_stacks_only"`.
+- **Нет места** (`no_space`): инвентарь помощника или цели полон. Итог — `job_failed{code:"no_space"}`
+  даже при частичном успехе; `detail` несёт сделанное (те же поля, что у `done.detail`) и
+  `reason = "inventory_full"`.
+- **Границы чисел v1:** `walk.radius` 0..64; `follow.distance` 1..32, `duration_s` 1..3600;
+  `craft.count` 1..10000; `collect.radius` 1..128; `build_ghosts.radius` 1..64; `wait.seconds` 1..600.
+- **Списки в `detail`** (`skipped`, `blocked`, `from`) обрезаются до 20 записей, рядом — полное число
+  (`skipped_total`, `blocked_total`), иначе событие не влезает в 4000 байт (EVENTS.md).
 
 ## Подход (единое правило)
 Все действия, которым нужна цель рядом, **сами подходят** к ней через `ctx.approach`
@@ -82,10 +94,10 @@ return M                          --   и снять своё: mining_state, cra
 | `extract` | `target, items?` (нет → всё), `equip?:bool` | `{extracted: items}` | C |
 | `collect` | `items, center?│near?:"player", radius?=64` | `{collected: items, missing: items, from:[unit]}` | C |
 | `pickup` | `target?` (труп) │ `area?` (предметы на земле) | `{picked: items}` | C |
-| `place` | `item, pos, direction?:0..15, recipe?` | `{unit_number}` | F |
-| `build_blueprint` | `blob, anchor:pos, direction?, mode?="auto", dry_run?:bool` | `{ghosts:int, skipped:[...], missing: items}` | F |
-| `build_ghosts` | `area?│radius?=64, mode?="auto"` | `{built:int, left:int, blocked:[...], missing: items}` | F |
-| `deconstruct` | `target│area, filter?:[name]` | `{removed:int, got: items}` | F |
+| `place` | `item, pos, direction?:0..15, recipe?` | `{unit_number, name, pos}` | F |
+| `build_blueprint` | `blob, anchor:pos, direction?:0│4│8│12, mode?="auto", dry_run?:bool` | `{ghosts:int, skipped:[...], skipped_total, tiles_skipped, missing: items}` + поля `build_ghosts` | F |
+| `build_ghosts` | `area?│radius?=64, mode?="auto"` | `{built:int, left:int, blocked:[...], blocked_total, missing: items}` | F |
+| `deconstruct` | `target│area, filter?:[name]` | `{removed:int, got: items}` (`removed` — только разобранное самим помощником) | F |
 | `wait` | `seconds:1..600` | `{}` — пауза в очереди, никогда не заменяет её | A |
 
 Отдельных подробностей требуют:
@@ -99,6 +111,15 @@ direction, build_mode=defines.build_mode.normal, skip_fog_of_war=false}` соз�
 `anchor` — **центр чертежа** (как `position` у `LuaItemStack.build_blueprint`), `direction` —
 `defines.direction` (0..15). `dry_run=true` — только проверки, без призраков: вернуть
 `{ghosts, skipped, missing}`. `build_mode` `forced`/`superforced` запрещены.
+Уточнения v1: `direction` — только 0/4/8/12 (иначе `bad_args`); чертёж ≤ 1000 сущностей и сторона ≤ 128
+(`limit`); **плитки не ставятся** (`tiles_skipped` — их число); `import_stack` = -1 (часть сущностей
+отброшена, например мод выключен) принимается, отброшенное попадает в `skipped` с `reason:"unknown"`;
+ни одного призрака не встало → `failed{cannot_place}` с `skipped`. Проверка `manual_ghost` решает только,
+что попадёт в `skipped` (и ответ `dry_run`), сами призраки ставит `build_blueprint` движка.
+
+**`place`** — `recipe` только для `assembling-machine` (иначе `bad_args`); предмет с данными — `bad_args`;
+если на месте уже стоит такой же призрак, он **не** оживляется — `cannot_place` (для призраков —
+`build_ghosts`).
 
 **`build_ghosts`** — строит призраки силы в области (поставленные игроком через MPP,
 P.U.M.P., чертёж, или `build_blueprint`). Перед стартом: список призраков, нужные предметы,
@@ -108,6 +129,12 @@ P.U.M.P., чертёж, или `build_blueprint`). Перед стартом: с
 в области не осталось строимых призраков; `failed{code:"stuck"}` — 60 с без прогресса
 (`detail: {left, blocked, missing}`); `failed{code:"no_items"}` — кончились предметы и
 `collect` не вызывался (сбор — решение агента). Прогресс — `job_progress{built, left}`.
+Уточнения v1: `"robots"` без личных дронов или робопорта в броне → `no_items` сразу; в `"auto"` дронам
+даётся 30 с без единой постройки, потом задача строит руками; ожидание дронов держит «пульс», но
+не дольше 58 с без построек (дальше — правило 60 с ядра). Призрак руками — `ghost.revive{raise_revive=true}`
+и списание предмета (PROTOCOL §6.5). При откате (предмет не списался) призрак возвращается **без
+настроек** (рецепт, фильтры). Переключатель личных дронов (`allow_dispatching_robots`) на время задачи
+принадлежит задаче и возвращается в `stop`.
 
 **`extract` / перенос предметов с данными** — броня (`is_armor`, сетка), чертежи и книги,
 `is_item_with_entity_data` переносятся только целым стаком `LuaItemStack.transfer_stack` /
@@ -117,5 +144,8 @@ P.U.M.P., чертёж, или `build_blueprint`). Перед стартом: с
 **`deconstruct`** — `selected = e; mining_state = {mining=true, position=e.position}` до
 исчезновения сущности (`on_object_destroyed` или `valid=false`), предметы падают в инвентарь
 движком. `mine_entity`, `destroy` запрещены.
+Режим `area`: только сущности своей силы; `neutral` (деревья, камни) — только если названы в `filter`;
+никогда — персонажи, призраки, руда, техника с водителем; не больше 500 сущностей (`limit`). Имя в
+`filter`, которого нет в прототипах, — `bad_args`.
 
 Прогресс долгих задач — шумное `job_progress{job, done, total}` не чаще раза в 5 с.
