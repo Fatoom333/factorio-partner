@@ -95,7 +95,7 @@ return M                          --   и снять своё: mining_state, cra
 | `collect` | `items, center?│near?:"player", radius?=64` | `{collected: items, missing: items, from:[unit]}` | C |
 | `pickup` | `target?` (труп: `{name:"character-corpse", pos}`) │ `area?` (предметы на земле) | `{picked: items}` | C |
 | `place` | `item, pos, direction?:0..15, recipe?` | `{unit_number, name, pos}` | F |
-| `build_blueprint` | `blob, anchor:pos, direction?:0│4│8│12, mode?="auto", force?="forced", dry_run?:bool` | `{ghosts:int, tiles:int, skipped:[...], skipped_total, tiles_skipped, on_liquid:int, to_remove?, to_remove_total?, missing: items}` + поля `build_ghosts` | F |
+| `build_blueprint` | `blob, anchor:pos, direction?:0│4│8│12, mode?="auto", force?="forced", search?=16, partial?=false, dry_run?:bool` | `{ghosts:int, tiles:int, skipped:[...], skipped_total, tiles_skipped, on_liquid:int, liquids?, fit?, to_remove?, to_remove_total?, missing: items}` + поля `build_ghosts` | F |
 | `build_ghosts` | `area?│radius?=64, mode?="auto"` | `{built:int, tiles_built:int, left:int, removed:int, not_removed:int, blocked:[...], blocked_total, missing: items}` | F |
 | `deconstruct` | `target│area, filter?:[name]` | `{removed:int, got: items}` (`removed` — только разобранное самим помощником) | F |
 | `plan_mining` | `resource?:string, area│near:pos, layout?="simple", direction?="north", miner?, belt?, pole?, pipe?, options?:object, dry_run?:bool` | `{ghosts:int, drills:int, tiles:int, skipped:int, area, need: items, layout, chosen:{miner, belt│chest, pole, pipe?}, warnings:[...], dry_run?}` | M |
@@ -120,12 +120,18 @@ direction, build_mode=defines.build_mode.normal, skip_fog_of_war=false}` соз�
   помечаются к сносу; свои постройки не трогаются, призрак над ними не ставится.
 - `"superforced"` (Ctrl+Shift) — то же и пометка к сносу **построек своей силы** на пути. Чужая сила
   не трогается ни в одном режиме. Подземные конвейеры при пересечении лент — не проверено.
-- **Жидкость (вода, лава, мазут, аммиак).** Подложку (отсыпка, на лаве — фундамент) под постройку
-  ставит сам движок в `forced`/`superforced`, и **только если эта плитка открыта силе**. Фундамент
-  открывается в конце игры, поэтому обычный случай — подложки нет: такие клетки идут в `skipped` с
-  `reason:"liquid"`, их число — `on_liquid`; чертёж при этом **не падает целиком**, остальное ставится.
-  `dry_run` показывает то же самое, и агент обязан сказать хозяину, сколько клеток попало на жидкость,
-  прежде чем строить обрезанный чертёж. Вода с отсыпкой живьём не проверена (на Вулканусе воды нет).
+- **Плитки без опоры (вода, лава, мазут, аммиак, плитки планет из модов)** — правила берутся из
+  игры (PROTOCOL §6.12), имён плиток в коде нет. Подложку под постройку ставит сам движок в
+  `forced`/`superforced`, если она **возможна**: у плитки есть `default_cover_tile`, и предмет этой
+  подложки открыт силе. Тогда подложка — обычный призрак плитки, помощник кладёт её из инвентаря.
+- **Подложка невозможна хотя бы под одной клеткой** (обычный случай: фундамент открывается в конце
+  игры) → чертёж **не ставится вовсе**: `failed{cannot_place}`, `detail.on_liquid` — число таких клеток,
+  `detail.liquids:{[tile]=n}`, и `detail.fit` — ближайший сдвиг, при котором чертёж встаёт целиком:
+  `{anchor, shift:{dx,dy}}` либо `null`. Поиск сдвига — по спирали в пределах `search` клеток
+  (`search?=16`, 0..32; 0 — не искать), в несколько тиков. `dry_run` отдаёт то же без ошибки. Дальше
+  решает агент: поставить по `fit`, взять другое место или спросить хозяина. Обрезанный чертёж
+  ставится только с `partial:true` — по прямому согласию хозяина (тогда клетки идут в `skipped` с
+  `reason:"liquid"`). Вода с отсыпкой живьём не проверена (в тестовом сейве воды нет).
 `"superforced"` агент выбирает только по прямой просьбе хозяина или
 после `dry_run`, показав ему, что будет снесено (`detail.to_remove:[{name,pos}]` ≤ 20, `to_remove_total`).
 Помеченное к сносу в области чертежа помощник разбирает сам (как `deconstruct`) **до** стройки,
@@ -162,7 +168,7 @@ P.U.M.P., чертёж, или `build_blueprint`). Перед стартом: с
 `neutral`, **помеченные к сносу** (`to_be_deconstructed`) и мешающие призраку области, задача разбирает
 сама перед стройкой (игрок поставил чертёж с Shift / Ctrl+Shift); остальные помеченные не трогает
 (`removed` — сколько разобрала, `not_removed` — сколько не смогла). Причины в `blocked`: `obstacle`
-(мешает непомеченное), `tile` (нет плитки под призраком), `liquid` (под призраком жидкость без подложки).
+(мешает непомеченное), `tile` (нет плитки под призраком), `liquid` (под призраком плитка без опоры и без подложки).
 Режим `robots` с настоящими дронами живьём не проверен (финал с игроком).
 
 **`extract` / перенос предметов с данными** — броня (`is_armor`, сетка), чертежи и книги,
@@ -189,8 +195,8 @@ P.U.M.P., чертёж, или `build_blueprint`). Перед стартом: с
   учитываются: что выбрано, видно в `chosen`, а хватает ли предметов — агент сверяет `need` со `stock`
   и при нехватке задаёт имена сам). `options` — плоский объект флагов MPP: `lamps`, `coverage`,
   `landfill`, `avoid_water`, `avoid_cliffs`, `deconstruct`, `force_pipes`, `belt_merge`, `chest`;
-  неизвестный флаг → `bad_args`. `avoid_water` (по умолчанию **true**) означает любую жидкость, включая
-  лаву: буры и ленты на неё не ставятся. Модули в буры в v1 не кладутся.
+  неизвестный флаг → `bad_args`. `avoid_water` (по умолчанию **true**) означает любую плитку без опоры
+  (PROTOCOL §6.12): буры и ленты на неё не ставятся. Модули в буры в v1 не кладутся.
 - Итог — **призраки силы хозяина** (то же, что сделал бы игрок рамкой MPP) и список нужных предметов
   `need`; стройка — отдельно, `build_ghosts` по `area`. `dry_run=true` — только посчитать (`ghosts`,
   `need`), ничего не ставить. Призраки ставятся с проверкой `manual_ghost` (PROTOCOL §6.5).
