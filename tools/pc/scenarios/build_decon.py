@@ -2,7 +2,7 @@
 
 Ход:
 1. Как build_place: помощник, сундук честно со склада хозяина (`collect`), `act place` рядом.
-2. `act deconstruct {target:{name, pos}}` — подход, `selected` + `mining_state` до исчезновения.
+2. `act deconstruct {target:{unit_number, pos}}` (номер — из ответа `place`) — подход, `selected` + `mining_state` до исчезновения.
 3. Сверка: job_done, removed = 1, got = {<сундук>: 1}; у помощника предметов столько же, сколько
    было до постановки; `map` больше не видит сундук на месте.
 Общие шаги — из build_place.py (загрузка по пути). Только конверты `/partner <JSON>`.
@@ -31,13 +31,14 @@ def run(client) -> dict:
     if item is None:
         return result
     before = P.helper_count(client, item)
-    pos, _ = P.place_near(client, item, result)
+    pos, placed = P.place_near(client, item, result)
     if pos is None:
         result.update(ok=False, reasons=[f"place не done: {result.get('place')}"])
         return result
 
     reasons = []
-    r = P.act(client, "deconstruct", {"target": {"name": item, "pos": pos}})
+    unit = P.detail_of(placed).get("unit_number")
+    r = P.act(client, "deconstruct", {"target": {"unit_number": unit, "pos": pos}})
     result["deconstruct"] = P.brief(r)
     if r["kind"] != "job_done":
         reasons.append(f"deconstruct не done: {result['deconstruct']}")

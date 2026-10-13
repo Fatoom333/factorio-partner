@@ -78,6 +78,21 @@ S.suite("build_deconstruct", {
       S.eq(d2.detail.removed, 1)
       S.eq(a.valid, false)
   end },
+  { "камень и дерево разбираются вплотную (resource_reach_distance), а не с reach_distance", function()
+      local W = F.setup()
+      F.reach_only_openable = true   -- как в игре: издалека камень не достать и не добыть
+      local rock = S.nauvis.create_entity{ name = "big-rock", position = { x = 20.5, y = 0.5 }, force = "neutral" }
+      local tree = S.nauvis.create_entity{ name = "tree-01", position = { x = 24.5, y = 3.5 }, force = "neutral" }
+      local d, kind = F.wait(decon{ target = { name = "big-rock", pos = { x = 20.5, y = 0.5 } } })
+      S.eq(kind, "job_done", S.dump(d))
+      S.eq(d.detail, { removed = 1, got = { stone = 3 } })
+      S.eq(rock.valid, false)
+      S.ok(S.dist(W.h.position, { x = 20.5, y = 0.5 }) <= 2.7, "подошёл вплотную")
+      local d2, kind2 = F.wait(decon{ area = AREA, filter = { "tree-01" } })
+      S.eq(kind2, "job_done", S.dump(d2))
+      S.eq({ d2.detail.removed, tree.valid }, { 1, false })
+      S.ok(S.dist(W.h.position, { x = 24.5, y = 3.5 }) <= 2.7)
+  end },
   { "пустая область — done{removed = 0}", function()
       F.setup()
       local d, kind = F.wait(decon{ area = AREA })

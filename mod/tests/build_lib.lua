@@ -1,5 +1,5 @@
--- scripts/lib/build.lua (поток F): геометрия, подход, дроны, запасные vis/target (пока нет ревизии 3.1),
--- раскладка чертежа. Действия целиком — в build_place / build_ghosts / build_blueprint / build_deconstruct.
+-- scripts/lib/build.lua (поток F): геометрия, подход, дроны, цель и обзор через ядро, разбор руками,
+-- помехи (помеченное к сносу, плитки под постройками), плитка руками, раскладка чертежа. Действия целиком — в build_place / build_ghosts / build_blueprint / build_deconstruct.
 local S = require("stubs")
 local C = require("stubs_c")
 local F = require("stubs_f")
@@ -111,40 +111,201 @@ S.suite("build_lib", {
       -- фейковый target ищет только на своей поверхности — чужая поверхность даёт not_found
       S.raises(function() B.resolve(ctx, { unit_number = there.unit_number }) end, "not_found")
   end },
-  { "запасной vis: видимый чанк силы или ≤ 32 клеток от живого тела помощника", function()
+  { "обзор — через scripts.core.vis, запасных реализаций в модуле нет", function()
       local W = F.setup()
       local B = lib()
-      local V = B.fallback_vis
-      local f = game.forces.player
-      S.move(W.h, { x = 0, y = 0 })
-      S.eq(V.visible("h1", S.nauvis, { x = 100, y = 0 }), true, "чанк виден силе")
-      f.invisible[S.chunk_key(S.nauvis, { x = 3, y = 0 })] = true
-      f.invisible[S.chunk_key(S.nauvis, { x = 0, y = 0 })] = true
-      S.eq(V.visible("h1", S.nauvis, { x = 100, y = 0 }), false)
-      S.eq(V.visible("h1", S.nauvis, { x = 20, y = 0 }), true, "собственные глаза: 32 клетки")
-      S.eq(V.visible("nobody", S.nauvis, { x = 1, y = 0 }), false)
-      storage.helpers.h1.state = "dead"
-      S.eq(V.visible("h1", S.nauvis, { x = 1, y = 0 }), false, "мёртвый помощник не видит")
+      local ctx = { helper_id = "h1", entity = W.h }
+      S.eq({ B.fallback_vis, B.fallback_target }, { nil, nil })
+      F.vis.result = false
+      S.eq(B.visible(ctx, { x = 1, y = 0 }), false)
+      F.vis.result = true
+      S.eq(B.visible(ctx, { x = 1, y = 0 }), true)
+      S.eq(F.vis.calls, 2)
+      S.eq(F.vis.last.helper, "h1")
   end },
-  { "запасной target: unit_number (и поиск рядом с pos), name+pos — ближайшая, чужое не фильтрует", function()
-      F.setup()
+  { "dig_step: подход, selected + mining_state, removed; исчезла сама — gone; не поддаётся — skipped; нет места — full", function()
+      local W = F.setup()
       local B = lib()
-      local T = B.fallback_target
-      local a = C.chest({ x = 5.5, y = 0.5 }, {})
-      local b = C.chest({ x = 6.5, y = 0.5 }, {})
-      S.eq(T.resolve(S.nauvis, { unit_number = a.unit_number }), a)
-      S.eq(T.resolve(S.nauvis, { name = "iron-chest", pos = { x = 6.4, y = 0.5 } }), b)
-      S.eq(T.resolve(S.nauvis, { name = "iron-chest", pos = { x = 50, y = 0 } }), nil)
-      S.eq(T.resolve(S.nauvis, { name = "no-such-entity", pos = { x = 5.5, y = 0.5 } }), nil)
-      S.eq(T.resolve(S.nauvis, { unit_number = 31337 }), nil)
-      -- 2.0: get_entity_by_unit_number находит не всё — тогда поиск рядом с pos
-      local orig = game.get_entity_by_unit_number
-      game.get_entity_by_unit_number = function() return nil end
-      S.eq(T.resolve(S.nauvis, { unit_number = a.unit_number }), nil)
-      S.eq(T.resolve(S.nauvis, { unit_number = a.unit_number, pos = { x = 5.5, y = 0.5 } }), a)
-      S.eq(T.resolve(S.nauvis, { unit_number = a.unit_number, pos = { x = 30, y = 0 } }), nil)
-      game.get_entity_by_unit_number = orig
-      S.eq(T.resolve(S.nauvis, "iron-chest"), nil)
+      local path = W.path
+      local function ctx_of()
+        return {
+          helper_id = "h1", entity = W.h, tick = game.tick,
+          approach = function() return true end, cancel_approach = function() end,
+        }
+      end
+      S.move(W.h, { x = 18.5, y = 0.5 })
+      -- разобрали сами
+      local ch = C.chest({ x = 20.5, y = 0.5 }, {})
+      local task = {}
+      local st = B.dig_new(W.h, ch)
+      S.eq({ st.name, st.pos, st.started }, { "iron-chest", { x = 20.5, y = 0.5 }, false })
+      S.ok(st.timeout >= B.DIG_MIN_TIMEOUT)
+      local r
+      for _ = 1, 600 do
+        r = B.dig_step(task, ctx_of(), st)
+        if r ~= "working" then break end
+        S.eq(W.h.selected, ch)
+        S.eq(W.h.mining_state.mining, true)
+        F.run(1)
+      end
+      S.eq(r, "removed")
+      S.eq({ ch.valid, task.mining, W.h.mining_state.mining }, { false, false, false })
+      S.eq(C.counts(W.main), { ["iron-chest"] = 1 })
+      -- исчезла не от наших рук
+      local other = C.chest({ x = 21.5, y = 0.5 }, {})
+      local st2 = B.dig_new(W.h, other)
+      S.eq(B.dig_step(task, ctx_of(), st2), "working")
+      other.destroy()
+      S.eq(B.dig_step(task, ctx_of(), st2), "gone")
+      -- не поддаётся
+      local hard = C.chest({ x = 19.5, y = 1.5 }, {}, { name = "wooden-chest" })
+      C.mining_disabled = true
+      local st3 = B.dig_new(W.h, hard)
+      local r3
+      for _ = 1, st3.timeout + 5 do
+        r3 = B.dig_step(task, ctx_of(), st3)
+        if r3 ~= "working" then break end
+        F.run(1)
+      end
+      S.eq(r3, "skipped")
+      S.eq(W.h.mining_state.mining, false)
+      C.mining_disabled = false
+      -- нет места под предмет
+      for i = 1, 80 do W.main.insert{ name = "coal", count = 50 } end
+      local st4 = B.dig_new(W.h, hard)
+      S.eq(B.dig_step(task, ctx_of(), st4), "full")
+      S.ok(hard.valid)
+      -- ошибка пути уходит как есть
+      S.move(W.h, { x = 80.5, y = 0.5 })
+      local c5 = ctx_of()
+      c5.approach = function() return { status = "failed", code = "path_failed" } end
+      S.eq(B.dig_step(task, c5, B.dig_new(W.h, hard)).code, "path_failed")
+      S.ok(path ~= nil)
+  end },
+  { "can_dig / dig_reach: камни и деревья — вплотную (resource_reach_distance), постройки — с reach_distance", function()
+      local W = F.setup()
+      local B = lib()
+      F.reach_only_openable = true
+      S.move(W.h, { x = 0.5, y = 0.5 })
+      local rock = S.nauvis.create_entity{ name = "big-rock", position = { x = 5.5, y = 0.5 }, force = "neutral" }
+      local near_rock = S.nauvis.create_entity{ name = "big-rock", position = { x = 2.5, y = 0.5 }, force = "neutral" }
+      local tree = S.nauvis.create_entity{ name = "tree-01", position = { x = 0.5, y = 2.8 }, force = "neutral" }
+      local ch = C.chest({ x = 9.5, y = 0.5 }, {})
+      S.eq({ B.dig_reach(W.h, rock) }, { 2.7, B.NEAR_MARGIN })
+      S.eq({ B.dig_reach(W.h, tree) }, { 2.7, B.NEAR_MARGIN })
+      S.eq({ B.dig_reach(W.h, ch) }, { 10, B.REACH_MARGIN })
+      S.eq(B.can_dig(W.h, rock), false, "с 5 клеток камень не достать")
+      S.eq(B.can_dig(W.h, near_rock), true)
+      S.eq(B.can_dig(W.h, tree), true)
+      S.eq(B.can_dig(W.h, ch), true)
+      -- подходит вплотную (путь — почти на предел досягаемости) и разбирает
+      local calls = {}
+      local ctx = {
+        helper_id = "h1", entity = W.h,
+        approach = function(task, pos, d)
+          calls[#calls + 1] = d
+          return W.path.step(task, { entity = W.h }, pos, d)
+        end,
+        cancel_approach = function() end,
+      }
+      local task = {}
+      local st = B.dig_new(W.h, rock)
+      local r
+      for _ = 1, 900 do
+        ctx.tick = game.tick
+        r = B.dig_step(task, ctx, st)
+        if r ~= "working" then break end
+        if W.h.mining_state.mining then
+          S.ok(S.dist(W.h.position, rock.position) <= 2.7, "копает только вплотную")
+        end
+        F.run(1)
+      end
+      S.eq(r, "removed")
+      S.near(calls[1], 2.7 - B.NEAR_MARGIN - 0.4)
+      S.eq(C.counts(W.main), { stone = 3 })
+  end },
+  { "why_not_minable / has_driver: персонажи, призраки, руда, некопаемое", function()
+      local W = F.setup()
+      local B = lib()
+      S.eq(B.why_not_minable(C.chest({ x = 5.5, y = 0.5 }, {})), nil)
+      S.ok(B.why_not_minable(W.h) ~= nil)
+      S.ok(B.why_not_minable(F.ghost("iron-chest", { x = 6.5, y = 0.5 })) ~= nil)
+      S.ok(B.why_not_minable(F.tile_ghost("stone-path", { x = 7, y = 0 })) ~= nil)
+      S.ok(B.why_not_minable(C.resource("iron-ore", { x = 8.5, y = 0.5 }, 10)) ~= nil)
+      S.ok(B.why_not_minable(S.nauvis.create_entity{ name = "bedrock", position = { x = 9, y = 0 }, force = "player" }) ~= nil)
+      local car = S.nauvis.create_entity{ name = "car", position = { x = 12, y = 0 }, force = "player" }
+      S.eq(B.has_driver(car), false)
+      rawset(car, "get_driver", function() return W.h end)
+      S.eq(B.has_driver(car), true)
+  end },
+  { "marked / survey / waits_for: помеченное своей силы и neutral, плитки под постройкой, пропущенное", function()
+      local W = F.setup()
+      local B = lib()
+      local area = { left_top = { x = 15, y = -5 }, right_bottom = { x = 30, y = 5 } }
+      local chest = prototypes.entity["iron-chest"]
+      local furnace = prototypes.entity["stone-furnace"]
+      local tree = F.mark(S.nauvis.create_entity{ name = "tree-01", position = { x = 20.5, y = 0.5 }, force = "neutral" })
+      local mine = F.mark(C.chest({ x = 22.5, y = 0.5 }, {}))
+      local plain = C.chest({ x = 24.5, y = 0.5 }, {})                                    -- не помечен
+      local enemy = F.mark(C.chest({ x = 26.5, y = 0.5 }, {}, { force = "enemy" }))        -- чужой
+      local rockbed = F.mark(S.nauvis.create_entity{ name = "bedrock", position = { x = 28.5, y = 0.5 }, force = "player" })
+      local far = F.mark(C.chest({ x = 60.5, y = 0.5 }, {}))                               -- вне области
+      S.eq(B.is_marked(tree), true)
+      S.eq(B.is_marked(plain), false)
+      local m = B.marked(W.h, area)
+      local names = {}
+      for _, x in ipairs(m) do names[#names + 1] = x.name .. "@" .. x.pos.x end
+      table.sort(names)
+      S.eq(names, { "iron-chest@22.5", "tree-01@20.5" })
+      S.ok(enemy.valid and rockbed.valid and far.valid)
+      F.tile_ghost("landfill", { x = 18, y = 2 })
+      F.tile_ghost("landfill", { x = 16, y = 2 })
+      local dead = { [B.ghost_key("landfill", { x = 16.5, y = 2.5 })] = true }
+      local sv = B.survey(W.h, area, nil, dead)
+      S.eq(#sv.marked, 2)
+      S.eq({ sv.tiles["18,2"], sv.tiles["16,2"], sv.tiles["17,2"] }, { true, false, nil })
+      local why, obstacles = B.waits_for(sv, chest, { x = 20.5, y = 0.5 }, 0)
+      S.eq({ why, #obstacles, obstacles[1].name }, { "decon", 1, "tree-01" })
+      S.eq(B.waits_for(sv, chest, { x = 21.5, y = 0.5 }, 0), nil, "соседняя клетка свободна")
+      S.eq(B.waits_for(sv, chest, { x = 18.5, y = 2.5 }, 0), "tile")
+      S.eq(B.waits_for(sv, chest, { x = 16.5, y = 2.5 }, 0), "tile_dead")
+      S.eq(B.waits_for(sv, furnace, { x = 18, y = 2 }, 0), "tile", "2×2 накрывает клетку с плиткой")
+      S.eq(B.waits_for(sv, chest, { x = 24.5, y = 0.5 }, 0), nil, "непомеченная постройка — не «ожидание»")
+      -- помеху, которую разобрать не вышло, больше не ждём
+      local skip = { [obstacles[1].key] = "stuck" }
+      S.eq(B.waits_for(sv, chest, { x = 20.5, y = 0.5 }, 0, skip), "decon_dead")
+      tree.destroy()
+      S.eq(B.waits_for(sv, chest, { x = 20.5, y = 0.5 }, 0), nil, "помеха исчезла")
+  end },
+  { "revive_tile: предмет плитки из инвентаря, плитка на поверхности; отказы и возврат предмета", function()
+      local W = F.setup{ items = { ["stone-brick"] = 2 } }
+      local B = lib()
+      local ctx = { helper_id = "h1", entity = W.h }
+      S.move(W.h, { x = 0.5, y = 0.5 })
+      local function entry(g, n) return { e = g, item = "stone-brick", count = n or 1 } end
+      local g = F.tile_ghost("stone-path", { x = 4, y = 0 })
+      S.eq(g.position, { x = 4.5, y = 0.5 })
+      F.vis.result = false
+      S.eq({ B.revive_tile(ctx, entry(g)) }, { nil, "not_visible" })
+      F.vis.result = true
+      S.eq({ B.revive_tile(ctx, entry(F.tile_ghost("stone-path", { x = 14, y = 0 }))) }, { nil, "far" })
+      S.eq({ B.revive_tile(ctx, entry(g, 3)) }, { nil, "no_items" })
+      S.eq({ B.revive_tile(ctx, entry(F.tile_ghost("stone-path", { x = 5, y = 0 }, { quality = "rare" }))) }, { nil, "quality" })
+      -- призрак не оживился — предмет вернулся
+      F.tile_revive_fails = true
+      S.eq({ B.revive_tile(ctx, entry(g)) }, { nil, "blocked" })
+      S.eq(C.counts(W.main), { ["stone-brick"] = 2 })
+      S.ok(g.valid)
+      F.tile_revive_fails = false
+      -- предмет не списался — плитки нет
+      F.remove_fails = true
+      S.eq({ B.revive_tile(ctx, entry(g)) }, { nil, "no_items" })
+      S.eq(F.tile_at(4, 0), "grass-1")
+      F.remove_fails = false
+      S.eq(B.revive_tile(ctx, entry(g)), true)
+      S.eq({ g.valid, F.tile_at(4, 0) }, { false, "stone-path" })
+      S.eq(C.counts(W.main), { ["stone-brick"] = 1 })
+      S.eq({ B.revive_tile(ctx, entry(g)) }, { nil, "gone" })
   end },
   { "revive: причины отказа по порядку — качество, обзор, далеко, нет предмета, тело, заблокирован", function()
       local W = F.setup{ items = { ["iron-chest"] = 1 } }
@@ -193,6 +354,51 @@ S.suite("build_lib", {
       S.eq(r3[1].pos, { x = 10.5, y = 20.5 })
       S.eq(r3[2].pos, { x = 10.5, y = 18.5 })
       S.eq(A.layout({}, { x = 0, y = 0 }, 0), {})
+  end },
+  { "раскладка: постройки разного размера — как поставил движок 2.0.77 (живой замер build_2x2)", function()
+      F.setup()
+      local A = require("scripts.actions.build_blueprint")
+      -- у настоящей печи коробка столкновений ±0.7 при размере 2×2: рамка считается по клеткам
+      prototypes.entity["stone-furnace"].collision_box = { left_top = { x = -0.7, y = -0.7 }, right_bottom = { x = 0.7, y = 0.7 } }
+      prototypes.entity["iron-chest"].collision_box = { left_top = { x = -0.35, y = -0.35 }, right_bottom = { x = 0.35, y = 0.35 } }
+      local ents = {
+        { name = "stone-furnace", position = { x = 0, y = 0 } },
+        { name = "iron-chest", position = { x = 1.5, y = -0.5 } },
+      }
+      local anchor = { x = -49, y = 29 }
+      local want = {
+        [0] = { { x = -49, y = 29 }, { x = -47.5, y = 28.5 } },
+        [4] = { { x = -49, y = 29 }, { x = -48.5, y = 30.5 } },
+        [8] = { { x = -48, y = 29 }, { x = -49.5, y = 29.5 } },
+        [12] = { { x = -49, y = 30 }, { x = -49.5, y = 28.5 } },
+      }
+      for dir, w in pairs(want) do
+        local plan = A.layout(ents, anchor, dir)
+        S.eq({ plan[1].pos, plan[2].pos }, w, "поворот " .. dir)
+      end
+  end },
+  { "раскладка чертежа с плитками: рамка охватывает плитки, плитка — центр клетки, поворот", function()
+      F.setup()
+      local A = require("scripts.actions.build_blueprint")
+      local ents = { { name = "iron-chest", position = { x = 0.5, y = 0.5 } } }
+      local tiles = {
+        { name = "stone-path", position = { x = -1, y = 0 } },
+        { name = "stone-path", position = { x = 0, y = 0 } },
+        { name = "stone-path", position = { x = 1, y = 0 } },
+      }
+      -- рамка: x −1..2, y 0..1 → центр (0.5, 0.5)
+      local plan, tplan = A.layout(ents, { x = 10.5, y = 20.5 }, 0, tiles)
+      S.eq(plan[1].pos, { x = 10.5, y = 20.5 })
+      S.eq({ tplan[1].pos, tplan[2].pos, tplan[3].pos },
+        { { x = 9.5, y = 20.5 }, { x = 10.5, y = 20.5 }, { x = 11.5, y = 20.5 } })
+      S.eq(tplan[1].name, "stone-path")
+      local _, r = A.layout(ents, { x = 10.5, y = 20.5 }, 4, tiles)
+      S.eq({ r[1].pos, r[3].pos }, { { x = 10.5, y = 19.5 }, { x = 10.5, y = 21.5 } })
+      -- только плитки: привязка по первой плитке
+      local none, only = A.layout({}, { x = 3, y = 3 }, 0, { { name = "stone-path", position = { x = 0, y = 0 } },
+        { name = "stone-path", position = { x = 1, y = 0 } } })
+      S.eq(none, {})
+      S.eq({ only[1].pos, only[2].pos }, { { x = 2.5, y = 3.5 }, { x = 3.5, y = 3.5 } })
   end },
   { "модуль держит контракт интерфейса действий и не трогает запрещённое", function()
       F.setup()

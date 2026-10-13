@@ -8,8 +8,9 @@
    (сундук из железа, дерева или стали либо стена из каменного кирпича).
 3. `act place {item, pos}` рядом с помощником; `cannot_place` — следующее место из списка.
 4. Сверка: job_done с unit_number; у помощника стало на 1 предмет меньше; `map` видит сундук на месте.
-Остальные сценарии build_* берут отсюда `prepare()` и `place_near()` (загрузка по пути, как _hands).
-Живой прогон 2026-10-13 — research/live-f-2026-10-13.md (на main с B и C, без X); повторить после слияния X.
+Остальные сценарии build_* берут отсюда `prepare()`, `get_item()`, `place_near()` и разведку карты
+(`survey`, `lava_cells`, `rocks`) — загрузка по пути, как _hands.
+Цель действий — всегда `{unit_number, pos}` (ACTIONS.md «target», ревизия 3.1).
 Только конверты `/partner <JSON>` через live_client (TESTING.md §3).
 """
 from __future__ import annotations
@@ -37,6 +38,9 @@ CHESTS = ("wooden-chest", "iron-chest", "steel-chest")
 # сталь и каменный кирпич, поэтому в списке есть и они; стена — такая же постройка 1×1)
 CRAFT = (("iron-chest", "iron-plate", 8), ("wooden-chest", "wood", 2),
          ("steel-chest", "steel-plate", 8), ("stone-wall", "stone-brick", 5))
+# из чего скрафтить руками прочие постройки сценариев: {предмет: (сырьё, штук на одну)}
+RECIPES = {"iron-chest": ("iron-plate", 8), "wooden-chest": ("wood", 2), "steel-chest": ("steel-plate", 8),
+           "stone-wall": ("stone-brick", 5), "stone-furnace": ("stone", 5)}
 OFFSETS = ((3, 0), (0, 3), (-3, 0), (0, -3), (4, 4), (-4, 4), (4, -4), (-4, -4), (6, 0), (0, 6), (-6, 0), (0, -6))
 
 
@@ -94,15 +98,111 @@ def obtain(client, item, count, radius, result, key):
     boxes.sort(key=lambda c: c.get("dist", 1e9))
     for c in boxes[:3]:
         need = count - (helper_count(client, item) - before)
-        # цель сначала по номеру; на стенде без игроков поиск по номеру бывает not_found — тогда {name, pos}
-        for target in ({"unit_number": c.get("unit")}, {"name": c.get("name"), "pos": c.get("pos")}):
-            r = act(client, "extract", {"target": target, "items": {item: need}})
-            result[key + "_extract"] = brief(r)
-            if code_of(r) != "not_found":
-                break
+        # цель — {unit_number, pos}: по одному номеру движок 2.0 отдаёт не все сущности (ACTIONS «target»)
+        target = {"unit_number": c.get("unit"), "pos": c.get("pos")}
+        r = act(client, "extract", {"target": target, "items": {item: need}})
+        result[key + "_extract"] = brief(r)
         if helper_count(client, item) - before >= count:
             return True
     return False
+
+
+def get_item(client, item, count, result, key=None):
+    """Довести число предметов item у помощника до count: со складов хозяина, а если их там нет —
+    сырьё со складов и ручной крафт (RECIPES). → bool."""
+    key = key or ("get_" + item)
+    need = count - helper_count(client, item)
+    if need <= 0:
+        return True
+    total, radius = _stock_total(client, [item], result)
+    if total.get(item, 0) >= need and obtain(client, item, need, radius, result, key):
+        return True
+    recipe = RECIPES.get(item)
+    if recipe is None:
+        return False
+    raw, per = recipe
+    need = count - helper_count(client, item)
+    raw_need = per * need - helper_count(client, raw)
+    if raw_need > 0:
+        raw_total, radius = _stock_total(client, [raw], result)
+        if raw_total.get(raw, 0) < raw_need or not obtain(client, raw, raw_need, radius, result, key + "_raw"):
+            return False
+    r = act(client, "craft", {"recipe": item, "count": need})
+    result[key + "_craft"] = brief(r)
+    return helper_count(client, item) >= count
+
+
+def start(client, result):
+    """hello + проверка мода + спавн помощника. → bool (ошибка — в result)."""
+    hello = client.call_ok("hello")
+    result.update(mod=str(hello.get("mod", "")), players_online=hello.get("players_online"))
+    if not H.check_mod(hello, result):
+        return False
+    if not H.spawn(client, result, HELPER):
+        result["ok"] = False
+        return False
+    return True
+
+
+def setup_failed(result, text):
+    result.update(ok=False, error={"kind": "setup", "text": text})
+    return result
+
+
+# ---------------------------------------------------------------- разведка карты
+
+def scan_map(client, center, radius=32, types=("simple-entity", "tree")):
+    return client.call_ok("map", {"center": center, "radius": radius, "types": list(types)}, HELPER)
+
+
+def lava_cells(data):
+    """Центры клеток воды/лавы (`~`) из ответа map. → [{x, y}]."""
+    box = data.get("bbox") or {}
+    out = []
+    for r, row in enumerate(data.get("rows") or []):
+        for c, ch in enumerate(row):
+            if ch == "~":
+                out.append({"x": box["x0"] + c + 0.5, "y": box["y0"] + r + 0.5})
+    return out
+
+
+def rocks(data):
+    """Камни (не утёсы) из ответа map с types=[simple-entity]. → [{name, pos, unit?}]."""
+    return [e for e in data.get("entities", []) if e.get("c") == "#" and "cliff" not in e.get("name", "")]
+
+
+def trees(data):
+    return [e for e in data.get("entities", []) if e.get("c") == "T"]
+
+
+def dist(a, b):
+    return ((a["x"] - b["x"]) ** 2 + (a["y"] - b["y"]) ** 2) ** 0.5
+
+
+def survey(client, result, reach=64):
+    """Обойти картой окрестности помощника (9 окон по 65 клеток).
+    → {pos, lava: [клетки], rocks, trees} — ближние к помощнику первыми."""
+    pos = helper_state(client)["pos"]
+    lava, rock, tree, seen = [], [], [], set()
+    for dx in (0, -reach, reach):
+        for dy in (0, -reach, reach):
+            data = scan_map(client, {"x": pos["x"] + dx, "y": pos["y"] + dy})
+            for cell in lava_cells(data):
+                key = (cell["x"], cell["y"])
+                if key not in seen:
+                    seen.add(key)
+                    lava.append(cell)
+            for kind, items in ((rock, rocks(data)), (tree, trees(data))):
+                for e in items:
+                    key = (e["name"], e["pos"]["x"], e["pos"]["y"])
+                    if key not in seen:
+                        seen.add(key)
+                        kind.append(e)
+    lava.sort(key=lambda c: dist(c, pos))
+    rock.sort(key=lambda e: dist(e["pos"], pos))
+    tree.sort(key=lambda e: dist(e["pos"], pos))
+    result["survey"] = {"pos": pos, "lava_cells": len(lava), "rocks": len(rock), "trees": len(tree)}
+    return {"pos": pos, "lava": lava, "rocks": rock, "trees": tree}
 
 
 def get_chests(client, result, count=1):
@@ -129,12 +229,7 @@ def get_chests(client, result, count=1):
 
 def prepare(client, result, count=1):
     """hello + спавн + count сундуков в инвентаре. → имя предмета | None (ошибка — в result)."""
-    hello = client.call_ok("hello")
-    result.update(mod=str(hello.get("mod", "")), players_online=hello.get("players_online"))
-    if not H.check_mod(hello, result):
-        return None
-    if not H.spawn(client, result, HELPER):
-        result["ok"] = False
+    if not start(client, result):
         return None
     item = get_chests(client, result, count)
     if item is None:

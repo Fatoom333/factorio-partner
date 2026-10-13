@@ -345,6 +345,181 @@ S.suite("build_ghosts", {
       B.MAX_BLOCK_CHECKS = old
       if not ok then error(e, 0) end
   end },
+  { "призраки плиток строятся руками и всегда первыми (предмет плитки из инвентаря)", function()
+      local W = F.setup{ items = { ["iron-chest"] = 2, ["stone-brick"] = 4 } }
+      -- постройка ближе плиток — всё равно сначала плитки
+      F.ghost("iron-chest", { x = 12.5, y = 0.5 })
+      F.ghost("iron-chest", { x = 13.5, y = 0.5 })
+      for i = 0, 2 do F.tile_ghost("stone-path", { x = 20 + i, y = 3 }) end
+      local d, kind = F.wait(build{ radius = 40, mode = "hand" })
+      S.eq(kind, "job_done", S.dump(d))
+      S.eq(d.detail, { built = 5, left = 0, blocked = {}, blocked_total = 0, missing = {}, tiles_built = 3, tiles_first = true })
+      S.eq({ F.tile_at(20, 3), F.tile_at(21, 3), F.tile_at(22, 3) }, { "stone-path", "stone-path", "stone-path" })
+      S.eq(C.counts(W.main), { ["stone-brick"] = 1 })
+      S.eq(F.tile_revive_calls, 3)
+      local last_tile, first_entity = 0, math.huge
+      for _, t in ipairs(F.tile_log) do last_tile = math.max(last_tile, t.tick) end
+      for _, e in ipairs(F.revive_log) do first_entity = math.min(first_entity, e.tick) end
+      S.ok(last_tile < first_entity, "все плитки построены раньше первой постройки")
+  end },
+  { "постройка ждёт плитку под собой: не blocked; плитка → потом постройка", function()
+      local W = F.setup{ items = { ["iron-chest"] = 1, landfill = 1 } }
+      F.set_tile(20, 0, "water")
+      local g = F.ghost("iron-chest", { x = 20.5, y = 0.5 })
+      F.tile_ghost("landfill", { x = 20, y = 0 })
+      local job = build{ radius = 30, mode = "hand" }
+      F.run(3)
+      S.eq(C.act and S.okr(S.req("jobs", {}, "h1")).active.progress.total, 2, "и плитка, и постройка в счёте")
+      local d, kind = F.wait(job)
+      S.eq(kind, "job_done", S.dump(d))
+      S.eq(d.detail, { built = 2, left = 0, blocked = {}, blocked_total = 0, missing = {}, tiles_built = 1, tiles_first = true })
+      S.eq({ F.tile_at(20, 0), g.valid }, { "landfill", false })
+      S.eq(#F.built("iron-chest", { x = 20.5, y = 0.5 }), 1)
+      S.eq(C.counts(W.main), {})
+  end },
+  { "плитки под постройкой нет в инвентаре: no_items, постройка не blocked, missing — предмет плитки", function()
+      F.setup{ items = { ["iron-chest"] = 1 } }
+      F.set_tile(20, 0, "water")
+      local g = F.ghost("iron-chest", { x = 20.5, y = 0.5 })
+      F.tile_ghost("landfill", { x = 20, y = 0 })
+      local d, kind = F.wait(build{ radius = 30, mode = "hand" })
+      S.eq({ kind, d.code }, { "job_failed", "no_items" })
+      S.eq(d.detail, { built = 0, left = 2, blocked = {}, blocked_total = 0, missing = { landfill = 1 } })
+      S.ok(g.valid)
+      S.eq(F.revive_calls, 0)
+  end },
+  { "плитку положить не вышло: она blocked, постройка над ней — blocked с причиной tile", function()
+      F.setup{ items = { ["iron-chest"] = 2, landfill = 1 } }
+      F.set_tile(20, 0, "water")
+      F.ghost("iron-chest", { x = 20.5, y = 0.5 })
+      F.ghost("iron-chest", { x = 22.5, y = 0.5 })
+      F.tile_ghost("landfill", { x = 20, y = 0 })
+      F.tile_revive_fails = true
+      local d, kind = F.wait(build{ radius = 30, mode = "hand" })
+      S.eq(kind, "job_done", S.dump(d))
+      S.eq({ d.detail.built, d.detail.left, d.detail.blocked_total }, { 1, 0, 2 })
+      local reasons = {}
+      for _, b in ipairs(d.detail.blocked) do reasons[b.name] = b.reason end
+      S.eq(reasons, { landfill = "blocked", ["iron-chest"] = "tile" })
+      S.eq(F.W.main.get_item_count("landfill"), 1, "предмет плитки вернулся")
+  end },
+  { "не-normal качество призрака плитки и плитка без предмета — blocked, не строятся", function()
+      F.setup{ items = { ["stone-brick"] = 3 } }
+      F.tile_ghost("stone-path", { x = 20, y = 0 }, { quality = "rare" })
+      prototypes.tile["magic"] = { name = "magic", collision_mask = { layers = { ground_tile = true } } }
+      F.tile_ghost("magic", { x = 21, y = 0 })
+      F.tile_ghost("stone-path", { x = 22, y = 0 })
+      local d, kind = F.wait(build{ radius = 30, mode = "hand" })
+      S.eq(kind, "job_done", S.dump(d))
+      S.eq({ d.detail.built, d.detail.blocked_total, d.detail.tiles_built }, { 1, 2, 1 })
+      S.eq(F.tile_at(20, 0), "grass-1")
+  end },
+  { "помеченное к сносу, мешающее призраку, разбирается перед стройкой; остальное помеченное не трогается", function()
+      local W = F.setup{ items = { ["iron-chest"] = 2 } }
+      local tree = F.mark(S.nauvis.create_entity{ name = "tree-01", position = { x = 20.5, y = 0.5 }, force = "neutral" })
+      local old = F.mark(C.chest({ x = 21.5, y = 0.5 }, {}, { name = "wooden-chest" }))
+      local aside = F.mark(C.chest({ x = 25.5, y = 3.5 }, {}, { name = "wooden-chest" }))   -- помечен, но не мешает
+      local unmarked = C.chest({ x = 23.5, y = 0.5 }, {}, { name = "wooden-chest" })         -- мешает, но не помечен
+      F.ghost("iron-chest", { x = 20.5, y = 0.5 })
+      F.ghost("iron-chest", { x = 21.5, y = 0.5 })
+      F.ghost("iron-chest", { x = 23.5, y = 0.5 })
+      local job = build{ radius = 30, mode = "hand" }
+      -- пока идёт снос, ни один призрак не построен
+      local seen_dig = false
+      for _ = 1, 3000 do
+        F.run(1)
+        if W.h.mining_state.mining then
+          seen_dig = true
+          S.eq(F.revive_calls, 0, "до конца сноса ничего не строится")
+          break
+        end
+      end
+      S.ok(seen_dig, "помощник копает помеченное")
+      local d, kind = F.wait(job)
+      S.eq(kind, "job_done", S.dump(d))
+      S.eq({ d.detail.built, d.detail.left, d.detail.removed, d.detail.blocked_total }, { 2, 0, 2, 1 })
+      S.eq(d.detail.blocked[1], { name = "iron-chest", pos = { x = 23.5, y = 0.5 }, reason = "blocked" })
+      S.eq({ tree.valid, old.valid, aside.valid, unmarked.valid }, { false, false, true, true })
+      S.eq(C.mined, 2)
+      S.eq(C.counts(W.main), { wood = 4, ["wooden-chest"] = 1 })
+      S.eq(W.h.mining_state.mining, false)
+  end },
+  { "помеченное чужой силы и некопаемое не разбирается: призрак за ним — blocked", function()
+      F.setup{ items = { ["iron-chest"] = 2 } }
+      local enemy = F.mark(C.chest({ x = 20.5, y = 0.5 }, {}, { force = "enemy" }))
+      local rock = F.mark(S.nauvis.create_entity{ name = "bedrock", position = { x = 22.5, y = 0.5 }, force = "player" })
+      F.ghost("iron-chest", { x = 20.5, y = 0.5 })
+      F.ghost("iron-chest", { x = 22.5, y = 0.5 })
+      local d, kind = F.wait(build{ radius = 30, mode = "hand" })
+      S.eq(kind, "job_done", S.dump(d))
+      S.eq({ d.detail.built, d.detail.blocked_total, d.detail.removed }, { 0, 2, nil })
+      S.ok(enemy.valid and rock.valid)
+      S.eq(C.mined, 0)
+  end },
+  { "помеченное не поддаётся — пропускается, призрак за ним blocked, остальные строятся", function()
+      F.setup{ items = { ["iron-chest"] = 2 } }
+      local hard = F.mark(C.chest({ x = 20.5, y = 0.5 }, {}, { name = "wooden-chest" }))
+      F.ghost("iron-chest", { x = 20.5, y = 0.5 })
+      F.ghost("iron-chest", { x = 24.5, y = 0.5 })
+      C.mining_disabled = true
+      local d, kind = F.wait(build{ radius = 30, mode = "hand" })
+      S.eq(kind, "job_done", S.dump(d))
+      S.eq({ d.detail.built, d.detail.left, d.detail.blocked_total }, { 1, 0, 1 })
+      S.eq(d.detail.blocked[1], { name = "iron-chest", pos = { x = 20.5, y = 0.5 }, reason = "obstacle" })
+      S.eq(d.detail.not_removed, { { name = "wooden-chest", pos = { x = 20.5, y = 0.5 }, reason = "not_minable_in_time" } })
+      S.eq(d.detail.not_removed_total, 1)
+      S.ok(hard.valid)
+  end },
+  { "до помеченного не дойти — причина пути в not_removed, призрак за ним blocked: obstacle", function()
+      local W = F.setup{ items = { ["iron-chest"] = 1 } }
+      F.mark(S.nauvis.create_entity{ name = "tree-01", position = { x = 60.5, y = 0.5 }, force = "neutral" })
+      F.ghost("iron-chest", { x = 60.5, y = 0.5 })
+      W.path.fail = { status = "failed", code = "path_failed", text = "no path" }
+      local d, kind = F.wait(build{ area = { left_top = { x = 55, y = -5 }, right_bottom = { x = 65, y = 5 } }, mode = "hand" })
+      S.eq(kind, "job_done", S.dump(d))
+      S.eq({ d.detail.built, d.detail.blocked_total, d.detail.blocked[1].reason }, { 0, 1, "obstacle" })
+      S.eq(d.detail.not_removed[1].reason, "path_failed")
+  end },
+  { "снос помеченного: инвентарь полон — no_space с inventory_full, ничего не построено", function()
+      local W = F.setup()
+      for _ = 1, 79 do W.main.insert{ name = "coal", count = 50 } end
+      W.main.insert{ name = "iron-chest", count = 50 }
+      local tree = F.mark(S.nauvis.create_entity{ name = "tree-01", position = { x = 20.5, y = 0.5 }, force = "neutral" })
+      F.ghost("iron-chest", { x = 20.5, y = 0.5 })
+      local d, kind = F.wait(build{ radius = 30, mode = "hand" })
+      S.eq({ kind, d.code }, { "job_failed", "no_space" })
+      S.eq({ d.detail.reason, d.detail.built, d.detail.left }, { "inventory_full", 0, 1 })
+      S.ok(tree.valid)
+      S.eq(#C.events("inventory_full"), 1)
+  end },
+  { "отмена во время сноса: добыча выключена, подход снят", function()
+      local W = F.setup{ items = { ["iron-chest"] = 1 } }
+      F.mark(S.nauvis.create_entity{ name = "tree-01", position = { x = 20.5, y = 0.5 }, force = "neutral" })
+      F.ghost("iron-chest", { x = 20.5, y = 0.5 })
+      local job = build{ radius = 30, mode = "hand" }
+      for _ = 1, 3000 do
+        F.run(1)
+        if W.h.mining_state.mining then break end
+      end
+      S.eq(W.h.mining_state.mining, true)
+      S.okr(S.req("cancel", { job = job }, "h1"))
+      S.eq(W.h.mining_state.mining, false)
+      S.eq(W.h.selected, nil)
+      S.eq(W.h.walking_state.walking, false)
+  end },
+  { "robots: плитки и постройки строят дроны; счёт плиток — по плитке на поверхности", function()
+      local W = F.setup{ items = { ["iron-chest"] = 1, ["stone-brick"] = 2 } }
+      F.give_robots(W.h, 2, 10)
+      S.move(W.h, { x = 18.5, y = 0.5 })
+      F.ghost("iron-chest", { x = 20.5, y = 0.5 })
+      F.tile_ghost("stone-path", { x = 21, y = 2 })
+      F.tile_ghost("stone-path", { x = 22, y = 2 })
+      local d, kind = F.wait(build{ radius = 30, mode = "robots" })
+      S.eq(kind, "job_done", S.dump(d))
+      S.eq({ d.detail.built, d.detail.left, d.detail.tiles_built }, { 3, 0, 2 })
+      S.eq({ F.revive_calls, F.tile_revive_calls }, { 0, 0 })
+      S.eq(F.tile_at(21, 2), "stone-path")
+  end },
   { "призрак с запросом модулей (item_request_proxy): строится, запрос не трогаем, предметы не берутся", function()
       local W = F.setup{ items = { coal = 2 } }   -- coal — «модули» из запроса: их брать нельзя
       W.main.insert{ name = "assembling-machine-1", count = 1 }
