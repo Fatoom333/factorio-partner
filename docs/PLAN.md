@@ -72,11 +72,14 @@
 
 ## Правки кода под ревизию 3.2 (поток Y, идёт с волной 3)
 - **A:** `migrate.ensure_shape` — ключ `reflex_state`; `helper_spawn` считает `alive` + `dead` (лимит 4);
-  `hello.module_errors` (счётчик ошибок под `pcall` в модулях и рефлексах); `unit_number` ≥ 1.
+  `hello.module_errors` (счётчик ошибок под `pcall` в модулях и рефлексах); `unit_number` ≥ 1;
+  операция `helper_limit` и `max_helpers` вместо константы `MAX_ALIVE` (PROTOCOL §4). **D, J:** запуск
+  спрашивает у игрока число помощников и шлёт `helper_limit`.
 - **D:** границы как в ACTIONS «Границы чисел v1» (`unit_number` ≥ 1, `collect.radius` 1..128 и др.).
 - **B:** не слать два шумных `stuck` подряд на одно перепланирование при `path_lost`.
 - **F:** убрать из `lib/build.lua` запасные `optional()`/`fallback_vis`/`fallback_target` и их тесты; цель
-  в сценариях — `{unit_number, pos}`; живьём — постройки 2×2, повороты 8/12, режимы `robots`/`auto`.
+  в сценариях — `{unit_number, pos}`; **плитки** в `build_blueprint`/`build_ghosts` (ACTIONS; проверить
+  живьём, ставит ли движок призраки построек над водой вместе с призраками отсыпки); живьём — постройки 2×2, повороты 8/12, режимы `robots`/`auto`.
 - **G, H:** `vis.visible` вместо прямого `is_chunk_visible` (`reflexes/common.lua`, perception).
 - **H:** `flee` пересчитывает кандидатов после `path_failed`. Тесты `core_helpers`/`core_jobs`, которые H
   поправил под смерть и возрождение, остаются за A.
