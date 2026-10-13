@@ -222,4 +222,24 @@ def run(client) -> dict:
     chests, _, _ = E.on_map(api, [chest], E.cell_center(obstacle), 2)
     if not any(E.cell_of(e["pos"]) == obstacle for e in chests if e.get("pos")):
         reasons.append(f"помеха (сундук) пропала с клетки {obstacle}")
+
+    # 8. поворот своей построенной ленты (действие rotate) и возврат как было
+    if built:
+        cell = sorted(built)[0]
+        tgt = {"name": belt, "pos": E.cell_center(cell)}
+        turn = api.act("rotate", {"target": tgt, "direction": 0})
+        td = E.detail_of(turn)
+        was = td.get("was")
+        if was == 0:
+            turn = api.act("rotate", {"target": tgt, "direction": 4})
+            td = E.detail_of(turn)
+        result["rotate"] = {"cell": list(cell), "turn": E.brief(turn)}
+        if turn["kind"] != "job_done" or td.get("direction") == td.get("was"):
+            reasons.append(f"rotate не повернул ленту {cell}: {E.code_of(turn)} {E.text_of(turn)} {td}")
+        elif was is not None:
+            back = api.act("rotate", {"target": tgt, "direction": was})
+            bd = E.detail_of(back)
+            result["rotate"]["back"] = E.brief(back)
+            if back["kind"] != "job_done" or bd.get("direction") != was or bd.get("was") != td.get("direction"):
+                reasons.append(f"rotate не вернул ленту {cell} как было: {bd}")
     return E.finish(result, reasons)

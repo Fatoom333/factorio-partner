@@ -84,6 +84,17 @@ class ResumeWorld(World):
         h["pos"] = {"x": pos[0] + 1.0, "y": pos[1] + 1.0}
         return {"unit_number": 900, "name": item, "pos": dict(a["pos"])}
 
+    def do_rotate(self, h, a):
+        pos = (a["target"]["pos"]["x"], a["target"]["pos"]["y"])
+        e = self.entities.get(pos)
+        if e is None or e["ghost"] or e["name"] != a["target"]["name"]:
+            raise self._fail("not_found", "no such entity near the given pos")
+        num = {"north": 0, "east": 4, "south": 8, "west": 12}
+        name = {v: k for k, v in num.items()}
+        was = num.get(e["dir"], e["dir"])
+        e["dir"] = name[a["direction"]] if isinstance(e["dir"], str) else a["direction"]
+        return {"name": e["name"], "pos": dict(a["target"]["pos"]), "direction": a["direction"], "was": was}
+
     def do_build_ghosts(self, h, a):
         try:
             return super().do_build_ghosts(h, a)
@@ -241,7 +252,7 @@ def test_only_envelopes_and_honest_actions(live):
     assert res["ok"] is True
     assert set(world.ops) <= {"hello", "helper_spawn", "state", "stock", "find", "map", "act", "events", "recipes",
                               "cancel"}
-    assert {d for d, _ in world.acts} <= {"collect", "craft", "walk", "plan_belt", "build_ghosts", "place"}
+    assert {d for d, _ in world.acts} <= {"collect", "craft", "walk", "plan_belt", "build_ghosts", "place", "rotate"}
 
 
 @pytest.mark.parametrize("flags,needle", [
