@@ -224,7 +224,10 @@ function M.mark_dead(id, corpse_pos)
   local e = rec.entity
   rec.state = "dead"
   rec.died_tick = game.tick
-  if e and e.valid then rec.died_pos = util.pos(e.position) end
+  if e and e.valid then
+    rec.died_pos = util.pos(e.position)
+    rec.died_surface = e.surface.name
+  end
   if corpse_pos then rec.corpse_pos = util.pos(corpse_pos) end
   return true
 end

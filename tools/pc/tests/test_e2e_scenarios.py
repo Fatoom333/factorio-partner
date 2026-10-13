@@ -254,7 +254,15 @@ def test_mining_happy_path(live):
     # порядок поручения: access → plan_mining → plan_belt (от выходов разметки) → collect → build_ghosts
     belts = [a for do, a in world.acts if do == "plan_belt"]
     assert belts[0].get("dry_run") is True and not belts[-1].get("dry_run")
-    assert all(b["from"] == "patch" and b["belt"] == BELT and b["underground"] == "never" for b in belts)
+    assert all(b["from"] == "patch" and b["belt"] == BELT for b in belts)
+    # ревизия 3.4: один сухой прогон с underground:"auto" и пачкой из двух лент; строится лента без подземных
+    auto = [b for b in belts if b["underground"] != "never"]
+    assert len(auto) == 1 and auto[0]["underground"] == "auto" and auto[0]["lanes"] == 2 and auto[0]["dry_run"]
+    assert belts.index(auto[0]) == len(belts) - 2 and "lanes" not in belts[-1]
+    probe = res["belt_auto"]
+    assert probe["kind"] == "job_done" and probe["lanes"] == 2 and probe["ghosts"] == 2 * route
+    assert probe["chosen"] == {"belt": BELT, "underground": "underground-belt"} and probe["undergrounds"] == 0
+    assert any("auto его не поставил" in f for f in probe["facts"])
     dos = [do for do, a in world.acts if not a.get("dry_run")]
     assert [d for d in dos if d in ("plan_mining", "plan_belt", "collect", "build_ghosts")][:2] == ["plan_mining",
                                                                                                    "plan_belt"]
@@ -334,6 +342,30 @@ def test_mining_detects_a_belt_turned_the_wrong_way(live):
     client, _ = live(world)
     res = load("e2e_mining").run(client)
     assert res["ok"] is False and any("лента рвётся" in r for r in res["reasons"])
+
+
+def test_mining_underground_not_researched_is_a_fact(live):
+    world = mining_world(underground=None)
+    client, _ = live(world)
+    res = load("e2e_mining").run(client)
+    assert res["ok"] is True, res
+    assert res["belt_auto"]["chosen"] == {"belt": BELT}
+    assert any("не исследован" in f for f in res["belt_auto"]["facts"])
+
+
+def test_mining_one_lane_of_two_is_a_fact(live):
+    world = mining_world(belt_lanes=1)
+    client, _ = live(world)
+    res = load("e2e_mining").run(client)
+    assert any("одна лента из двух" in f for f in res["belt_auto"]["facts"])
+    assert res["ok"] is True, res
+
+
+def test_mining_bundle_answer_off_contract_is_a_reason(live):
+    world = mining_world(belt_lanes=3)
+    client, _ = live(world)
+    res = load("e2e_mining").run(client)
+    assert res["ok"] is False and any("lanes=3" in r for r in res["reasons"]), res
 
 
 def test_mining_belt_has_no_route(live):

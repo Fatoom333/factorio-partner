@@ -692,7 +692,10 @@ function M.tick(task, ctx)
   task.progress_tick = ctx.tick -- расчёт идёт, тело стоит: «пульс» (ACTIONS.md)
   if B.ticks > M.MAX_TICKS then
     task.belt = nil
-    return failed("internal", "plan_belt: did not finish in time")
+    -- дольше лимита времени — тот же отказ, что исчерпанный бюджет поиска (ACTIONS.md, уточнения 3.4)
+    local running = B.stage == "search" and type(B.search) == "table" and tonumber(B.search.expansions) or 0
+    return failed("path_failed", "plan_belt did not finish in time",
+      { reason = "budget", expanded = B.expansions + running, lane = B.ti })
   end
   local h = ctx.entity
   local env = beltpath.env(B.W, h.surface, h.force)

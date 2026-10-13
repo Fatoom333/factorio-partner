@@ -1,7 +1,7 @@
 -- Рефлексы: операция `reflexes` и вызов проверок модулей (поток A; типы рефлексов — поток H).
 -- Модуль объявляет M.reflexes = { <type> = { schema = {...}, check = function(helper_id, entity, params, tick) end } }.
 -- `reflexes{set:[{type, ...параметры}]}` — полная замена набора помощника, параметры проверяются
--- по schema типа. storage.reflexes[helper] = { {type=..., ...}, ... }.
+-- по schema типа; `reflexes{}` без `set` ничего не меняет и возвращает текущий набор. storage.reflexes[helper] = { {type=..., ...}, ... }.
 -- Ядро вызывает check каждые CHECK_EVERY тиков для каждого живого помощника и каждого
 -- рефлекса из его набора (под pcall). Что делать (события, задачи) — решает check.
 --
@@ -31,11 +31,12 @@ function M.register(mod)
 end
 
 local SET_SCHEMA = {
-  set = { type = "list", required = true, max = M.MAX_SET, of = { type = "any" } },
+  set = { type = "list", max = M.MAX_SET, of = { type = "any" } },
 }
 
 function M.op_reflexes(args, ctx)
   local a = schema.validate(SET_SCHEMA, args)
+  if a.set == nil then return { set = M.get(ctx.helper_id) or {} } end
   local out = {}
   for i, r in ipairs(a.set) do
     local path = "args.set[" .. i .. "]"

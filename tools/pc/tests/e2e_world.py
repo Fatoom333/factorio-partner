@@ -49,7 +49,7 @@ def default_stores():
 class World:
     def __init__(self, stores=None, ore=None, recipes=None, helper_pos=None, blocked=None, hidden=None,
                  mod="0.1.0", unreachable=False, hard_ores=("tungsten-ore",), far_invisible=False,
-                 liquid=None, body="character"):
+                 liquid=None, body="character", underground="underground-belt", belt_lanes=None):
         self.mod = mod
         self.tick = 1000
         self.seq = 0
@@ -74,6 +74,8 @@ class World:
         self.module_errors = 0
         self.liquid = set(liquid or ())    # клетки жидкости: не пройти, не построить, под землёй не пройти
         self.body = body
+        self.underground = underground     # исследованный подземный конвейер (None — не исследован)
+        self.belt_lanes = belt_lanes       # что отвечать в `lanes` на пачку (None — сколько просили)
 
     # ------------------------------------------------------------ RCON
     def handler(self, cmd):
@@ -709,6 +711,15 @@ class World:
                   "path": [{"x": path[0][0] + 0.5, "y": path[0][1] + 0.5}, {"x": to[0] + 0.5, "y": to[1] + 0.5}],
                   "warnings": ["long_detour"] if len(plan) > 2 * straight else {}, "lanes": 1,
                   "chosen": {"belt": belt}}
+        lanes = a.get("lanes", 1)
+        if lanes > 1:
+            # пачка: ленты рядом, той же длины (модель не раскладывает их по клеткам — только сухой прогон)
+            if not a.get("dry_run"):
+                raise self._fail("internal", "the model lays a bundle only as a dry run")
+            detail.update(ghosts=len(plan) * lanes, need={belt: len(plan) * lanes},
+                          lanes=lanes if self.belt_lanes is None else self.belt_lanes)
+        if a.get("underground", "auto") != "never" and self.underground:
+            detail["chosen"]["underground"] = self.underground
         if a.get("dry_run"):
             return dict(detail, dry_run=True)
         for name, pos, d in plan:

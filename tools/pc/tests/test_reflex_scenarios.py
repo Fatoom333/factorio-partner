@@ -23,6 +23,7 @@ class Model:
 
     def __init__(self, mod="0.1.0", accept_unknown=False, respawn_after_remove=False, lose_helper=False,
                  frozen=False, no_defaults=False, no_cooldown=False, enemies=False, no_body=False,
+                 read_needs_set=False,
                  crash=False, no_recent=False):
         self.tick = 1000
         self.seq = 0
@@ -35,6 +36,7 @@ class Model:
         self.lose_helper = lose_helper
         self.frozen = frozen
         self.no_defaults = no_defaults
+        self.read_needs_set = read_needs_set
         self.no_cooldown = no_cooldown
         self.enemies = enemies
         self.no_body = no_body          # мод до ревизии 3.3: в helper_list нет body
@@ -142,6 +144,10 @@ class Model:
             self.sets.pop(helper, None)
             return ok({"corpse": {"x": 2, "y": 0}})
         if op == "reflexes":
+            if "set" not in args:
+                if self.read_needs_set:
+                    return fail("bad_args")      # мод до 3.4: set обязателен
+                return ok({"set": self.sets.get(helper) or {}})
             rset, code = self.check_set(args.get("set") or [])
             if code:
                 return fail(code)
@@ -214,6 +220,7 @@ def test_set_with_enemies_noise_is_ok(fake_rcon, fast_set):
 @pytest.mark.parametrize("kw, step, text", [
     ({"accept_unknown": True}, "reflexes bad", "bad_args"),
     ({"no_defaults": True}, "reflexes set", "набор в ответе"),
+    ({"read_needs_set": True}, "reflexes set", "bad_args"),
     ({"lose_helper": True}, "watch", ""),
     ({"frozen": True}, "watch", "тиков"),
 ])

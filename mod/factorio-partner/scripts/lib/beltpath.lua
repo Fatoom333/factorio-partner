@@ -138,6 +138,7 @@ function M.new_world(belt, under)
     net = network.empty(),
     tile_g = {},     -- [имя плитки] = мешает ленте
     tile_u = {},     -- [имя плитки] = мешает подземному участку
+    tile_c = {},     -- [key] = флаги плитки клетки: 0 │ 1 (мешает ленте) + 2 (мешает подземному)
     rejected = {},   -- [ключ подземного участка] = true: отвергнут (сам себе мешает)
     checks = 0,      -- сколько раз спросили движок (для отчёта и тестов)
   }
@@ -168,8 +169,16 @@ end
 M.charted = charted
 
 --- Плитка клетки: мешает ленте, мешает подземному участку, имя.
+--- Клетка спрашивается у движка один раз за задачу (кэш W.tile_c): повторный вызов — например, из
+--- underground_ok, который проходит одни и те же клетки для многих участков, — имени не отдаёт.
 local function tile_flags(env, x, y)
   local W = env.W
+  local tc = W.tile_c
+  local k = key(x, y)
+  if tc ~= nil then
+    local f = tc[k]
+    if f ~= nil then return f % 2 == 1, f >= 2 end
+  end
   local name = env.surface.get_tile(x, y).name
   local g = W.tile_g[name]
   if g == nil then
@@ -179,6 +188,7 @@ local function tile_flags(env, x, y)
     W.tile_g[name] = g
     W.tile_u[name] = overlaps(env.under_mask, mask)
   end
+  if tc ~= nil then tc[k] = (g and 1 or 0) + (W.tile_u[name] and 2 or 0) end
   return g, W.tile_u[name], name
 end
 M.tile_flags = tile_flags

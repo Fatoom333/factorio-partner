@@ -110,6 +110,9 @@ def run(client) -> dict:
                                                 {"type": "watch", "every_s": 5}]}, HELPER)
         want = [dict(FLEE_DEFAULT, radius=16, health=0.5), dict(WATCH_DEFAULT, every_s=5)]
         need(same(as_list(d.get("set")), want), f"набор в ответе: {d.get('set')!r}")
+        # ревизия 3.4: без set — только чтение, набор тот же
+        got = client.call_ok("reflexes", {}, HELPER)
+        need(same(as_list(got.get("set")), want), f"reflexes без set: {got.get('set')!r}")
 
     def s_replace():
         d = client.call_ok("reflexes", {"set": [{"type": "watch"}]}, HELPER)
@@ -177,6 +180,8 @@ def run(client) -> dict:
     def s_clear():
         d = client.call_ok("reflexes", {"set": []}, HELPER)
         need(as_list(d.get("set")) == [], f"пустой набор: {d.get('set')!r}")
+        got = client.call_ok("reflexes", {}, HELPER)
+        need(as_list(got.get("set")) == [], f"reflexes без set после снятия: {got.get('set')!r}")
 
     def s_remove():
         client.call_ok("helper_remove", {}, HELPER)

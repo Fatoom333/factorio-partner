@@ -217,6 +217,21 @@ S.suite("belt_plan", {
       S.ok(d.detail.reached.x > 0.5, "продвинулся к цели: " .. S.dump(d.detail.reached))
       S.eq(#X.ghosts(), 0)
   end },
+  { "задача дольше лимита времени: path_failed{reason=budget}, а не internal; состояние убрано", function()
+      X.setup()
+      local A = require("scripts.actions.plan_belt")
+      local max = A.MAX_TICKS
+      A.MAX_TICKS = 2
+      X.tiles("lava", 30, -30, 30, 30)
+      local job = S.okr(C.act("plan_belt", { from = P(0, 0), to = P(60, 0) })).job
+      local d, kind = C.wait(job, 30)
+      A.MAX_TICKS = max
+      S.eq(kind, "job_failed", S.dump(d))
+      S.eq({ d.code, d.detail.reason }, { "path_failed", "budget" })
+      S.ok(type(d.detail.expanded) == "number" and d.detail.lane == 1, S.dump(d.detail))
+      S.eq(storage.jobs.by_helper.h1.active, nil)
+      S.eq(#X.ghosts(), 0)
+  end },
   { "поиск идёт в несколько тиков и держит «пульс»; состояние годится для сохранения", function()
       X.setup()
       X.tiles("lava", 30, -30, 30, 30)

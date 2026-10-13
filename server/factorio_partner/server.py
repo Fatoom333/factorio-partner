@@ -148,7 +148,8 @@ def build_server(core: Core, admin: bool = False) -> FastMCP:
         pickup, place, build_blueprint, build_ghosts, deconstruct, plan_mining, plan_belt, wait.
         Ответ — {job, queued_before}; итог придёт событием job_done / job_failed. Для build_blueprint
         вместо blob передай plan (id из partner_plan); search / rotate — поиск места, где чертёж
-        встаёт целиком (ответ detail.fit), partial — обрезанный чертёж, только по согласию хозяина.
+        встаёт целиком (ответ detail.fit; не нашлось — fit: null), partial — обрезанный чертёж, только
+        по согласию хозяина; detail.unmarked — сколько своих пометок к сносу задача сняла при сбое.
         plan_belt — лента призраками от точки (или from="patch": выходы последней разметки) до
         точки в обход жидкости и построек. replace=true отменяет текущую задачу и очередь."""
         return await _run(core.op_act(helper, key, do, args, replace))
@@ -170,8 +171,10 @@ def build_server(core: Core, admin: bool = False) -> FastMCP:
         return await _run(core.op_wait(helper, key, timeout, quiet, since))
 
     @mcp.tool()
-    async def partner_reflex(helper: Helper, key: Key, set: list[dict[str, Any]]) -> dict:  # noqa: A002
-        """Рефлексы тела: полный список заменяет прежний, [] снимает все."""
+    async def partner_reflex(helper: Helper, key: Key,
+                             set: list[dict[str, Any]] | None = None) -> dict:  # noqa: A002
+        """Рефлексы тела: полный список заменяет прежний, [] снимает все; без set — только
+        прочитать текущий набор. Ответ — {set}."""
         return await _run(core.op_reflex(helper, key, set))
 
     @mcp.tool()
@@ -199,7 +202,9 @@ def build_server(core: Core, admin: bool = False) -> FastMCP:
 
         @mcp.tool()
         async def admin_spawn(helper: Helper) -> dict:
-            """(оркестр) создать тело помощника рядом с хозяином."""
+            """(оркестр) создать тело помощника. В data — {helper, unit_number, surface, pos, at}:
+            at "owner" — рядом с хозяином, "respawn_point" — в точке возрождения силы (от 10 с до
+            5 мин после удаления или смерти тела); раньше 10 с — cooldown."""
             return await _run(core.admin_spawn(helper))
 
         @mcp.tool()

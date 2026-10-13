@@ -146,6 +146,32 @@ S.suite("belt_under", {
       S.eq(beltpath.underground_ok(env, prefer, edge(4, 10, 6, 10, 4)), false, "под лавой нельзя")
       S.eq(beltpath.underground_ok(env, prefer, edge(4, 30, 6, 30, 4)), false, "под пустотой нельзя")
   end },
+  { "кэш «клетка → флаги плитки»: повторные проверки участка плитку у движка не спрашивают", function()
+      local env, world = env_of()
+      X.thing(5, 0)
+      local real, calls = S.nauvis.get_tile, 0
+      S.nauvis.get_tile = function(...)
+        calls = calls + 1
+        return real(...)
+      end
+      local prefer = { start = JOB.start, goal = JOB.goal, underground = "prefer" }
+      S.eq(beltpath.underground_ok(env, prefer, edge(4, 0, 9, 0, 4)), true)
+      local first = calls
+      S.ok(first >= 6 and first <= 6, "клетки 4..9 спрошены по одному разу: " .. first)
+      S.eq(beltpath.underground_ok(env, prefer, edge(4, 0, 9, 0, 4)), true)
+      S.eq(beltpath.underground_ok(env, prefer, edge(4, 0, 8, 0, 4)), true)
+      S.eq(beltpath.underground_ok(env, JOB, edge(4, 0, 6, 0, 4)), true)
+      S.eq(calls, first, "повторно движок не спрашивается")
+      -- флаги из кэша те же, что из прототипа: лава мешает и ленте, и подземному
+      X.tiles("lava", 20, 3, 20, 3)
+      local g1, u1, name = beltpath.tile_flags(env, 20, 3)
+      local g2, u2 = beltpath.tile_flags(env, 20, 3)
+      S.eq({ g1, u1, name, g2, u2 }, { true, true, "lava", true, true })
+      S.eq(calls, first + 1)
+      local ok, where = X.plain(world)
+      S.ok(ok, "память о мире — простые данные: " .. tostring(where))
+      S.nauvis.get_tile = real
+  end },
   { "правило подземного участка: длина, концы, помеха в auto, неоткрытый чанк", function()
       local env = env_of()
       X.thing(5, 0)
