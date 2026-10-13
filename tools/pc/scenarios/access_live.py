@@ -101,10 +101,8 @@ def check_access(d):
                     "west": pos["x"] == fx0, "east": pos["x"] == fx1}[e["side"]]
         need(on_frame and fx0 <= pos["x"] <= fx1 and fy0 <= pos["y"] <= fy1,
              f"выход не на рамке (участок + 8 клеток): {str(e)[:120]}")
-        if e["neck"] == "wide":
-            need(e["width"] >= 5, f"wide при ширине {e['width']}")
-        if e["neck"] == "medium":
-            need(e["width"] >= 3, f"medium при ширине {e['width']}")
+        # neck — самое узкое место по дороге до выхода (STATE.md «access»), а width — ширина по рамке:
+        # между собой они не связаны (wide при ширине по рамке 4 — законно), порядок проверяется ниже.
         key = (NECK_RANK[e["neck"]], e["width"])
         need(last is None or key <= last, "выходы не по порядку: широкие первыми")
         last = key
