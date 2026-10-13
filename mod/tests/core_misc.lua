@@ -112,16 +112,16 @@ S.suite("misc", {
   { "storage: все ключи PROTOCOL §7 после on_init и после миграции старого сейва", function()
       S.load_mod()
       for _, k in ipairs({ "proto", "helpers", "jobs", "events", "recent", "blobs", "reservations", "vision", "reflexes",
-        "reflex_state", "path_requests" }) do
+        "reflex_state", "path_requests", "mining_last" }) do
         S.ok(type(storage[k]) == "table", "нет storage." .. k)
       end
-      S.eq(storage.proto, { version = 2, max_helpers = 1 })
+      S.eq(storage.proto, { version = 3, max_helpers = 1 })
       -- сейв без части ключей (например, мод добавили в старую игру) — on_configuration_changed
       storage = { helpers = { h1 = { state = "removed", removed_tick = 0 } } }
-      S.reload{ changed = { mod_changes = { ["factorio-partner"] = { old_version = nil, new_version = "0.1.0" } } } }
+      S.reload{ changed = { mod_changes = { ["factorio-partner"] = { old_version = nil, new_version = "0.4.0" } } } }
       S.eq(storage.helpers.h1.state, "removed")
       S.ok(storage.events.next_seq == 1 and storage.jobs.next_job == 1)
-      S.eq(storage.proto, { version = 2, max_helpers = 1 })
+      S.eq(storage.proto, { version = 3, max_helpers = 1 })
       S.eq(storage.reflex_state, {})
   end },
   { "миграция схемы 1 -> 2: proto-число становится таблицей, max_helpers не меньше уже занятых мест", function()
@@ -133,15 +133,15 @@ S.suite("misc", {
       -- сейв прошлой версии мода: proto — число, ключа reflex_state нет, помощников двое
       storage.proto = 1
       storage.reflex_state = nil
-      S.reload{ changed = { mod_changes = { ["factorio-partner"] = { old_version = "0.1.0", new_version = "0.1.0" } } } }
-      S.eq(storage.proto, { version = 2, max_helpers = 2 })
+      S.reload{ changed = { mod_changes = { ["factorio-partner"] = { old_version = "0.1.0", new_version = "0.4.0" } } } }
+      S.eq(storage.proto, { version = 3, max_helpers = 2 })
       S.eq(storage.reflex_state, {})
       S.eq(storage.helpers.h1.state, "alive")
       S.err(S.req("helper_spawn", {}, "h3"), "limit")
       -- повторная миграция ничего не портит; заданное игроком значение сохраняется
       S.okr(S.req("helper_limit", { max = 5 }))
       S.reload{ changed = { mod_changes = {} } }
-      S.eq(storage.proto, { version = 2, max_helpers = 5 })
+      S.eq(storage.proto, { version = 3, max_helpers = 5 })
       -- испорченное значение приводится к умолчанию
       storage.proto.max_helpers = "many"
       S.reload{ changed = { mod_changes = {} } }
@@ -185,11 +185,15 @@ S.suite("misc", {
       S.reload()
       S.eq(S.okr(S.req("hello")).module_errors, 0)
   end },
-  { "control.lua: необязательные модули волны 3 (plan_mining, attach) — нет файла не ошибка, сбой внутри — ошибка", function()
+  { "control.lua: модули plan_mining и attach подключаются всегда; необязательных модулей нет", function()
       S.load_mod()
       local d = require("scripts.core.dispatch")
-      S.ok(d.ops.helper_attach, "файл scripts/core/attach.lua есть (поток P) — операция зарегистрирована")
-      -- модуль есть: его операции и действия регистрируются
+      S.ok(d.ops.helper_attach, "операция helper_attach зарегистрирована")
+      -- control.lua больше не угадывает «нет файла» по тексту ошибки require: обёртки нет вовсе
+      local src = __fp_test_env.read(__fp_test_env.mod_dir .. "/control.lua")
+      S.ok(not src:find("pcall", 1, true), "require модулей в control.lua — без pcall")
+      S.ok(src:find('require("scripts.core.attach")', 1, true), "attach подключается обычным require")
+      -- подменённые модули: их операции и действия регистрируются
       local attach = { name = "core.attach", ops = { helper_attach = function(args, ctx) return { helper = ctx.helper_id } end } }
       local mining = { name = "plan_mining", schema = {}, start = function() return { status = "done" } end,
         tick = function() end, stop = function() end }
@@ -213,6 +217,58 @@ S.suite("misc", {
       end
       S.ok(S.commands.partner)
       S.eq(S.unknown_events, {}, "все defines.events известны")
+  end },
+  { "storage.mining_last: ключ заводит ядро, данные plan_mining переживают миграцию, мусор чинится", function()
+      S.load_mod()
+      S.eq(storage.mining_last, {})
+      local last = { surface = "nauvis", tick = 120,
+        outputs = { { pos = { x = 10.5, y = -3.5 }, direction = 4 }, { pos = { x = 10.5, y = 2.5 }, direction = 4 } } }
+      storage.mining_last.h1 = S.copy(last)
+      storage.mining_last.h2 = "мусор"
+      storage.mining_last.h3 = { surface = "nauvis", tick = 5 }
+      S.reload{ changed = { mod_changes = {} } }
+      S.eq(storage.mining_last.h1, last, "запись plan_mining не тронута")
+      S.eq(storage.mining_last.h2, nil, "не таблица — убрана")
+      S.eq(storage.mining_last.h3, { surface = "nauvis", tick = 5, outputs = {} }, "outputs всегда таблица")
+      -- старый сейв без ключа
+      storage.mining_last = nil
+      storage.proto.version = 2
+      S.reload{ changed = { mod_changes = {} } }
+      S.eq(storage.mining_last, {})
+      S.eq(storage.proto.version, 3)
+      -- helper_remove чужой ключ не трогает (модуль пишет только под своим ключом, PROTOCOL §7)
+      S.add_player{ name = "Tartaluga" }
+      S.okr(S.req("helper_spawn", {}, "h1"))
+      storage.mining_last.h1 = S.copy(last)
+      S.okr(S.req("helper_remove", {}, "h1"))
+      S.eq(storage.mining_last.h1, last)
+  end },
+  { "helper_list: body = character у тела без игрока; helper_limit считает занятые места", function()
+      S.load_mod()
+      S.add_player{ name = "Tartaluga" }
+      S.okr(S.req("helper_limit", { max = 2 }))
+      S.okr(S.req("helper_spawn", {}, "h1"))
+      S.okr(S.req("helper_spawn", {}, "h2"))
+      local list = S.okr(S.req("helper_list")).helpers
+      S.eq(list[1].body, "character")
+      S.eq(list[1].away, nil)
+      storage.helpers.h2.entity.die()
+      list = S.okr(S.req("helper_list")).helpers
+      S.eq(list[2].state, "dead")
+      S.eq(list[2].body, "character")
+      local r = S.req("helper_limit", { max = 1 })
+      S.err(r, "limit")
+      S.ok(r.error.text:find("occupied", 1, true), r.error.text)
+      S.eq(S.okr(S.req("helper_limit", { max = 2 })), { max = 2, alive = 1 })
+      local registry = require("scripts.core.registry")
+      S.eq(registry.info("h1"), { body = "character", module_errors = 0 })
+      S.eq({ registry.occupied() }, { 2, 1 })
+  end },
+  { "dispatch: access — операция чтения с необязательным помощником (регистрирует её поток восприятия)", function()
+      S.load_mod()
+      local d = require("scripts.core.dispatch")
+      S.eq(d.HELPER_REQ.access, "h?")
+      S.eq(d.READ_ONLY.access, true)
   end },
   { "без хозяина hello отдаёт owner=nil", function()
       S.load_mod()

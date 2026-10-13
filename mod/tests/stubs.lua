@@ -853,7 +853,7 @@ end
 local function make_script()
   local sc = {
     mod_name = "factorio-partner",
-    active_mods = { base = "2.0.77", ["factorio-partner"] = "0.1.0" },
+    active_mods = { base = "2.0.77", ["factorio-partner"] = "0.4.0" },
     level = { level_name = "test", mod_name = nil },
   }
   function sc.on_event(ev, fn, filters)

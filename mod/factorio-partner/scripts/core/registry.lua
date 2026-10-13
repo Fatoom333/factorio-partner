@@ -2,15 +2,17 @@
 -- исчезновения тела. Контракт: PROTOCOL.md §4, §6.9, §7.
 --
 -- storage.helpers[id] = {
---   entity, unit_number, state = "alive"|"dead"|"removed", reg (номер register_on_object_destroyed),
+--   entity, unit_number, state = "alive"|"dead"|"away"|"removed", reg (номер register_on_object_destroyed),
 --   spawned_tick, died_tick, died_pos, corpse_pos, removed_tick,
 --   player_index?,   -- тело-игрок (PROTOCOL §7 «Два вида тела»): персонаж второго клиента
---   away?, hold? }   -- только у тела-игрока, пишет scripts/core/attach.lua (поток P): away —
---                    -- почему тела сейчас нет (state="dead", запись ждёт игрока), hold —
---                    -- состояния ходьбы и добычи, которые ядро выставляет каждый тик
+--   away?, away_pos?, away_surface?, hold? }
+--                    -- только у тела-игрока, пишет scripts/core/attach.lua: state="away" — тела
+--                    -- сейчас нет не по смерти (игрок вышел, остался без персонажа), away — почему,
+--                    -- away_pos/away_surface — где тело было в последний раз; hold — состояния
+--                    -- ходьбы и добычи активного действия, которые ядро выставляет каждый тик
 --
--- Лимит (PROTOCOL §4, ревизия 3.2): живых и ждущих возрождения ≤ storage.proto.max_helpers
--- (по умолчанию 1, задаёт игрок при запуске: операция helper_limit {max:1..16}).
+-- Лимит (PROTOCOL §4, ревизия 3.3): занятых мест (живые + ждущие возрождения + away) ≤
+-- storage.proto.max_helpers (по умолчанию 1, задаёт игрок при запуске: helper_limit {max:1..16}).
 --
 -- API для модулей (только чтение storage.helpers напрямую; запись — через функции ниже):
 --   registry.get(id) -> rec|nil
@@ -22,6 +24,9 @@
 --   registry.bind(id, entity, fields?) -> rec     (новая запись с живым телом; fields.player_index —
 --                                                  тело-игрок, операция helper_attach потока P)
 --   registry.is_player_body(id) -> bool
+--   registry.body_kind(id) -> "character"|"player"
+--   registry.info(id) -> {body, module_errors}    (для операции `state`, STATE.md: вид тела и счётчик
+--                                                  падений модулей — тот же, что в `hello`)
 local err = require("scripts.core.err")
 local util = require("scripts.core.util")
 local owner = require("scripts.core.owner")
@@ -91,9 +96,9 @@ function M.max_helpers()
   return math.floor(v)
 end
 
---- Занятые места лимита: живые и мёртвые, ждущие возрождения (PROTOCOL §6.9: мёртвый место
---- держит, поэтому возрождение лимит не превышает). except — id, который не считать.
---- Второе значение — сколько из них живых.
+--- Занятые места лимита: живые, мёртвые, ждущие возрождения (PROTOCOL §6.9: мёртвый место
+--- держит, поэтому возрождение лимит не превышает), и тела-игроки в состоянии `away` (§7: игрок
+--- вышел — место держится). except — id, который не считать. Второе значение — сколько живых.
 function M.occupied(except)
   local n, alive = 0, 0
   for id, rec in pairs(storage.helpers) do
@@ -101,7 +106,7 @@ function M.occupied(except)
       if M.alive(id) then
         n = n + 1
         alive = alive + 1
-      elseif rec.state == "dead" then
+      elseif rec.state == "dead" or rec.state == "away" then
         n = n + 1
       end
     end
@@ -112,6 +117,7 @@ end
 --- Сколько тиков ещё ждать до helper_spawn (0 — можно).
 function M.cooldown_left(rec)
   if rec == nil then return 0 end
+  if rec.player_index ~= nil then return 0 end -- тело-игрок: перезарядки нет (PROTOCOL §7)
   local since
   if rec.state == "removed" then since = rec.removed_tick or rec.died_tick
   elseif rec.state == "dead" then since = rec.died_tick end
@@ -170,6 +176,17 @@ function M.is_player_body(id)
   return rec ~= nil and rec.player_index ~= nil
 end
 
+--- Вид тела помощника: "player" — персонаж второго клиента, иначе "character" (PROTOCOL §7).
+function M.body_kind(id)
+  return M.is_player_body(id) and "player" or "character"
+end
+
+--- Сведения ядра для операции `state` (STATE.md: поля `body` и `module_errors`). Только чтение.
+--- Вызывает perception/state.lua: `local info = require("scripts.core.registry").info(helper_id)`.
+function M.info(id)
+  return { body = M.body_kind(id), module_errors = err.module_errors() }
+end
+
 --- Отметить смерть (state alive -> dead). Вызывается ядром из on_entity_died.
 function M.mark_dead(id, corpse_pos)
   local rec = storage.helpers[id]
@@ -184,13 +201,20 @@ end
 
 --- Новое тело помощника (возрождение после смерти, поток H, PROTOCOL §6.9).
 --- Сущность создаёт вызывающий (у force.get_spawn_position той же поверхности, пустой инвентарь).
+--- У тела-игрока (scripts/core/attach.lua) — ещё и возврат из "away": тело то же или новое, его
+--- даёт движок, мод ничего не создаёт.
 function M.set_body(id, entity)
   local rec = storage.helpers[id]
-  if rec == nil or rec.state ~= "dead" then error("registry.set_body: helper " .. tostring(id) .. " is not dead", 2) end
+  if rec == nil or not (rec.state == "dead" or (rec.state == "away" and rec.player_index ~= nil)) then
+    error("registry.set_body: helper " .. tostring(id) .. " is not dead or away", 2)
+  end
   if not (entity and entity.valid and entity.type == "character") then error("registry.set_body: not a character", 2) end
   attach(rec, entity)
   rec.spawned_tick = game.tick
   rec.corpse_pos = nil
+  rec.away = nil
+  rec.away_pos = nil
+  rec.away_surface = nil
   return rec
 end
 
@@ -202,6 +226,11 @@ function M.op_spawn(args, ctx)
   local rec = storage.helpers[id]
   if rec and rec.state == "alive" and rec.entity and rec.entity.valid then
     err.raise("helper_exists", "helper " .. id .. " is alive")
+  end
+  if rec and rec.player_index ~= nil and rec.state ~= "removed" then
+    -- тело-игрок ждёт игрока или возрождения движком: запись держит место, новое тело поверх
+    -- неё не создаём (сначала helper_remove)
+    err.raise("helper_exists", "helper " .. id .. " is bound to a player body (helper_remove detaches it)")
   end
   local left = M.cooldown_left(rec)
   if left > 0 then
@@ -238,6 +267,23 @@ function M.op_remove(args, ctx)
   local id = ctx.helper_id
   local rec = storage.helpers[id]
   if rec == nil or rec.state == "removed" then err.raise("no_helper", "helper " .. id .. " does not exist") end
+  if rec.player_index ~= nil then
+    -- тело-игрок в любом состоянии (живое, мёртвое, away): только отвязать, персонажа игрока не
+    -- убивать (PROTOCOL §7); трупа в ответе и перезарядки нет — тело не создаётся и не
+    -- переносится, телепортом пара detach/attach служить не может
+    M.hooks.before_remove(id)
+    rec.state = "removed"
+    rec.removed_tick = nil
+    rec.died_tick = nil
+    rec.corpse_pos = nil
+    rec.entity = nil
+    rec.reg = nil
+    rec.away = nil
+    rec.away_pos = nil
+    rec.away_surface = nil
+    rec.hold = nil
+    return {}
+  end
   if rec.state == "dead" then
     -- тела нет; перезарядка идёт от died_tick (removed_tick не ставим — иначе отсчёт начнётся заново)
     M.hooks.before_remove(id)
@@ -247,19 +293,6 @@ function M.op_remove(args, ctx)
     rec.away = nil
     rec.hold = nil
     return { corpse = rec.corpse_pos }
-  end
-  if rec.player_index ~= nil then
-    -- тело-игрок: только отвязать, персонажа игрока не убивать (PROTOCOL §7); перезарядки нет —
-    -- тело не создаётся и не переносится, телепортом пара detach/attach служить не может
-    M.hooks.before_remove(id)
-    rec.state = "removed"
-    rec.removed_tick = nil
-    rec.died_tick = nil
-    rec.entity = nil
-    rec.reg = nil
-    rec.away = nil
-    rec.hold = nil
-    return {}
   end
   M.hooks.before_remove(id)
   local data = {}
@@ -285,13 +318,15 @@ end
 local LIMIT_SCHEMA = { max = { type = "int", required = true, min = 1, max = M.MAX_HELPERS_CAP } }
 
 --- helper_limit {max:1..16} -> {max, alive} (PROTOCOL §4). Админская операция: её шлёт скрипт
---- запуска напарника («сколько помощников?»), агентам сервер её не даёт. Ниже числа занятых
---- мест (живые и ждущие возрождения) опустить нельзя — `limit`.
+--- запуска напарника («сколько помощников?»), агентам сервер её не даёт. Нижняя граница —
+--- занятые места (живые + ждущие возрождения + away): ниже опустить нельзя — `limit`.
+--- `alive` в ответе — только живые.
 function M.op_limit(args, ctx)
   local a = schema.validate(LIMIT_SCHEMA, args)
   local occupied, alive = M.occupied()
   if a.max < occupied then
-    err.raise("limit", "max " .. a.max .. " is below the number of helpers alive or awaiting respawn (" .. occupied .. ")")
+    err.raise("limit", "max " .. a.max .. " is below the number of occupied slots (" .. occupied
+      .. ": helpers alive, awaiting respawn or away)")
   end
   if type(storage.proto) ~= "table" then
     -- сейв со схемой 1 (proto — число), миграция ещё не шла: версию сохранить
@@ -306,7 +341,7 @@ function M.op_list(args, ctx, jobs_active)
   local out = {}
   for _, id in ipairs(M.ids()) do
     local rec = storage.helpers[id]
-    local item = { id = id, state = rec.state }
+    local item = { id = id, state = rec.state, body = M.body_kind(id) }
     local e = rec.entity
     if rec.state == "alive" and e and e.valid then
       item.surface = e.surface.name
@@ -314,6 +349,11 @@ function M.op_list(args, ctx, jobs_active)
     elseif rec.state == "dead" then
       item.pos = rec.died_pos
       item.corpse = rec.corpse_pos
+    elseif rec.state == "away" then
+      -- тело-игрок, игрока или персонажа сейчас нет: место, где тело было в последний раз
+      item.pos = rec.away_pos
+      item.surface = rec.away_surface
+      item.away = rec.away
     end
     local left = M.cooldown_left(rec)
     if left > 0 then item.cooldown_s = math.ceil(left / 60) end

@@ -1,15 +1,16 @@
 -- Схема storage и миграции (поток A). PROTOCOL.md §7: ключи верхнего уровня
 -- proto, helpers, jobs, events, recent, blobs, reservations, vision, reflexes, reflex_state,
--- path_requests.
+-- path_requests, mining_last.
 -- Ядро создаёт все ключи (пустыми таблицами), чтобы модули могли на них рассчитывать;
--- содержимое `vision` (G), `reflex_state` (H) и `path_requests` (B) заполняют их владельцы.
+-- содержимое `vision` (G), `reflex_state` (H), `path_requests` (B) и `mining_last` (M пишет,
+-- N читает) заполняют их владельцы.
 --
 -- storage.proto = { version = <номер схемы storage>, max_helpers = <1..16> } (ревизия 3.2:
 -- раньше это было просто число версии). Новая версия схемы = новая функция в STEPS[n]
 -- (переход n-1 -> n) + увеличить VERSION. Шаги должны быть идемпотентными.
 local M = {}
 
-M.VERSION = 2
+M.VERSION = 3
 M.DEFAULT_MAX_HELPERS = 1   -- PROTOCOL §4: сколько помощников разрешил игрок (helper_limit)
 M.MAX_HELPERS_CAP = 16
 
@@ -65,6 +66,17 @@ function M.ensure_shape()
   ensure(s, "reflexes", {})
   ensure(s, "reflex_state", {})
   ensure(s, "path_requests", {})
+  -- mining_last[helper] = { surface, outputs = { {pos = {x, y}, direction}, ... }, tick } — выходы
+  -- последней разметки: пишет plan_mining, читает plan_belt{from:"patch"}. Ядро только держит
+  -- форму: запись не таблица — убрать, outputs не таблица — пустой список.
+  local ml = ensure(s, "mining_last", {})
+  for helper, last in pairs(ml) do
+    if type(last) ~= "table" then
+      ml[helper] = nil
+    elseif type(last.outputs) ~= "table" then
+      last.outputs = {}
+    end
+  end
 end
 
 -- Переходы между версиями схемы: STEPS[n] переводит версию n-1 в n.
@@ -79,6 +91,17 @@ local STEPS = {
     end
     if occupied > M.MAX_HELPERS_CAP then occupied = M.MAX_HELPERS_CAP end
     if occupied > storage.proto.max_helpers then storage.proto.max_helpers = occupied end
+  end,
+  -- 3 (ревизия 3.3): у тела-игрока, чей игрок вышел или остался без персонажа, отдельное
+  -- состояние "away" (раньше — "dead" с полем away); ключ mining_last заводит ensure_shape.
+  [3] = function()
+    for _, rec in pairs(storage.helpers) do
+      if type(rec) == "table" and rec.player_index ~= nil and rec.state == "dead" and rec.away ~= nil then
+        rec.state = "away"
+        if rec.away_pos == nil then rec.away_pos = rec.died_pos end
+        rec.corpse_pos = nil
+      end
+    end
   end,
 }
 

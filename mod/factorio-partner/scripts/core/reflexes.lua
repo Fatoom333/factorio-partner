@@ -4,6 +4,11 @@
 -- по schema типа. storage.reflexes[helper] = { {type=..., ...}, ... }.
 -- Ядро вызывает check каждые CHECK_EVERY тиков для каждого живого помощника и каждого
 -- рефлекса из его набора (под pcall). Что делать (события, задачи) — решает check.
+--
+-- Срок жизни набора (EVENTS.md «Рефлексы v1»): он лежит в storage и привязан к id помощника, а
+-- не к телу, поэтому переживает смерть и возрождение, перезагрузку сейва и возврат
+-- тела-игрока (пока тела нет, проверки просто не идут). Сбрасывает его только `helper_remove`
+-- (M.forget, зовёт ядро) — и, конечно, новый вызов `reflexes{set}`.
 local err = require("scripts.core.err")
 local schema = require("scripts.core.schema")
 local registry = require("scripts.core.registry")
@@ -49,11 +54,23 @@ function M.op_reflexes(args, ctx)
   return { set = out }
 end
 
+--- Забыть набор рефлексов помощника (только helper_remove).
+function M.forget(helper)
+  if type(storage.reflexes) == "table" then storage.reflexes[helper] = nil end
+end
+
+--- Набор рефлексов помощника (копия не делается — только для чтения) или nil.
+function M.get(helper)
+  local set = type(storage.reflexes) == "table" and storage.reflexes[helper] or nil
+  if type(set) ~= "table" then return nil end
+  return set
+end
+
 local last_log = {}
 
 function M.run(tick)
   for helper, set in pairs(storage.reflexes) do
-    if set[1] ~= nil then
+    if type(set) == "table" and set[1] ~= nil then
       local rec, entity = registry.alive(helper)
       if rec then
         for _, params in ipairs(set) do

@@ -1,20 +1,9 @@
--- factorio-partner: точка входа. Список модулей фиксирован этапом 0 (docs/PLAN.md),
--- потоки меняют только содержимое своих файлов.
+-- factorio-partner: точка входа. Файл принадлежит ядру (PROTOCOL §7): модуль другого потока
+-- добавляется одной строкой в список ниже — в ACTIONS (действие из scripts/actions) или в
+-- MODULES (всё остальное). Необязательных модулей нет: каждый файл из списков лежит в
+-- репозитории, а отсутствующий — это ошибка сборки мода, и она должна быть видна сразу (игра
+-- назовёт файл), а не угадываться по тексту сообщения `require`.
 local core = require("scripts.core.init")
-
--- Модули волны 3, которые пишут другие потоки (M — plan_mining, P — тело-игрок): пока файла
--- нет, мод работает без него. «Нет файла» отличаем от ошибки ВНУТРИ файла: вторая — наружу.
-local function optional(name)
-  local ok, mod = pcall(require, name)
-  if ok then return mod end
-  local text = tostring(mod)
-  local as_path = name:gsub("%.", "/")
-  local about_it = text:find(name, 1, true) ~= nil or text:find(as_path, 1, true) ~= nil
-  local missing = text:find("not found", 1, true) ~= nil or text:find("no such file", 1, true) ~= nil
-    or text:find("no file", 1, true) ~= nil
-  if about_it and missing then return nil end
-  error(mod, 0)
-end
 
 local ACTIONS = {
   "walk", "approach", "follow",
@@ -35,7 +24,7 @@ local MODULES = {
 for _, name in ipairs(MODULES) do
   core.register_module(require("scripts." .. name))
 end
-local attach = optional("scripts.core.attach")
-if attach then core.register_module(attach) end
+-- тело-игрок (PROTOCOL §7): часть ядра, подключается последним
+core.register_module(require("scripts.core.attach"))
 
 core.init()
