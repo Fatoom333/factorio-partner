@@ -532,9 +532,91 @@ def covered_share(drills, reach, cells):
     return round(hit / len(cells), 3)
 
 
+# ---------------------------------------------------------------- лента: клетки и непрерывность
+
+VEC = {0: (0, -1), 4: (1, 0), 8: (0, 1), 12: (-1, 0)}     # defines.direction 2.0 → шаг по клеткам
+BELT_WINDOW = 10        # окно карты 21×21: в ответе `map` не больше 100 сущностей
+BELT_AHEAD = 12         # на сколько клеток от края разметки искать конец ленты
+BELT_SPOT = 3           # свободная площадка BELT_SPOT×BELT_SPOT под конец ленты
+
+
+def cell_of(pos):
+    return (int(math.floor(pos["x"])), int(math.floor(pos["y"])))
+
+
+def cell_center(cell):
+    return {"x": cell[0] + 0.5, "y": cell[1] + 0.5}
+
+
+def belt_cells(api, areas, names):
+    """Ленты с такими именами в областях, как их видит игра (`map`, окнами 21×21).
+    → ({клетка: {"name", "dir", "ghost"}}, обрезан ли хоть один ответ)."""
+    out, truncated, seen = {}, False, set()
+    step = 2 * BELT_WINDOW + 1
+    for area in areas:
+        x0, y0 = int(math.floor(area["left_top"]["x"])), int(math.floor(area["left_top"]["y"]))
+        x1, y1 = int(math.ceil(area["right_bottom"]["x"])), int(math.ceil(area["right_bottom"]["y"]))
+        y = y0
+        while y <= y1:
+            x = x0
+            while x <= x1:
+                key = (x, y)
+                if key not in seen:
+                    seen.add(key)
+                    center = {"x": x + BELT_WINDOW + 0.5, "y": y + BELT_WINDOW + 0.5}
+                    data = api.read("map", {"center": center, "radius": BELT_WINDOW, "names": list(names)})
+                    truncated = truncated or bool(data.get("truncated"))
+                    for e in as_list(data.get("entities")):
+                        if e.get("name") in names and e.get("pos"):
+                            out[cell_of(e["pos"])] = {"name": e["name"], "dir": e.get("dir"),
+                                                      "ghost": bool(e.get("ghost"))}
+                x += step
+            y += step
+    return out, truncated
+
+
+def flows_to(belts, start, end, limit=4000):
+    """Доходит ли предмет по лентам от клетки start до клетки end: каждая лента передаёт в клетку,
+    на которую смотрит. → (дошёл ли, где остановился)."""
+    cur, seen = start, set()
+    while cur in belts and cur not in seen and len(seen) < limit:
+        if cur == end:
+            return True, cur
+        seen.add(cur)
+        v = VEC.get(belts[cur].get("dir"))
+        if v is None:
+            return False, cur
+        cur = (cur[0] + v[0], cur[1] + v[1])
+    return False, cur       # лента кончилась (или пошла по кругу), не дойдя до end
+
+
+def belt_targets(api, area, direction, log, limit=4, resource=""):
+    """Куда вести ленту от разметки: свободные площадки в BELT_AHEAD клетках за краем области разметки
+    со стороны direction (ближние к точке напротив середины края — первыми). Площадка — голая земля
+    или руда resource (разметка обычно стоит посреди большого пятна, а лента по руде идёт): без
+    построек, призраков, жидкости и камней. → [клетка]."""
+    vx, vy = VEC[DIR_NUM[direction]]
+    c = area_center(area)
+    half_w, half_h = area_side(area)[0] / 2, area_side(area)[1] / 2
+    ideal = {"x": c["x"] + vx * (half_w + BELT_AHEAD), "y": c["y"] + vy * (half_h + BELT_AHEAD)}
+    read = {"center": ideal, "radius": 16}
+    if resource:
+        read["names"] = [resource]
+    data = api.read("map", read)
+    wins = free_windows(data, resource, BELT_SPOT, BELT_SPOT, min_ore=0, limit=limit * 3, near=ideal)
+    cells = []
+    for win in wins:
+        cell = cell_of(area_center(win["area"]))
+        ahead = (cell[0] + 0.5 - c["x"]) * vx + (cell[1] + 0.5 - c["y"]) * vy
+        if ahead >= (half_w if vx else half_h) + 3:      # за краем разметки, а не сбоку и не внутри
+            cells.append(cell)
+    _step(log, "belt_target", ideal=ideal, spots=len(wins), ahead=len(cells))
+    return cells[:limit]
+
+
 # ---------------------------------------------------------------- поиск руды и свободного места
 
-ORE_NAMES = ("iron-ore", "copper-ore", "coal", "stone", "tungsten-ore", "calcite", "scrap", "uranium-ore")
+ORE_NAMES =("iron-ore", "copper-ore", "coal", "stone", "tungsten-ore", "calcite", "scrap", "uranium-ore")
 MIN_ORE_TILES = 16      # меньше — не пятно (огрызок под старыми бурами)
 SEARCH_RADIUS = 128     # предел операции resources
 _R1, _R2 = 200, 400

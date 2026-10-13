@@ -27,6 +27,9 @@ FIND_LIMIT_MAX = 50                # STATE.md «find»
 FIND_KINDS = ("producers", "consumers", "storage", "entities")
 PLAYER_NAME_MAX = 60
 MAX_OPTIONS = 32                   # plan_mining.options: MPP flags
+ACCESS_RADIUS_MAX = 64             # STATE.md «access»: radius?=32 (≤ 64)
+FIT_SEARCH_MAX = 32                # ACTIONS.md build_blueprint: search?=16, 0..32
+BELT_LANES_MAX = 4                 # ACTIONS.md plan_belt: lanes?=1 (1..4)
 
 Validator = Callable[[str, Any], Any]
 
@@ -100,6 +103,15 @@ def pos(field: str, v: Any):
 
 def pos_or_player(field: str, v: Any):
     if v == "player":
+        return v
+    return pos(field, v)
+
+
+def pos_or_patch(field: str, v: Any):
+    """``plan_belt.from``: a tile, or ``"patch"`` — the outputs of this helper's last plan_mining."""
+    if isinstance(v, str):
+        if v != "patch":
+            raise bad(field, 'must be {x, y} or "patch"')
         return v
     return pos(field, v)
 
@@ -189,8 +201,11 @@ REACH = number(0, 64)
 BUILD_FORCE = enum("normal", "forced", "superforced")
 MINING_LAYOUT = enum("simple", "compact", "super_compact", "sparse", "logistics", "compact_logistics",
                      "sparse_logistics")
+SIDE = enum("north", "east", "south", "west")
+# plan_belt.underground (ACTIONS.md): only through obstacles, never, or wherever it is shorter
+UNDERGROUND = enum("auto", "never", "prefer")
 
-# do -> (fields, required, groups of mutually exclusive fields with "exactly one" flag)
+# do ->(fields, required, groups of mutually exclusive fields with "exactly one" flag)
 ACTIONS: dict[str, tuple[dict[str, Validator], tuple[str, ...], tuple[tuple[tuple[str, ...], bool], ...]]] = {
     "walk": ({"to": pos_or_player, "radius": REACH}, ("to",), ()),
     "approach": ({"target": target, "to": pos_or_player, "distance": REACH}, (),
@@ -206,17 +221,25 @@ ACTIONS: dict[str, tuple[dict[str, Validator], tuple[str, ...], tuple[tuple[tupl
     "pickup": ({"target": target, "area": area}, (), ((("target", "area"), False),)),
     "place": ({"item": name, "pos": pos, "direction": DIRECTION, "recipe": name}, ("item", "pos"), ()),
     "build_blueprint": ({"blob": ident, "plan": ident, "anchor": pos, "direction": blueprint_direction,
-                        "mode": MODE, "force": BUILD_FORCE, "dry_run": boolean},
+                        "mode": MODE, "force": BUILD_FORCE, "dry_run": boolean,
+                        # revision 3.3: the search for a shift where the blueprint fits (`fit`), its
+                        # rotations, and the cut blueprint the owner agreed to. `mirror` is how a
+                        # `fit.mirror` answer is applied (the mod's argument)
+                        "search": integer(0, FIT_SEARCH_MAX), "rotate": boolean, "partial": boolean,
+                        "mirror": boolean},
                         ("anchor",), ((("blob", "plan"), True),)),
     "build_ghosts": ({"area": area, "radius": number(1, 64), "mode": MODE}, (),
                      ((("area", "radius"), False),)),
     "deconstruct": ({"target": target, "area": area, "filter": name_list(32)}, (),
                     ((("target", "area"), True),)),
     "plan_mining": ({"resource": name, "area": area, "near": pos, "layout": MINING_LAYOUT,
-                     "direction": enum("north", "east", "south", "west"),
+                     "direction": SIDE,
                      "miner": name, "belt": name, "pole": name, "pipe": name,
                      "options": flags(MAX_OPTIONS), "dry_run": boolean},
                     (), ((("area", "near"), True),)),
+    "plan_belt": ({"from": pos_or_patch, "to": pos, "belt": name, "lanes": integer(1, BELT_LANES_MAX),
+                   "underground": UNDERGROUND, "start_direction": SIDE, "dry_run": boolean},
+                  ("from", "to"), ()),
     "wait": ({"seconds": integer(1, 600)}, ("seconds",), ()),
 }
 

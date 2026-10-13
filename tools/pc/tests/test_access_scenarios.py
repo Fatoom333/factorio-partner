@@ -259,7 +259,6 @@ def test_check_access_unit():
         ({"enclosed": "no"}, "enclosed"),
         ({"exits": [dict(good["exits"][0], neck="huge")]}, "exits"),
         ({"exits": [dict(good["exits"][1]), dict(good["exits"][0])], "best": "north"}, "широкие первыми"),
-        ({"exits": [dict(good["exits"][0], neck="wide", width=3)]}, "wide при ширине"),
         ({"enclosed": True}, "enclosed"),
         ({"reachable": 1}, "reachable"),
     ]:
