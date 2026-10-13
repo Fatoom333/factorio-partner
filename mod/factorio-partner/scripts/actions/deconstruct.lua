@@ -7,7 +7,9 @@
 -- Честно (§6.5): только `selected` + `mining_state` до исчезновения сущности (valid = false),
 -- время тратит движок, предметы кладёт в инвентарь он же. Запрещённых приёмов (мгновенная
 -- добыча, удаление с выдачей предметов) здесь нет.
--- * target — сущность своей силы или neutral (иначе not_found); подходит на reach_distance.
+-- * target — сущность своей силы или neutral (иначе not_found); к постройке подходит на
+--   reach_distance, к камню и дереву — вплотную (resource_reach_distance: с reach_distance движок
+--   их не добывает, живой замер 2026-10-13). Сам разбор — общий B.dig_step (scripts/lib/build.lua).
 -- * area — постройки своей силы в области; с filter — ещё и neutral с этими именами (деревья,
 --   камни). Не трогаются: персонажи, призраки, руда, техника с водителем, некопаемое.
 --   Область на время задачи резервируется (пересечение с чужой → reserved). Больше 500 → limit.
@@ -25,53 +27,12 @@ M.schema = {
   filter = { type = "list", of = { type = "string", max = 100 }, max = 50 },
 }
 M.MAX_ENTITIES = 500
-M.MIN_TIMEOUT = 300   -- тиков без исчезновения цели до пропуска
 
-local SKIP_TYPES = {
-  character = true, ["entity-ghost"] = true, ["tile-ghost"] = true, resource = true,
-  ["item-entity"] = true, ["item-request-proxy"] = true, ["character-corpse"] = true,
-  ["construction-robot"] = true, ["logistic-robot"] = true, ["combat-robot"] = true,
-}
-
-local function mining_speed(h)
-  local s = h.prototype and h.prototype.mining_speed
-  local speed = (type(s) == "number" and s > 0) and s or 0.5
-  local m = h.force.manual_mining_speed_modifier
-  if type(m) == "number" then speed = speed * (1 + m) end
-  return math.max(speed, 0.01)
-end
-
---- Можно разобрать руками? → nil │ текст причины.
-local function why_not(e)
-  if SKIP_TYPES[e.type] then return e.type .. " is not deconstructed" end
-  local mp = e.prototype and e.prototype.mineable_properties
-  if mp == nil or not mp.minable or e.minable == false then return e.name .. " is not minable" end
-  return nil
-end
-
-local function has_driver(e)
-  local ok, d = pcall(function() return e.get_driver() end)
-  return ok and d ~= nil
-end
-
-local function first_product(e)
-  local mp = e.prototype and e.prototype.mineable_properties
-  for _, p in ipairs(mp and mp.products or {}) do
-    if (p.type == nil or p.type == "item") and type(p.name) == "string" then return p.name end
-  end
-  return nil
-end
-
-local function stop_mining(task, h)
-  if task.mining and h ~= nil and h.valid then
-    h.mining_state = { mining = false }
-    pcall(function() h.clear_selected_entity() end)
-  end
-  task.mining = false
-end
+local why_not = B.why_not_minable
+local has_driver = B.has_driver
 
 local function finish(task, ctx)
-  stop_mining(task, ctx.entity)
+  B.stop_mining(task, ctx.entity)
   inv.stop_approach(task, ctx)
 end
 
@@ -164,24 +125,9 @@ local function next_target(task, h)
 end
 
 function M.tick(task, ctx)
-  local h, tick = ctx.entity, ctx.tick
-  local cur = task.cur
-  if cur ~= nil and not cur.e.valid then
-    -- цель исчезла. Нашей считаем её, только если мы её копали И в инвентарь что-то пришло:
-    -- иначе её параллельно разобрал игрок или дрон, и removed был бы завышен. Постройка без
-    -- предметов при разборе (cur.product == nil) засчитывается по самому факту добычи.
-    if task.started_mining then
-      local n = h.get_main_inventory().get_item_count()
-      if cur.product == nil or n > (task.mine_inv or n) then
-        task.removed = task.removed + 1
-        task.progress.done = task.removed
-      end
-    end
-    stop_mining(task, h)
-    task.cur, cur = nil, nil
-  end
-  if cur == nil then
-    cur = next_target(task, h)
+  local h = ctx.entity
+  if task.dig == nil then
+    local cur = next_target(task, h)
     if cur == nil then
       finish(task, ctx)
       local d = detail_of(task, h)
@@ -190,50 +136,27 @@ function M.tick(task, ctx)
       end
       return B.done(d)
     end
-    task.cur = cur
-    task.started_mining = false
-    task.mine_since = nil
-    local mt = cur.e.prototype.mineable_properties.mining_time or 1
-    task.timeout = math.max(M.MIN_TIMEOUT, math.ceil(mt / mining_speed(h) * 60 * 3) + 60)
+    task.dig = B.dig_new(h, cur.e)
   end
 
-  local r = inv.approach(task, ctx, cur.e, "reach")
-  if r == nil then
-    stop_mining(task, h)
-    task.mine_since = nil
+  local r = B.dig_step(task, ctx, task.dig)
+  if r == "working" then return nil end
+  task.dig = nil
+  if r == "removed" then
+    task.removed = task.removed + 1
+    task.progress.done = task.removed
+  elseif r == "gone" then
+    -- исчезла сама (разобрал кто-то другой) — не наша заслуга
     return nil
-  end
-  if r ~= true then
+  elseif r == "skipped" then
+    task.skipped = task.skipped + 1
+  elseif r == "full" then
+    finish(task, ctx)
+    return inv.full_result(task, ctx, detail_of(task, h))
+  else
     finish(task, ctx)
     r.detail = r.detail or detail_of(task, h)
     return r
-  end
-
-  local product = first_product(cur.e)
-  if product ~= nil and not inv.has_room(h, product) then
-    finish(task, ctx)
-    return inv.full_result(task, ctx, detail_of(task, h))
-  end
-
-  if not task.mining or h.selected ~= cur.e then
-    h.selected = cur.e
-    h.mining_state = { mining = true, position = util.xy(cur.e.position) }
-    task.mining = true
-    if not task.started_mining then
-      task.mine_inv = h.get_main_inventory().get_item_count()
-      cur.product = product
-    end
-    task.started_mining = true
-    task.mine_since = task.mine_since or tick
-  elseif not (h.mining_state and h.mining_state.mining) then
-    h.mining_state = { mining = true, position = util.xy(cur.e.position) }
-  end
-
-  if tick - (task.mine_since or tick) > task.timeout then
-    -- не поддаётся (например, содержимое не влезает в инвентарь) — пропускаем
-    stop_mining(task, h)
-    task.skipped = task.skipped + 1
-    task.cur = nil
   end
   return nil
 end
