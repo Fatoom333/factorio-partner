@@ -45,7 +45,8 @@ def test_contract_parsers_see_the_tables():
     acts = lint.actions()
     assert {"walk", "collect", "build_ghosts", "build_blueprint", "plan_mining", "wait"} <= set(acts)
     assert acts["collect"] == {"items", "center", "near", "radius"}
-    assert {"blob", "plan", "anchor", "direction", "force", "dry_run", "mode"} == acts["build_blueprint"]
+    assert {"blob", "plan", "anchor", "direction", "force", "dry_run", "mode", "rotate", "search",
+            "partial"} == acts["build_blueprint"]
     assert lint.mcp_tools()["partner_wait"] == {"timeout", "quiet", "since"}
     assert lint.mcp_tools()["partner_brief"] == set()
     codes = lint.error_codes()
