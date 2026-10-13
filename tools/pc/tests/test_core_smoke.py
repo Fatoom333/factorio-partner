@@ -18,7 +18,7 @@ class Model:
     """Минимальная модель мода: отвечает формами из PROTOCOL.md / STATE.md."""
 
     def __init__(self, unknown_after_vision=0, no_owner=False, no_job_done=False, bad_state=False,
-                 spawn_error=None):
+                 spawn_error=None, old_mod=False, crash_after=None, bad_find=False):
         self.tick = 100
         self.seq = 3
         self.alive = False
@@ -29,6 +29,10 @@ class Model:
         self.no_job_done = no_job_done
         self.bad_state = bad_state
         self.spawn_error = spawn_error
+        self.old_mod = old_mod            # мод до ревизии 3.2: нет module_errors и операции find
+        self.crash_after = crash_after    # после этой операции модуль «упал под pcall»
+        self.bad_find = bad_find
+        self.module_errors = 0
         self.job = None
         self.ops = []
 
@@ -51,6 +55,8 @@ class Model:
         op, args, helper = env["op"], env.get("args", {}), env.get("helper")
         self.ops.append(op)
         self.tick += 30
+        if self.crash_after is not None and op == self.crash_after:
+            self.module_errors += 1
 
         def ok(data):
             return json.dumps({"v": 1, "id": env["id"], "ok": True, "tick": self.tick, "seq": self.seq, "data": data})
@@ -60,10 +66,13 @@ class Model:
                                "error": {"code": code, "text": text}})
 
         if op == "hello":
-            return ok({"proto": 1, "mod": "0.1.0", "tick": self.tick, "seq": self.seq,
-                       "owner": None if self.no_owner else "Tartaluga", "players_online": 0,
-                       "players": [{"index": 1, "name": "Tartaluga", "online": False, "surface": "nauvis",
-                                    "pos": {"x": 1, "y": 2}}], "helpers": {}})
+            d = {"proto": 1, "mod": "0.1.0", "tick": self.tick, "seq": self.seq,
+                 "owner": None if self.no_owner else "Tartaluga", "players_online": 0,
+                 "players": [{"index": 1, "name": "Tartaluga", "online": False, "surface": "nauvis",
+                              "pos": {"x": 1, "y": 2}}], "helpers": {}}
+            if not self.old_mod:
+                d["module_errors"] = self.module_errors
+            return ok(d)
         if op == "helper_spawn":
             if self.spawn_error:
                 return fail(self.spawn_error)
@@ -100,6 +109,16 @@ class Model:
         if op == "rates":
             return ok({"scope": "surface", "surface": "nauvis", "period": "1m",
                        "items": {"iron-plate": {"made": 3, "used": 1}}, "fluids": {}, "truncated": False})
+        if op == "find" and not self.old_mod:
+            d = {"item": args["item"], "surface": "nauvis", "hidden": 1,
+                 "total": {"producers": 2, "consumers": 0, "storage": 1},
+                 "groups": [{"kind": "storage", "pos": {"x": 5, "y": 5}, "dist": 2.5, "count": 1, "amount": 40,
+                             "names": {"steel-chest": 1}},
+                            {"kind": "producers", "pos": {"x": 12, "y": 0}, "dist": 9, "count": 2,
+                             "names": {"stone-furnace": 2}, "recipe": "iron-plate"}]}
+            if self.bad_find:
+                d["total"] = {"producers": 2}
+            return ok(d)
         if op == "vision":
             self.vision = args["on"]
             return ok({"on": self.vision})
@@ -148,16 +167,38 @@ def test_smoke_ok(fake_rcon, smoke):
     assert res["ok"] is True, res
     assert [s["name"] for s in res["steps"]] == [
         "hello", "helper_spawn", "helper_list", "state", "map", "resources", "stock", "ghosts", "recipes",
-        "rates", "vision", "say", "act_wait_events", "jobs", "helper_remove"]
+        "rates", "find", "vision", "say", "act_wait_events", "jobs", "helper_remove", "hello_end"]
     # порядок операций из задания
     order = [o for o in model.ops if o in ("hello", "helper_spawn", "state", "map", "resources", "stock", "ghosts",
-                                           "recipes", "rates", "vision", "say", "act", "events", "helper_remove")]
+                                           "recipes", "rates", "find", "vision", "say", "act", "events",
+                                           "helper_remove")]
     firsts = []
     for o in order:
         if o not in firsts:
             firsts.append(o)
     assert firsts == ["hello", "helper_spawn", "state", "map", "resources", "stock", "ghosts", "recipes", "rates",
-                      "vision", "say", "act", "events", "helper_remove"]
+                      "find", "vision", "say", "act", "events", "helper_remove"]
+    assert model.ops[-1] == "hello", "в конце — второй hello: module_errors не вырос"
+    assert next(s for s in res["steps"] if s["name"] == "find")["info"]["groups"] == 2
+
+
+def test_smoke_old_mod_without_rev32_fails(fake_rcon, smoke):
+    res, _ = run(fake_rcon, smoke, old_mod=True)
+    assert res["ok"] is False
+    assert {"hello", "find", "hello_end"} <= set(res["failed"])
+    assert "module_errors" in next(s for s in res["steps"] if s["name"] == "hello")["error"]
+
+
+def test_smoke_module_crash_during_run_fails_at_the_end(fake_rcon, smoke):
+    res, _ = run(fake_rcon, smoke, crash_after="stock")
+    assert res["failed"] == ["hello_end"]
+    assert "module_errors" in next(s for s in res["steps"] if s["name"] == "hello_end")["error"]
+
+
+def test_smoke_bad_find_shape(fake_rcon, smoke):
+    res, _ = run(fake_rcon, smoke, bad_find=True)
+    assert res["failed"] == ["find"]
+    assert "total" in next(s for s in res["steps"] if s["name"] == "find")["error"]
 
 
 def test_smoke_unknown_cells_after_vision_fail(fake_rcon, smoke):
