@@ -157,4 +157,17 @@ S.suite("build_place", {
       S.eq(d.code, "path_failed")
       S.eq(#F.built("iron-chest"), 0)
   end },
+  { "постройка стоит несколько предметов (count > 1): мало — no_items, хватает — списывается ровно столько", function()
+      local W = F.setup{ items = { ["iron-chest"] = 1 } }
+      prototypes.entity["iron-chest"].items_to_place_this = { { name = "iron-chest", count = 2 } }
+      local d, kind = F.wait(F.job("place", { item = "iron-chest", pos = POS }))
+      S.eq({ kind, d.code }, { "job_failed", "no_items" })
+      S.eq(#W.path.calls, 0, "без ходьбы")
+      S.eq(#F.built("iron-chest"), 0)
+      W.main.insert{ name = "iron-chest", count = 2 }
+      local d2, k2 = F.wait(F.job("place", { item = "iron-chest", pos = POS }))
+      S.eq(k2, "job_done", S.dump(d2))
+      S.eq(#F.built("iron-chest"), 1)
+      S.eq(C.counts(W.main), { ["iron-chest"] = 1 })
+  end },
 })

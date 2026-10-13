@@ -40,6 +40,9 @@ M.BODY_MARGIN = 0.3          -- тело ±0.2 + запас
 -- scripts.core.vis и scripts.core.target появляются в ревизии 3.1 (поток X, PLAN.md). Пока их
 -- нет в дереве, работает запасная реализация по тому же контракту; любая другая ошибка
 -- загрузки (синтаксис и т.п.) не глотается.
+-- TODO(координатор, после слияния потока X): убрать optional() и fallback_vis/fallback_target,
+-- оставить прямой require — «модуля нет» здесь узнаётся по тексту ошибки require, а его формат
+-- в Factorio не гарантирован (тогда загрузка мода упадёт громко, молча ничего не подменится).
 local function optional(name)
   local ok, m = pcall(require, name)
   if ok then return type(m) == "table" and m or nil end
@@ -347,13 +350,26 @@ function M.revive(ctx, entry)
     if M.body_inside(h, g.ghost_prototype, pos, g.direction) then return nil, "body" end
     return nil, "blocked"
   end
+  -- что нужно, чтобы вернуть призрак при откате (после revive сам призрак уже невалиден)
+  local back = {
+    surface = g.surface, name = g.ghost_name, position = pos, direction = g.direction, force = g.force,
+  }
   local collided, e = g.revive{ raise_revive = true }
   if e == nil or not e.valid then return nil, "blocked" end
   local removed = h.remove_item{ name = entry.item, count = entry.count, quality = M.NORMAL }
   if removed < entry.count then
-    -- предмет не списался: постройки из воздуха не бывает — убираем её, частично списанное возвращаем
+    -- предмет не списался: постройки из воздуха не бывает — убираем её, частично списанное возвращаем.
+    -- Призрак — план хозяина: ставим его обратно на то же место. Возвращаются имя, место, поворот
+    -- и сила; настройки призрака (рецепт, фильтры, запросы модулей) при таком откате теряются.
     if removed > 0 then h.insert{ name = entry.item, count = removed, quality = M.NORMAL } end
     e.destroy{ raise_destroy = true }
+    give_collided(h, collided)
+    pcall(function()
+      back.surface.create_entity{
+        name = "entity-ghost", inner_name = back.name, position = back.position,
+        direction = back.direction, force = back.force, raise_built = true,
+      }
+    end)
     return nil, "no_items"
   end
   give_collided(h, collided)
@@ -420,6 +436,9 @@ local function scan(task, ctx)
     cur[key] = { n = name, x = en.pos.x, y = en.pos.y }
     local proto = e.ghost_prototype
     local items = M.place_items(proto)
+    -- g.skip держится до конца задачи: призрак с причиной path_failed/stuck/blocked повторно не
+    -- пробуется, даже если путь потом освободился (v1: проще и не зацикливается; повтор — новой
+    -- задачей build_ghosts по той же области).
     local reason = g.skip[key]
     local body = false
     if reason == nil then
@@ -671,14 +690,11 @@ function M.ghosts_start(task, ctx, area, mode)
     last_progress = ctx.tick, last_built = ctx.tick,
   }
   if M.robots(h) ~= nil then
-    if mode == "hand" then
-      -- «только руками»: личные дроны на время задачи не вылетают
-      local prev = read(h, "allow_dispatching_robots")
-      task.g.prev_dispatch = prev == nil and true or prev
-      set_dispatch(h, false)
-    else
-      set_dispatch(h, true)
-    end
+    -- переключатель дронов на время задачи наш: «только руками» — не вылетают, иначе — вылетают.
+    -- Прежнее значение запоминаем в любом режиме и возвращаем в ghosts_stop.
+    local prev = read(h, "allow_dispatching_robots")
+    task.g.prev_dispatch = prev == nil and true or prev
+    set_dispatch(h, mode ~= "hand")
   end
   set_progress(task)
   return nil

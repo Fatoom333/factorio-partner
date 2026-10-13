@@ -194,10 +194,16 @@ S.suite("build_blueprint", {
       -- строка не импортируется
       F.blob("junk", "not-a-blueprint")
       S.eq(F.wait(bp{ blob = "junk" }).code, "bad_args")
-      -- импорт с ошибками (-1) — тоже отказ
+      -- импорт с предупреждениями (-1) — не провал: что импортировалось, то и раскладывается
       F.blueprints["WARN"] = { entities = two_chests().entities, rc = -1 }
       F.blob("warn", "WARN")
-      S.eq(F.wait(bp{ blob = "warn" }).code, "bad_args")
+      local w, wk = F.wait(bp{ blob = "warn", dry_run = true })
+      S.eq(wk, "job_done", S.dump(w))
+      S.eq(w.detail.ghosts, 2)
+      -- любой другой код — отказ
+      F.blueprints["RC2"] = { entities = two_chests().entities, rc = 2 }
+      F.blob("rc2", "RC2")
+      S.eq(F.wait(bp{ blob = "rc2" }).code, "bad_args")
       -- книга чертежей / планировщик
       F.blueprints["BOOK"] = { kind = "blueprint-book", entities = two_chests().entities }
       F.blob("book", "BOOK")
@@ -206,8 +212,8 @@ S.suite("build_blueprint", {
       F.blueprints["EMPTY"] = { entities = {} }
       F.blob("empty", "EMPTY")
       S.eq(F.wait(bp{ blob = "empty" }).code, "bad_args")
-      S.eq(F.bp_created, 4)
-      S.eq(F.bp_destroyed, 4, "временный инвентарь уничтожен и при ошибке")
+      S.eq(F.bp_created, 5)
+      S.eq(F.bp_destroyed, 5, "временный инвентарь уничтожен и при ошибке")
       S.eq(#F.ghosts(), 0)
       S.eq(#F.bp_calls, 0)
   end },
@@ -276,5 +282,18 @@ S.suite("build_blueprint", {
       S.eq(storage.reservations.areas.h1, nil)
       S.ok(W.path.cancels > 0)
       S.eq(W.h.walking_state.walking, false)
+  end },
+  { "наложение на уже стоящий такой же призрак: чужой план не убирается, даже если он заблокирован", function()
+      F.setup{ items = { ["iron-chest"] = 2 } }
+      put(two_chests())
+      local mine = F.ghost("iron-chest", { x = 20.5, y = 0.5 })   -- план хозяина, стоял до чертежа
+      F.blocked[F.key({ x = 20.5, y = 0.5 })] = { ghost_revive = true }
+      F.bp_return_existing = true
+      local d, kind = F.wait(bp{ mode = "hand" })
+      S.eq(kind, "job_done", S.dump(d))
+      S.ok(mine.valid, "призрак хозяина на месте")
+      S.eq({ d.detail.ghosts, d.detail.skipped_total, d.detail.built, d.detail.blocked_total }, { 1, 1, 1, 1 })
+      S.eq(d.detail.skipped[1], { name = "iron-chest", pos = { x = 20.5, y = 0.5 }, reason = "blocked" })
+      S.eq(#F.ghosts(), 1)
   end },
 })

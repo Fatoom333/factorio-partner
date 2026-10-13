@@ -90,7 +90,13 @@ function M.start(task, ctx)
   local names
   if a.filter ~= nil then
     names = {}
-    for _, n in ipairs(a.filter) do names[n] = true end
+    for _, n in ipairs(a.filter) do
+      -- неизвестное имя в find_entities_filtered — ошибка движка (ушла бы как internal)
+      if prototypes.entity[n] == nil then
+        return B.failed("bad_args", "args.filter: unknown entity " .. n)
+      end
+      names[n] = true
+    end
   end
   local queue = {}
   if a.target ~= nil then
@@ -161,10 +167,15 @@ function M.tick(task, ctx)
   local h, tick = ctx.entity, ctx.tick
   local cur = task.cur
   if cur ~= nil and not cur.e.valid then
-    -- цель исчезла: если мы её копали — разобрана
+    -- цель исчезла. Нашей считаем её, только если мы её копали И в инвентарь что-то пришло:
+    -- иначе её параллельно разобрал игрок или дрон, и removed был бы завышен. Постройка без
+    -- предметов при разборе (cur.product == nil) засчитывается по самому факту добычи.
     if task.started_mining then
-      task.removed = task.removed + 1
-      task.progress.done = task.removed
+      local n = h.get_main_inventory().get_item_count()
+      if cur.product == nil or n > (task.mine_inv or n) then
+        task.removed = task.removed + 1
+        task.progress.done = task.removed
+      end
     end
     stop_mining(task, h)
     task.cur, cur = nil, nil
@@ -208,6 +219,10 @@ function M.tick(task, ctx)
     h.selected = cur.e
     h.mining_state = { mining = true, position = util.xy(cur.e.position) }
     task.mining = true
+    if not task.started_mining then
+      task.mine_inv = h.get_main_inventory().get_item_count()
+      cur.product = product
+    end
     task.started_mining = true
     task.mine_since = task.mine_since or tick
   elseif not (h.mining_state and h.mining_state.mining) then

@@ -5,7 +5,8 @@
 --       mode? = "auto"│"hand"│"robots", dry_run? = false.
 -- done.detail: {ghosts, skipped:[{name,pos,reason}], skipped_total, missing,
 --               + после стройки: built, left, blocked, blocked_total}.
--- Ход: строка из storage.blobs → game.create_inventory(1) → import_stack (не 0 → bad_args;
+-- Ход: строка из storage.blobs → game.create_inventory(1) → import_stack (1 → bad_args; -1 —
+-- импорт с предупреждениями — принимается;
 -- книги и планировщики → bad_args) → для каждой сущности проверка постановки призрака
 -- (manual_ghost, §6.5) → build_blueprint{build_mode = normal, skip_fog_of_war = false} создаёт
 -- призраки → inventory.destroy() → дальше как build_ghosts по площади чертежа.
@@ -101,7 +102,10 @@ local function with_blueprint(str, fn)
   local binv = game.create_inventory(1)
   local ok, res = pcall(function()
     local st = binv[1]
-    if st.import_stack(str) ~= 0 then
+    -- 0 — ок; -1 — импорт с предупреждениями (например, сущности отсутствующего мода: движок
+    -- их отбрасывает, остальное ставится); провал — только 1 (ACTIONS.md) и всё прочее
+    local rc = st.import_stack(str)
+    if rc ~= 0 and rc ~= -1 then
       err.raise("bad_args", "args.blob: not a valid blueprint string")
     end
     if not st.valid_for_read or not st.is_blueprint then
@@ -217,6 +221,14 @@ function M.start(task, ctx)
       local ok = pcall(function() st.set_blueprint_tiles({}) end)
       if not ok then err.raise("bad_args", "args.blob: blueprints with tiles are not supported") end
     end
+    -- призраки, которые стояли здесь до нас (план хозяина): если движок вернёт такой в списке
+    -- (наложение на одинаковый призрак), он считается поставленным, но убирать его нельзя
+    local own_before = {}
+    for _, g in ipairs(h.surface.find_entities_filtered{
+      area = { area.left_top, area.right_bottom }, type = "entity-ghost",
+    }) do
+      if g.valid then own_before[B.ghost_key(g.ghost_name, util.xy(g.position))] = true end
+    end
     local built = st.build_blueprint{
       surface = h.surface, force = h.force, position = a.anchor, direction = a.direction,
       build_mode = defines.build_mode.normal, skip_fog_of_war = false, raise_built = true,
@@ -231,7 +243,9 @@ function M.start(task, ctx)
         elseif B.blocked(g.surface, g) and not B.body_inside(h, g.ghost_prototype, c.pos, g.direction) then
           c.why = "blocked"
         end
-        if c.why ~= nil then g.destroy{ raise_destroy = true } end
+        if c.why ~= nil and not own_before[B.ghost_key(c.name, c.pos)] then
+          g.destroy{ raise_destroy = true }
+        end
         created[#created + 1] = c
       end
     end

@@ -120,6 +120,11 @@ S.suite("build_ghosts", {
       S.eq(d.detail.built, 0)
       S.eq(#F.built("iron-chest"), 0, "постройки из воздуха нет")
       S.eq(C.counts(W.main), { ["iron-chest"] = 1 })
+      -- призрак — план хозяина: после отката он снова стоит на том же месте
+      S.ok(F.ghost_restored >= 1)
+      local gs = F.ghosts()
+      S.eq(#gs, 1)
+      S.eq({ gs[1].ghost_name, S.norm_pos(gs[1].position), gs[1].force }, { "iron-chest", { x = 8.5, y = 0.5 }, W.h.force })
   end },
   { "предметы из-под постройки возвращаются помощнику", function()
       local W = F.setup{ items = { ["iron-chest"] = 1 } }
@@ -287,5 +292,71 @@ S.suite("build_ghosts", {
       S.eq(#d.detail.blocked, 20)
       S.eq(d.detail.truncated, nil)
       S.eq(d.truncated, nil)
+  end },
+  { "robots/auto: переключатель дронов после задачи возвращается к прежнему значению", function()
+      for _, mode in ipairs({ "robots", "auto" }) do
+        local W = F.setup{ items = { ["iron-chest"] = 2 } }
+        F.give_robots(W.h, 2, 10)
+        W.h.allow_dispatching_robots = false   -- хозяин (или прошлая задача) выключил вылет
+        row("iron-chest", 2, 6.5, 0.5)
+        local job = build{ radius = 20, mode = mode }
+        F.run(2)
+        S.eq(W.h.allow_dispatching_robots, true, mode .. ": на время задачи дроны вылетают")
+        local d, kind = F.wait(job)
+        S.eq(kind, "job_done", S.dump(d))
+        S.eq(F.robot_built, 2)
+        S.eq(W.h.allow_dispatching_robots, false, mode .. ": вернулось прежнее")
+      end
+  end },
+  { "постройка стоит несколько предметов (items_to_place_this count > 1): списывается ровно столько", function()
+      local W = F.setup{ items = { ["iron-chest"] = 5 } }
+      prototypes.entity["iron-chest"].items_to_place_this = { { name = "iron-chest", count = 2 } }
+      row("iron-chest", 3, 8.5, 0.5)
+      local d, kind = F.wait(build{ mode = "hand" })
+      S.eq({ kind, d.code }, { "job_failed", "no_items" }, S.dump(d))
+      S.eq({ d.detail.built, d.detail.left }, { 2, 1 })
+      S.eq(d.detail.missing, { ["iron-chest"] = 2 })
+      S.eq(C.counts(W.main), { ["iron-chest"] = 1 }, "по два предмета на постройку")
+  end },
+  { "проверок ghost_revive за пересчёт не больше MAX_BLOCK_CHECKS; сверх лимита блок ловится при постройке", function()
+      local W = F.setup{ items = { ["iron-chest"] = 6 } }
+      local B = require("scripts.lib.build")   -- после F.setup: мод загружен заново
+      local old = B.MAX_BLOCK_CHECKS
+      B.MAX_BLOCK_CHECKS = 2
+      local ok, e = pcall(function()
+        local g = row("iron-chest", 6, 30.5, 0.5)
+        -- самый дальний (вне лимита проверок первого пересчёта) заблокирован
+        F.blocked[F.key(g[6].position)] = { ghost_revive = true }
+        local job = build{ radius = 50, mode = "hand" }
+        local n = 0
+        for _ = 1, 10 do
+          F.run(1)
+          for _, c in ipairs(F.checks) do if c.kind == "ghost_revive" then n = n + 1 end end
+          if n > 0 then break end
+        end
+        S.eq(n, 2, "первый пересчёт: проверено не больше лимита (до призраков ещё не дошли)")
+        local d, kind = F.wait(job)
+        S.eq(kind, "job_done", S.dump(d))
+        S.eq({ d.detail.built, d.detail.left, d.detail.blocked_total }, { 5, 0, 1 })
+        S.eq(d.detail.blocked[1].pos, { x = 35.5, y = 0.5 })
+        S.ok(g[6].valid)
+        S.eq(C.counts(W.main), { ["iron-chest"] = 1 })
+      end)
+      B.MAX_BLOCK_CHECKS = old
+      if not ok then error(e, 0) end
+  end },
+  { "призрак с запросом модулей (item_request_proxy): строится, запрос не трогаем, предметы не берутся", function()
+      local W = F.setup{ items = { coal = 2 } }   -- coal — «модули» из запроса: их брать нельзя
+      W.main.insert{ name = "assembling-machine-1", count = 1 }
+      F.ghost("assembling-machine-1", { x = 9.5, y = 0.5 })
+      local proxy = { valid = true, type = "item-request-proxy", destroyed = false }
+      proxy.destroy = function() proxy.destroyed = true proxy.valid = false end
+      F.proxy = proxy
+      local d, kind = F.wait(build{ mode = "hand" })
+      S.eq(kind, "job_done", S.dump(d))
+      S.eq(d.detail.built, 1)
+      S.eq(#F.built("assembling-machine-1"), 1)
+      S.ok(proxy.valid and not proxy.destroyed, "запрос модулей остаётся дронам/игроку")
+      S.eq(C.counts(W.main), { coal = 2 }, "списана только постройка, остальное не тронуто")
   end },
 })
