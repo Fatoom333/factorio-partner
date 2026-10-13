@@ -9,13 +9,17 @@
 -- * C.inventory{size, items={name=count}│{{name,count,quality,data}}} — инвентарь со стаками
 --   (inv[i] → LuaItemStack: transfer_stack/swap_stack/clear/count), find_empty_stack, #inv;
 -- * у тела помощника — такие инвентари, «движок» добычи (selected + mining_state: время, выход,
---   истощение руды, полный инвентарь) и ручного крафта (begin_crafting тратит ингредиенты,
+--   истощение руды, полный инвентарь; дерево и камень — только с resource_reach_distance, как в
+--   игре: C.near_only) и ручного крафта (begin_crafting тратит ингредиенты,
 --   очередь, cancel_crafting возвращает их);
 -- * game.get_entity_by_unit_number; прототипы руд/деревьев/рецептов с mineable_properties;
 -- * фейковый scripts.lib.path: шаг 1 клетка за тик к цели, журнал вызовов, W.path.fail = result.
 local S = require("stubs")
 
 local C = {}
+
+-- типы, которые рука добывает только вплотную (как scripts/lib/inventory.lua NEAR_ONLY)
+C.NEAR = { tree = true, ["simple-entity"] = true, fish = true }
 
 -- ===================================================================== объекты
 
@@ -453,6 +457,15 @@ function C.equip(h, opts)
     return true
   end)
   rawset(h, "clear_selected_entity", function() rawset(h, "selected", nil) end)
+  -- как в игре (живой замер 2026-10-13): до дерева, камня и рыбы рука достаёт только с
+  -- resource_reach_distance; C.near_only = false возвращает прежнее «всё с reach_distance»
+  local can_reach = h.can_reach_entity
+  rawset(h, "can_reach_entity", function(e)
+    if C.near_only and C.NEAR[e.type] then
+      return S.dist(h.position, e.position) <= h.resource_reach_distance
+    end
+    return can_reach(e)
+  end)
   return h
 end
 
@@ -479,7 +492,8 @@ local function engine_mine(h)
   local t = h.selected
   if C.mining_disabled then return end
   if not (ms and ms.mining and t and t.valid) then h._mine_progress = 0 return end
-  local reach = t.type == "resource" and h.resource_reach_distance or h.reach_distance
+  local near = t.type == "resource" or (C.near_only and C.NEAR[t.type])
+  local reach = near and h.resource_reach_distance or h.reach_distance
   if S.dist(h.position, t.position) > reach then h._mine_progress = 0 return end
   local mp = t.prototype.mineable_properties
   local inv = h.inventories[defines.inventory.character_main]
@@ -547,6 +561,7 @@ function C.setup(opts)
   C.mined = 0
   C.data_destroyed = 0
   C.mining_disabled = false
+  C.near_only = true
   C.craft_blocked_when_full = true
   local W = { path = C.fake_path() }
   S.load_mod{ replace = { ["scripts.lib.path"] = W.path } }

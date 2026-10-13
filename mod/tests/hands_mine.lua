@@ -95,7 +95,45 @@ S.suite("hands_mine", {
       S.eq(kind, "job_done", S.dump(d))
       S.eq(d.detail.mined, { wood = 4 })
       S.eq(tree.valid, false)
-      S.ok(S.dist(W.h.position, { x = 12, y = 3 }) <= W.h.reach_distance)
+      -- дерево копается только вплотную — на resource_reach_distance, а не на reach_distance
+      S.ok(S.dist(W.h.position, { x = 12, y = 3 }) <= W.h.resource_reach_distance, S.dump(W.h.position))
+      S.ok(#W.path.calls > 0)
+      for _, c in ipairs(W.path.calls) do
+        S.ok(c.dist < W.h.resource_reach_distance, "подход просится ближе resource_reach: " .. c.dist)
+      end
+  end },
+  { "target: камень и дерево с 5–9 клеток (в досягаемости reach, но рукой не достать) — подходит вплотную", function()
+      local W = C.setup()
+      prototypes.entity["big-rock"] = { name = "big-rock", type = "simple-entity",
+        mineable_properties = { minable = true, mining_time = 0.5, products = { { type = "item", name = "stone", amount = 3 } } } }
+      local rock = S.nauvis.create_entity{ name = "big-rock", position = { x = 8.5, y = 0.5 }, force = "neutral" }
+      S.ok(S.dist(W.h.position, rock.position) < W.h.reach_distance, "камень ближе reach_distance")
+      S.eq(W.h.can_reach_entity(rock), false, "но рука до него не достаёт (как в игре)")
+      local d, kind = C.wait(mine{ target = { name = "big-rock", pos = { x = 8.5, y = 0.5 } }, count = 1 })
+      S.eq(kind, "job_done", S.dump(d))
+      S.eq(d.detail.mined, { stone = 3 })
+      S.eq(rock.valid, false)
+      S.ok(S.dist(W.h.position, { x = 8.5, y = 0.5 }) <= W.h.resource_reach_distance)
+      -- дерево вплотную (уже рядом) — без подхода
+      local n = #W.path.calls
+      local p = S.norm_pos(W.h.position)
+      local tree = S.nauvis.create_entity{ name = "tree-01", position = { x = p.x + 1.5, y = p.y }, force = "neutral" }
+      local d2, k2 = C.wait(mine{ target = { unit_number = tree.unit_number }, count = 1 })
+      S.eq(k2, "job_done", S.dump(d2))
+      S.eq({ d2.detail.mined, tree.valid, #W.path.calls }, { { wood = 4 }, false, n })
+      -- своя постройка по-прежнему разбирается с reach_distance
+      local ch = C.chest({ x = p.x + 7, y = p.y }, {})
+      local d3 = C.wait(mine{ target = { unit_number = ch.unit_number }, count = 1 })
+      S.eq({ d3.detail.mined, #W.path.calls }, { { ["iron-chest"] = 1 }, n })
+  end },
+  { "target: до камня не подойти вплотную — stuck после нескольких попыток, добыча снята", function()
+      local W = C.setup()
+      local tree = S.nauvis.create_entity{ name = "tree-01", position = { x = 12, y = 3 }, force = "neutral" }
+      -- путь «доходит», но тело остаётся в 4 клетках (помеха): ближе никак
+      W.path.step = function() return true end
+      local d, kind = C.wait(mine{ target = { unit_number = tree.unit_number }, count = 1 })
+      S.eq({ kind, d.code }, { "job_failed", "stuck" })
+      S.eq({ tree.valid, W.h.mining_state.mining }, { true, false })
   end },
   { "target: своя постройка по unit_number; клетка руды — дальше как resource", function()
       local W = C.setup()
