@@ -18,7 +18,7 @@ S.suite("build_ghosts", {
       row("iron-chest", 3, 20.5, 0.5)
       local d, kind = F.wait(build{ radius = 30, mode = "hand" })
       S.eq(kind, "job_done", S.dump(d))
-      S.eq(d.detail, { built = 3, left = 0, blocked = {}, blocked_total = 0, missing = {} })
+      S.eq(d.detail, { built = 3, left = 0, blocked = {}, blocked_total = 0, missing = {}, tiles_built = 0, removed = 0, not_removed = 0 })
       S.eq(#F.built("iron-chest"), 3)
       S.eq(#F.ghosts(), 0)
       S.eq(C.counts(W.main), { ["iron-chest"] = 2 }, "по одному предмету на призрак")
@@ -268,7 +268,8 @@ S.suite("build_ghosts", {
       -- пустая область — сразу done
       local d2, k2 = F.wait(build{ area = area })
       S.eq(k2, "job_done")
-      S.eq(d2.detail, { built = 0, left = 0, blocked = {}, blocked_total = 0, missing = {} })
+      S.eq(d2.detail, { built = 0, left = 0, blocked = {}, blocked_total = 0, missing = {},
+        tiles_built = 0, removed = 0, not_removed = 0 })
   end },
   { "сохранение и загрузка посреди стройки: задача продолжается", function()
       F.setup{ items = { ["iron-chest"] = 6 } }
@@ -353,7 +354,8 @@ S.suite("build_ghosts", {
       for i = 0, 2 do F.tile_ghost("stone-path", { x = 20 + i, y = 3 }) end
       local d, kind = F.wait(build{ radius = 40, mode = "hand" })
       S.eq(kind, "job_done", S.dump(d))
-      S.eq(d.detail, { built = 5, left = 0, blocked = {}, blocked_total = 0, missing = {}, tiles_built = 3, tiles_first = true })
+      S.eq(d.detail, { built = 5, left = 0, blocked = {}, blocked_total = 0, missing = {}, tiles_built = 3, tiles_first = true,
+        removed = 0, not_removed = 0 })
       S.eq({ F.tile_at(20, 3), F.tile_at(21, 3), F.tile_at(22, 3) }, { "stone-path", "stone-path", "stone-path" })
       S.eq(C.counts(W.main), { ["stone-brick"] = 1 })
       S.eq(F.tile_revive_calls, 3)
@@ -372,7 +374,8 @@ S.suite("build_ghosts", {
       S.eq(C.act and S.okr(S.req("jobs", {}, "h1")).active.progress.total, 2, "и плитка, и постройка в счёте")
       local d, kind = F.wait(job)
       S.eq(kind, "job_done", S.dump(d))
-      S.eq(d.detail, { built = 2, left = 0, blocked = {}, blocked_total = 0, missing = {}, tiles_built = 1, tiles_first = true })
+      S.eq(d.detail, { built = 2, left = 0, blocked = {}, blocked_total = 0, missing = {}, tiles_built = 1, tiles_first = true,
+        removed = 0, not_removed = 0 })
       S.eq({ F.tile_at(20, 0), g.valid }, { "landfill", false })
       S.eq(#F.built("iron-chest", { x = 20.5, y = 0.5 }), 1)
       S.eq(C.counts(W.main), {})
@@ -384,7 +387,7 @@ S.suite("build_ghosts", {
       F.tile_ghost("landfill", { x = 20, y = 0 })
       local d, kind = F.wait(build{ radius = 30, mode = "hand" })
       S.eq({ kind, d.code }, { "job_failed", "no_items" })
-      S.eq(d.detail, { built = 0, left = 2, blocked = {}, blocked_total = 0, missing = { landfill = 1 } })
+      S.eq(d.detail, { built = 0, left = 2, blocked = {}, blocked_total = 0, missing = { landfill = 1 }, tiles_built = 0, removed = 0, not_removed = 0 })
       S.ok(g.valid)
       S.eq(F.revive_calls, 0)
   end },
@@ -452,7 +455,7 @@ S.suite("build_ghosts", {
       F.ghost("iron-chest", { x = 22.5, y = 0.5 })
       local d, kind = F.wait(build{ radius = 30, mode = "hand" })
       S.eq(kind, "job_done", S.dump(d))
-      S.eq({ d.detail.built, d.detail.blocked_total, d.detail.removed }, { 0, 2, nil })
+      S.eq({ d.detail.built, d.detail.blocked_total, d.detail.removed, d.detail.not_removed }, { 0, 2, 0, 0 })
       S.ok(enemy.valid and rock.valid)
       S.eq(C.mined, 0)
   end },
@@ -466,8 +469,8 @@ S.suite("build_ghosts", {
       S.eq(kind, "job_done", S.dump(d))
       S.eq({ d.detail.built, d.detail.left, d.detail.blocked_total }, { 1, 0, 1 })
       S.eq(d.detail.blocked[1], { name = "iron-chest", pos = { x = 20.5, y = 0.5 }, reason = "obstacle" })
-      S.eq(d.detail.not_removed, { { name = "wooden-chest", pos = { x = 20.5, y = 0.5 }, reason = "not_minable_in_time" } })
-      S.eq(d.detail.not_removed_total, 1)
+      S.eq(d.detail.not_removed_list, { { name = "wooden-chest", pos = { x = 20.5, y = 0.5 }, reason = "not_minable_in_time" } })
+      S.eq({ d.detail.not_removed, d.detail.removed }, { 1, 0 })
       S.ok(hard.valid)
   end },
   { "до помеченного не дойти — причина пути в not_removed, призрак за ним blocked: obstacle", function()
@@ -478,7 +481,7 @@ S.suite("build_ghosts", {
       local d, kind = F.wait(build{ area = { left_top = { x = 55, y = -5 }, right_bottom = { x = 65, y = 5 } }, mode = "hand" })
       S.eq(kind, "job_done", S.dump(d))
       S.eq({ d.detail.built, d.detail.blocked_total, d.detail.blocked[1].reason }, { 0, 1, "obstacle" })
-      S.eq(d.detail.not_removed[1].reason, "path_failed")
+      S.eq({ d.detail.not_removed, d.detail.not_removed_list[1].reason }, { 1, "path_failed" })
   end },
   { "снос помеченного: инвентарь полон — no_space с inventory_full, ничего не построено", function()
       local W = F.setup()
@@ -533,5 +536,22 @@ S.suite("build_ghosts", {
       S.eq(#F.built("assembling-machine-1"), 1)
       S.ok(proxy.valid and not proxy.destroyed, "запрос модулей остаётся дронам/игроку")
       S.eq(C.counts(W.main), { coal = 2 }, "списана только постройка, остальное не тронуто")
+  end },
+  { "призрак над плиткой без опоры и без призрака подложки — blocked с причиной liquid", function()
+      local W = F.setup{ items = { ["iron-chest"] = 3 } }
+      F.set_tile(20, 0, "lava")
+      F.set_tile(22, 0, "water")
+      F.ghost("iron-chest", { x = 20.5, y = 0.5 })
+      F.ghost("iron-chest", { x = 22.5, y = 0.5 })
+      F.ghost("iron-chest", { x = 24.5, y = 0.5 })
+      F.blocked[F.key({ x = 26.5, y = 0.5 })] = { ghost_revive = true }
+      F.ghost("iron-chest", { x = 26.5, y = 0.5 })
+      local d, kind = F.wait(build{ radius = 30, mode = "hand" })
+      S.eq(kind, "job_done", S.dump(d))
+      S.eq({ d.detail.built, d.detail.left, d.detail.blocked_total }, { 1, 0, 3 })
+      local why = {}
+      for _, b in ipairs(d.detail.blocked) do why[b.pos.x] = b.reason end
+      S.eq(why, { [20.5] = "liquid", [22.5] = "liquid", [26.5] = "blocked" })
+      S.eq(C.counts(W.main), { ["iron-chest"] = 2 })
   end },
 })
