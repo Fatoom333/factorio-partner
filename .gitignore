@@ -19,3 +19,5 @@ logs/
 # worktree агентов workflow
 
 # личное окружение автора
+
+*.local.ps1
