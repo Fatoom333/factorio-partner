@@ -1,19 +1,27 @@
 -- Операция `map` (поток G): плиточная карта вокруг центра. Контракт: docs/STATE.md «map».
 -- Статичное — только в открытых чанках (иначе `?`), враги — только в видимых (PROTOCOL §6.7).
 -- `map` никогда не отдаёт not_charted и никогда не вызывает chart.
+-- Жидкости и преграды — по правилам из игры (PROTOCOL §6.12): `~` — плитка, по которой тело не
+-- проходит (маска плитки против маски персонажа), `,` — пройти можно, но у плитки есть
+-- `default_cover_tile` (строить без подложки нельзя). Имён плиток и планет в коде нет.
 local C = require("scripts.perception.state").common
+local T = require("scripts.perception.tiles")
+local stock = require("scripts.perception.stock")
 
 local M = {}
 
 M.MAX_RADIUS = 32
 M.DEFAULT_RADIUS = 16
 M.MAX_ENTITIES = 100
+M.MAX_LEGEND_TILES = 6   -- имён плиток в подписи `~` / `,`
+M.MAX_LIQUIDS = 16       -- имён плиток в поле `liquids`
+M.COVER_STOCK_RADIUS = 64
 
 local floor, ceil = math.floor, math.ceil
 
 -- Постоянная легенда. Строчные буквы, кроме `g`, свободны для руд.
 local FIXED = {
-  ["."] = "земля", ["~"] = "вода/лава", ["#"] = "утёс/скала", ["?"] = "не открыто",
+  ["."] = "земля", ["~"] = "не пройти", [","] = "мелко", ["#"] = "утёс/скала", ["?"] = "не открыто",
   ["@"] = "помощник", ["H"] = "другой помощник", ["P"] = "игрок",
   ["D"] = "бур", ["F"] = "печь", ["A"] = "сборщик", ["B"] = "лента", ["I"] = "манипулятор",
   ["C"] = "сундук", ["E"] = "столб", ["g"] = "призрак",
@@ -162,21 +170,24 @@ local function map_op(args, ctx)
 
   local area = { { x0, y0 }, { x1 + 1, y1 + 1 } }
 
-  -- 1. Тайлы: вода/лава.
-  local tile_cache = {}
+  -- 1. Плитки: `~` — не пройти, `,` — пройти можно, но строить только с подложкой.
+  local classify = T.classifier(T.body_layers(where.entity))
+  local tile_stats = {} -- имя плитки → {n, ch, cover_item}
   for _, t in ipairs(surface.find_tiles_filtered { area = area }) do
-    local liquid = tile_cache[t.name]
-    if liquid == nil then
-      liquid = false
-      local ok, layers = pcall(function() return t.prototype.collision_mask.layers end)
-      if ok and type(layers) == "table" then
-        liquid = (layers["water_tile"] or layers["lava_tile"]) and true or false
-      end
-      tile_cache[t.name] = liquid
-    end
-    if liquid then
+    local info = classify(t)
+    local ch = info.blocked and "~" or (info.cover and "," or nil)
+    if ch then
       local p = t.position
-      put(floor(p.x), floor(p.y), "~")
+      local c, r = floor(p.x) - x0 + 1, floor(p.y) - y0 + 1
+      if r >= 1 and r <= W and c >= 1 and c <= W and not unknown[r][c] then
+        grid[r][c] = ch
+        local st = tile_stats[t.name]
+        if st == nil then
+          st = { n = 0, ch = ch, cover_item = info.cover_item }
+          tile_stats[t.name] = st
+        end
+        st.n = st.n + 1
+      end
     end
   end
 
@@ -262,6 +273,50 @@ local function map_op(args, ctx)
   local rows = {}
   for r = 1, W do rows[r] = table.concat(grid[r]) end
 
+  -- Плитки жидкости: имена по убыванию числа клеток; чем накрыть и доступна ли подложка сейчас
+  -- (рецепт предмета открыт силе либо предмет уже есть у помощника или на складах рядом).
+  -- Считается всё, что попало в рамку карты в открытых чанках (и под постройками тоже).
+  local tile_names = {}
+  for n in pairs(tile_stats) do tile_names[#tile_names + 1] = n end
+  table.sort(tile_names, function(a, b)
+    if tile_stats[a].n ~= tile_stats[b].n then return tile_stats[a].n > tile_stats[b].n end
+    return a < b
+  end)
+  local cover_items = {}
+  for _, n in ipairs(tile_names) do
+    local item = tile_stats[n].cover_item
+    if item then cover_items[item] = true end
+  end
+  local have = {}
+  if next(cover_items) ~= nil then
+    local body = where.entity
+    if body then C.inv_counts(body.get_inventory(defines.inventory.character_main), cover_items, have) end
+    C.add_counts(have, stock.scan(surface, force, center, M.COVER_STOCK_RADIUS, cover_items, where.helper_id).total)
+  end
+  local liquids, by_char = {}, { ["~"] = {}, [","] = {} }
+  for i, n in ipairs(tile_names) do
+    local st = tile_stats[n]
+    local names_of = by_char[st.ch]
+    names_of[#names_of + 1] = n
+    if i <= M.MAX_LIQUIDS then
+      local item = st.cover_item
+      liquids[n] = {
+        n = st.n,
+        cover = item,
+        cover_ok = item ~= nil and ((have[item] or 0) > 0 or T.item_unlocked(force, item)) or false,
+      }
+    end
+  end
+  local function tile_label(ch)
+    local names_of = by_char[ch]
+    if names_of == nil or #names_of == 0 then return FIXED[ch] end
+    local shown = {}
+    for i = 1, math.min(#names_of, M.MAX_LEGEND_TILES) do shown[i] = names_of[i] end
+    local text = FIXED[ch] .. ": " .. table.concat(shown, ", ")
+    if #names_of > #shown then text = text .. ", +" .. (#names_of - #shown) end
+    return text
+  end
+
   -- Легенда — ровно то, что нарисовано.
   local ore_by_char = {}
   for n, ch in pairs(ore_letter) do if ch then ore_by_char[ch] = n end end
@@ -270,7 +325,11 @@ local function map_op(args, ctx)
     for c = 1, W do
       local ch = grid[r][c]
       if not legend[ch] then
-        legend[ch] = ore_by_char[ch] and ("руда: " .. ore_by_char[ch]) or FIXED[ch] or ch
+        if ch == "~" or ch == "," then
+          legend[ch] = tile_label(ch)
+        else
+          legend[ch] = ore_by_char[ch] and ("руда: " .. ore_by_char[ch]) or FIXED[ch] or ch
+        end
       end
     end
   end
@@ -315,6 +374,7 @@ local function map_op(args, ctx)
     axis = M.axis(x0, x1),
     rows = rows,
     legend = legend,
+    liquids = liquids,
     entities = list,
     truncated = total > #list,
   }

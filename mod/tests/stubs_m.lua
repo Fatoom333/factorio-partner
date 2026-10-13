@@ -34,6 +34,8 @@ local function buildable(name, etype, w, h, extra)
   }
   p.tile_width, p.tile_height = w, h
   p.max_health = 100
+  -- маска столкновений как у построек игры: с жидкостью (`water_tile`, `item`) и с телом (`player`)
+  p.collision_mask = { layers = { item = true, object = true, player = true, water_tile = true, is_object = true } }
   for k, v in pairs(extra or {}) do p[k] = v end
   E[name] = p
   I[name] = I[name] or { name = name, type = "item", stack_size = 50 }
@@ -116,10 +118,21 @@ function X.prototypes()
   E["big-rock"] = { name = "big-rock", type = "simple-entity",
     mineable_properties = { minable = true, mining_time = 2, products = { { type = "item", name = "stone", amount = 20 } } } }
 
+  -- Плитки: свойства — только в прототипах (PROTOCOL §6.12). Глубокая жидкость сталкивается и с
+  -- телом, и с постройками; `mod-mist` — выдуманная плитка планеты из мода: пройти можно, строить нет.
+  local landfill = { name = "landfill", items_to_place_this = { { name = "landfill", count = 1 } },
+    collision_mask = { layers = { ground_tile = true } } }
+  local deep = { water_tile = true, player = true, item = true, resource = true }
   prototypes.tile = {
-    water = { name = "water", default_cover_tile = { name = "landfill" } },
-    landfill = { name = "landfill", items_to_place_this = { { name = "landfill", count = 1 } } },
+    water = { name = "water", default_cover_tile = landfill, collision_mask = { layers = deep } },
+    lava = { name = "lava", collision_mask = { layers = deep } },
+    ["mod-mist"] = { name = "mod-mist", collision_mask = { layers = { mod_mist_layer = true, object = true } } },
+    ["mod-moss"] = { name = "mod-moss", collision_mask = { layers = { water_tile_lookalike = true } } },
+    landfill = landfill,
   }
+  E["character"].collision_mask = { layers = { player = true, train = true, is_object = true } }
+  E["transport-belt"].collision_mask = { layers = { transport_belt = true, water_tile = true, is_lower_object = true } }
+  E["tree-01"].collision_mask = { layers = { player = true, object = true } }
   prototypes.item["landfill"] = { name = "landfill", type = "item", stack_size = 100 }
   prototypes.quality = { normal = { name = "normal", level = 0 } }
 
@@ -211,10 +224,17 @@ function X.setup(opts)
   S.nauvis.find_tiles_filtered = function(f)
     X.tile_masks[#X.tile_masks + 1] = f.collision_mask
     local area = S.norm_area(f.area)
+    local want = f.collision_mask
+    if want ~= nil and type(want) ~= "table" then want = { want } end
     local out = {}
     for _, t in ipairs(X.water_tiles) do
-      if t.x >= area.left_top.x and t.x < area.right_bottom.x and t.y >= area.left_top.y and t.y < area.right_bottom.y then
-        out[#out + 1] = { name = "water", position = { x = t.x, y = t.y }, prototype = prototypes.tile.water, valid = true }
+      local proto = prototypes.tile[t.name]
+      local hit = want == nil
+      for _, layer in ipairs(want or {}) do
+        if proto.collision_mask.layers[layer] then hit = true end
+      end
+      if hit and t.x >= area.left_top.x and t.x < area.right_bottom.x and t.y >= area.left_top.y and t.y < area.right_bottom.y then
+        out[#out + 1] = { name = t.name, position = { x = t.x, y = t.y }, prototype = proto, valid = true }
       end
     end
     return out
@@ -233,9 +253,18 @@ function X.patch(name, x0, y0, w, h, amount)
   return out
 end
 
---- Вода в клетках (левый верхний угол клетки).
-function X.water(tiles)
-  for _, t in ipairs(tiles) do X.water_tiles[#X.water_tiles + 1] = { x = t.x or t[1], y = t.y or t[2] } end
+--- Плитка `name` (по умолчанию вода) в клетках (левый верхний угол клетки); остальное — земля.
+function X.water(tiles, name)
+  for _, t in ipairs(tiles) do
+    X.water_tiles[#X.water_tiles + 1] = { x = t.x or t[1], y = t.y or t[2], name = name or "water" }
+  end
+end
+
+--- Прямоугольник плиток: клетки x0..x1, y0..y1.
+function X.pool(x0, y0, x1, y1, name)
+  local list = {}
+  for x = x0, x1 do for y = y0, y1 do list[#list + 1] = { x, y } end end
+  X.water(list, name)
 end
 
 --- Дерево (или камень) нейтральной силы; пометки к сносу — X.marked.
