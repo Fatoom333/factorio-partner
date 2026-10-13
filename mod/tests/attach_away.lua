@@ -182,6 +182,76 @@ S.suite("attach_away", {
       S.eq(item("h1").cooldown_s, nil)
   end },
 
+  { "перезарядку тела-персонажа привязка и отвязка тела-игрока не снимают (§4: не телепорт)", function()
+      local COOLDOWN = 5 * 60 * 60
+      local reg = require("scripts.core.registry")
+      local _, friend = P.setup{ attach = false }
+      S.okr(S.req("helper_spawn", {}, "h1"))
+      P.tick(10)
+      S.move(storage.helpers.h1.entity, { x = 500, y = 500 }) -- ушёл далеко от хозяина
+      S.okr(S.req("helper_remove", {}, "h1"))
+      local gone = game.tick
+      S.err(S.req("helper_spawn", {}, "h1"), "cooldown")
+      P.tick(100)
+      -- привязка разрешена сразу (перезарядки у helper_attach нет), у привязанного её не видно
+      S.okr(P.attach("h1", "Second"))
+      S.eq(P.rec("h1").char_gone_tick, gone)
+      S.eq(P.rec("h1").removed_tick, nil)
+      S.eq(item("h1").cooldown_s, nil)
+      S.eq(S.okr(S.req("helper_remove", {}, "h1")), {})
+      S.eq(friend.character.valid, true)
+      -- отвязали: перезарядка прежнего тела идёт дальше с того же тика, а не заново и не с нуля
+      S.err(S.req("helper_spawn", {}, "h1"), "cooldown", "цепочка remove → attach → remove → spawn")
+      S.eq(reg.cooldown_left(P.rec("h1")), COOLDOWN - 100)
+      S.eq(item("h1").cooldown_s, math.ceil((COOLDOWN - 100) / 60))
+      -- повторная привязка и отвязка отметку тоже не стирают; attach — по-прежнему сразу
+      S.okr(P.attach("h1", "Second"))
+      S.okr(S.req("helper_remove", {}, "h1"))
+      S.eq(P.rec("h1").char_gone_tick, gone)
+      S.err(S.req("helper_spawn", {}, "h1"), "cooldown")
+      -- то же после смерти тела-игрока и после выхода игрока (dead, away -> removed)
+      S.okr(P.attach("h1", "Second"))
+      P.tick(2)
+      P.kill(friend)
+      S.okr(S.req("helper_remove", {}, "h1"))
+      S.err(S.req("helper_spawn", {}, "h1"), "cooldown")
+      P.respawn(friend)
+      S.okr(P.attach("h1", "Second"))
+      P.tick(2)
+      P.leave(friend)
+      S.okr(S.req("helper_remove", {}, "h1"))
+      S.err(S.req("helper_spawn", {}, "h1"), "cooldown")
+      S.tick(gone + COOLDOWN - 1 - game.tick)
+      S.err(S.req("helper_spawn", {}, "h1"), "cooldown")
+      S.tick(1)
+      local d = S.okr(S.req("helper_spawn", {}, "h1"))
+      S.eq(item("h1").body, "character")
+      S.ok(math.abs(d.pos.x) <= 10 and math.abs(d.pos.y) <= 10, "новое тело — рядом с хозяином")
+  end },
+
+  { "перезарядка после смерти тела-персонажа: замена записи телом-игроком её не снимает", function()
+      local COOLDOWN = 5 * 60 * 60
+      P.setup{ attach = false }
+      S.okr(S.req("helper_spawn", {}, "h1"))
+      P.tick(5)
+      storage.helpers.h1.entity.die()
+      local died = game.tick
+      S.eq(storage.helpers.h1.state, "dead")
+      P.tick(20)
+      S.okr(P.attach("h1", "Second")) -- запись с мёртвым телом-персонажем заменяется (§7)
+      S.eq(P.rec("h1").char_gone_tick, died)
+      S.eq(P.rec("h1").died_tick, nil)
+      S.okr(S.req("helper_remove", {}, "h1"))
+      S.err(S.req("helper_spawn", {}, "h1"), "cooldown")
+      S.tick(died + COOLDOWN - game.tick)
+      S.okr(S.req("helper_spawn", {}, "h1"))
+      -- у тела-игрока без прежнего тела-персонажа перезарядки по-прежнему нет
+      S.okr(S.req("helper_limit", { max = 2 }))
+      S.okr(P.attach("p1", "Second"))
+      S.okr(S.req("helper_remove", {}, "p1"))
+      S.okr(S.req("helper_spawn", {}, "p1"), "отвязка без прежнего персонажа — spawn сразу")
+  end },
+
   { "причины helper_lost и respawned по EVENTS.md", function()
       local _, friend = P.setup()
       P.tick(2)
