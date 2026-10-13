@@ -13,7 +13,21 @@
 -- состояние — в task.mpp (переживает сохранение). Тело помощника никуда не идёт: разметка — то же,
 -- что рамка MPP у игрока на карте; стройка — отдельно, `build_ghosts` по `detail.area`.
 -- Призраки принадлежат силе помощника (она же сила хозяина, PROTOCOL §6.8).
+--
+-- Ревизия 3.3 (поток V3):
+-- * свойства плиток — из игры (PROTOCOL §6.12): `avoid_water` (по умолчанию true) — любая плитка,
+--   на которой бур стоять не может; предупреждение `on_liquid:N` — сколько клеток руды пропущено;
+-- * выходы с участка считает `access.compute` (STATE.md «access»): предупреждения `narrow_access`,
+--   `enclosed`, `access_side:<сторона>`; если `direction` не задан, лента выходит к лучшему выходу
+--   (на открытом со всех сторон месте — на север);
+-- * расчёт идёт дважды: сначала всегда сухой прогон (ничего не ставится) — по нему проверяется
+--   итоговая область с полями (больше 128×128 → `limit`) и «встанет ли вообще», и только потом
+--   настоящий; `dry_run` — один сухой прогон;
+-- * после настоящей разметки концы выходных лент пишутся в `storage.mining_last[helper]` =
+--   {surface (имя), surface_index, outputs = [{pos, direction (defines.direction), side}], tick}.
 local adapter = require("scripts.vendor.mpp.partner.adapter")
+local access = require("scripts.perception.access")
+local tiles = require("scripts.perception.tiles")
 
 local M = {}
 M.name = "plan_mining"
@@ -22,7 +36,8 @@ M.schema = {
   area = { type = "area" },
   near = { type = "pos" },
   layout = { type = "enum", values = adapter.LAYOUT_NAMES, default = "simple" },
-  direction = { type = "enum", values = adapter.DIRECTIONS, default = "north" },
+  -- без default: «не задано» отличается от «север» (тогда сторону выбирает access)
+  direction = { type = "enum", values = adapter.DIRECTIONS },
   miner = { type = "string", max = 100 },
   belt = { type = "string", max = 100 },
   pole = { type = "string", max = 100 },
@@ -34,7 +49,9 @@ M.schema = {
 M.MAX_SIDE = 128        -- пятно не больше 128×128 (ACTIONS.md)
 M.SEED_RADIUS = 10      -- `near`: руда ищется не дальше 10 клеток от точки
 M.GROW = 32             -- шаг расширения окна поиска связного пятна
-M.MAX_TICKS = 60 * 60   -- раскладка считается секунды; минута — заведомо сбой
+M.MAX_TICKS = 60 * 60   -- раскладка считается секунды; минута на прогон — заведомо сбой
+M.MAX_WARNINGS = 20
+M.DEFAULT_DIRECTION = "north"
 
 local floor = math.floor
 
@@ -185,27 +202,99 @@ end
 
 -- ------------------------------------------------------------------ итог
 
-local function detail_of(state)
+--- Итог прогона: detail по таблице ACTIONS.md, признак успеха, сводка адаптера.
+--- extra — предупреждения действия (жидкость, выходы с участка), dry_run — что просил агент.
+local function detail_of(state, extra, dry_run)
   local s = adapter.summary(state)
   local chosen = { miner = s.choices.miner, pole = s.choices.pole }
   local restrictions = adapter.layouts[state.layout_choice].restrictions
   if restrictions.logistics_available then chosen.chest = s.choices.chest else chosen.belt = s.choices.belt end
   if state.place_pipes then chosen.pipe = s.choices.pipe end
+  -- предупреждения о жидкости и выходах — первыми: при обрезке до 20 они важнее остальных
+  local warnings = {}
+  for _, w in ipairs(extra or {}) do warnings[#warnings + 1] = w end
+  for _, w in ipairs(s.warnings) do
+    if #warnings < M.MAX_WARNINGS then warnings[#warnings + 1] = w end
+  end
   return {
     ghosts = s.ghosts,
     area = s.area,
     need = s.need,
     layout = state.layout_choice,
-    warnings = s.warnings,
+    warnings = warnings,
     drills = s.drills,
     skipped = s.skipped,
     tiles = s.tiles,
     chosen = chosen,
-    dry_run = state.partner.dry_run or nil,
-  }, s.ok
+    dry_run = dry_run and true or nil,
+  }, s.ok, s
+end
+
+-- ------------------------------------------------------------------ жидкость и выходы
+
+--- Рамка пятна по клеткам руды.
+local function patch_area(resources)
+  local x1, y1, x2, y2 = math.huge, math.huge, -math.huge, -math.huge
+  for _, e in ipairs(resources) do
+    local p = e.position
+    local x, y = floor(p.x), floor(p.y)
+    if x < x1 then x1 = x end
+    if y < y1 then y1 = y end
+    if x > x2 then x2 = x end
+    if y > y2 then y2 = y end
+  end
+  return { left_top = { x = x1, y = y1 }, right_bottom = { x = x2 + 1, y = y2 + 1 } }
+end
+
+--- Сколько клеток руды лежит на плитке, на которой бур стоять не может (PROTOCOL §6.12: маска
+--- плитки против маски бура; имён плиток нет).
+local function ore_on_liquid(surface, resources, area, miner)
+  local blocked = tiles.find_blocked(surface, area, tiles.entity_layers(miner))
+  if #blocked == 0 then return 0 end
+  local at = {}
+  for _, t in ipairs(blocked) do
+    local p = t.position
+    at[key(floor(p.x), floor(p.y))] = true
+  end
+  local n = 0
+  for _, e in ipairs(resources) do
+    local p = e.position
+    if at[key(floor(p.x), floor(p.y))] then n = n + 1 end
+  end
+  return n
+end
+
+--- Выходы с участка (операция `access`, STATE.md) → предупреждения и лучшая сторона для ленты.
+local function access_of(surface, force, area, body)
+  local acc = access.compute{ surface = surface, force = force, area = area, from = body.position, body = body }
+  local warnings = {}
+  if acc.enclosed then
+    warnings[#warnings + 1] = "enclosed"
+    return warnings, nil
+  end
+  if acc.wide_sides >= 4 then return warnings, nil end -- открытое место: сказать нечего
+  for _, w in ipairs(acc.warnings) do
+    if w == "narrow_access" then warnings[#warnings + 1] = w end
+  end
+  warnings[#warnings + 1] = "access_side:" .. acc.best
+  return warnings, acc.best
 end
 
 -- ------------------------------------------------------------------ действие
+
+local function prepare(task, surface, force, resources, dry_run)
+  local a, plan = task.args, task.mpp_plan
+  return adapter.prepare{
+    surface = surface, force = force, resources = resources,
+    layout = a.layout, direction = plan.direction,
+    miner = a.miner, belt = a.belt, pole = a.pole, pipe = a.pipe,
+    options = a.options, dry_run = dry_run,
+  }
+end
+
+local function forget(task)
+  task.mpp, task.mpp_plan = nil, nil
+end
 
 function M.start(task, ctx)
   local a = task.args
@@ -217,18 +306,25 @@ function M.start(task, ctx)
 
   local resources, code, text = find_resources(surface, force, a)
   if resources == nil then return failed(code, text) end
+  local area = patch_area(resources)
+  if area.right_bottom.x - area.left_top.x > M.MAX_SIDE or area.right_bottom.y - area.left_top.y > M.MAX_SIDE then
+    return failed("limit", "ore patch is larger than " .. M.MAX_SIDE .. "x" .. M.MAX_SIDE .. ", use args.area")
+  end
 
+  -- Выходы с участка: предупреждения и сторона ленты, если хозяин её не задал.
+  local extra, best = access_of(surface, force, area, h)
+  task.mpp_plan = { direction = a.direction or best or M.DEFAULT_DIRECTION, warnings = extra, phase = "dry" }
+
+  -- Первый прогон всегда сухой: итоговая область и «встанет ли вообще» известны до первого призрака.
   local state
-  state, code, text = adapter.prepare{
-    surface = surface, force = force, resources = resources,
-    layout = a.layout, direction = a.direction,
-    miner = a.miner, belt = a.belt, pole = a.pole, pipe = a.pipe,
-    options = a.options, dry_run = a.dry_run,
-  }
-  if state == nil then return failed(code, text) end
-  local c = state.coords
-  if c.w > M.MAX_SIDE or c.h > M.MAX_SIDE then
-    return failed("limit", "ore patch is larger than " .. M.MAX_SIDE .. "x" .. M.MAX_SIDE)
+  state, code, text = prepare(task, surface, force, resources, true)
+  if state == nil then
+    forget(task)
+    return failed(code, text)
+  end
+  if state.avoid_water_choice then
+    local n = ore_on_liquid(surface, resources, area, state.miner_choice)
+    if n > 0 then table.insert(extra, 1, "on_liquid:" .. n) end
   end
 
   task.mpp = state
@@ -238,28 +334,63 @@ function M.start(task, ctx)
 end
 
 function M.tick(task, ctx)
-  local state = task.mpp
-  if state == nil then return failed("internal", "plan_mining: state is lost") end
+  local state, plan = task.mpp, task.mpp_plan
+  if state == nil or plan == nil then return failed("internal", "plan_mining: state is lost") end
   task.mpp_ticks = task.mpp_ticks + 1
   task.progress_tick = ctx.tick -- расчёт идёт, тело стоит: «пульс» (ACTIONS.md)
   if task.mpp_ticks > M.MAX_TICKS then
-    task.mpp = nil
+    forget(task)
     return failed("internal", "plan_mining: layout did not finish in time")
   end
 
   if not adapter.step(state) then return nil end
 
-  local detail, ok = detail_of(state)
-  task.mpp = nil
+  local dry_run = task.args.dry_run
+  local detail, ok, summary = detail_of(state, plan.warnings, dry_run)
   if not ok then
+    forget(task)
     return failed("cannot_place", "MPP: unable to place a mining layout here", detail)
   end
+  local ar = detail.area
+  if ar and (ar.right_bottom.x - ar.left_top.x > M.MAX_SIDE or ar.right_bottom.y - ar.left_top.y > M.MAX_SIDE) then
+    forget(task)
+    return failed("limit", "planned area with margins is larger than " .. M.MAX_SIDE .. "x" .. M.MAX_SIDE
+      .. ", plan in parts with args.area", detail)
+  end
+
+  if plan.phase == "dry" and not dry_run then
+    -- Сухой прогон прошёл — теперь ставим призраки тем же расчётом.
+    local h = ctx.entity
+    local real, code, text = prepare(task, h.surface, h.force, state.resources, false)
+    if real == nil then
+      forget(task)
+      return failed(code, text)
+    end
+    plan.phase = "real"
+    task.mpp = real
+    task.mpp_ticks = 0
+    return nil
+  end
+
+  if not dry_run then
+    -- Концы выходных лент: их читает plan_belt{from:"patch"} (PROTOCOL §7, ключ storage.mining_last).
+    local surface = ctx.entity.surface
+    local outputs = {}
+    for i, o in ipairs(summary.outputs) do
+      outputs[i] = { pos = { x = o.pos.x, y = o.pos.y }, direction = o.direction, side = plan.direction }
+    end
+    if type(storage.mining_last) ~= "table" then storage.mining_last = {} end
+    storage.mining_last[task.helper] = {
+      surface = surface.name, surface_index = surface.index, outputs = outputs, tick = ctx.tick,
+    }
+  end
+  forget(task)
   return { status = "done", detail = detail }
 end
 
 function M.stop(task, ctx)
   ctx.cancel_approach(task)
-  task.mpp = nil
+  forget(task)
 end
 
 return M

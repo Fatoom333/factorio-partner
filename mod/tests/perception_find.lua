@@ -128,9 +128,12 @@ do
   G.eq(d.groups[1].names, { lab = 1 })
 
   local pump = w.surface.add(G.entity { name = "offshore-pump", type = "offshore-pump", pos = { x = -20, y = 0 }, force = w.force })
-  pump.get_fluid_source_fluid = function() return "water" end
+  pump.get_fluid_contents = function() return { water = 5 } end -- что качает насос — по содержимому
+  pump.get_fluid_source_fluid = function() error("get_fluid_source_fluid must not be called") end
   local pump2 = w.surface.add(G.entity { name = "offshore-pump", type = "offshore-pump", pos = { x = -300, y = 0 }, force = w.force })
-  pump2.get_fluid_contents = function() return { water = 100 } end -- нет get_fluid_source_fluid: по содержимому
+  pump2.get_fluid_contents = function() return { water = 100 } end
+  local dry = w.surface.add(G.entity { name = "offshore-pump", type = "offshore-pump", pos = { x = -310, y = 0 }, force = w.force })
+  dry.get_fluid_contents = function() return {} end -- пустой насос производителем не считается
   local tank = w.surface.add(G.entity { name = "storage-tank", type = "storage-tank", pos = { x = -25, y = 3 }, force = w.force, size = 3 })
   tank.get_fluid_count = function(name) return name == "water" and 12000.4 or 0 end
   local empty = w.surface.add(G.entity { name = "storage-tank", type = "storage-tank", pos = { x = -28, y = 3 }, force = w.force, size = 3 })
@@ -249,17 +252,16 @@ do
   G.raises("no_helper", function() F.ops.find({ item = "iron-plate" }, ctx) end)
 end
 
--- 7. Лимиты: чанки поверхности и число сущностей
+-- 7. Лимиты: размер карты лимитом не является (ревизия 3.3), лимит — число найденных сущностей
 do
   local w = world()
   local _, ctx = G.add_helper(w, "h1", { pos = { x = 0, y = 0 } })
   local F = find_mod()
-  w.surface.chunk_count = F.MAX_CHUNKS
+  G.eq(F.MAX_CHUNKS, nil, "лимита по чанкам больше нет")
+  G.eq(F.MAX_ENTITIES, 20000)
+  w.surface.chunk_count = 1000000
+  w.surface.get_chunks = function() error("find must not walk the chunks of the surface") end
   F.ops.find({ item = "iron-plate" }, ctx)
-  w.surface.chunk_count = F.MAX_CHUNKS + 1
-  local text = G.raises("limit", function() F.ops.find({ item = "iron-plate" }, ctx) end)
-  G.ok(text:find("chunks"), text)
-  w.surface.chunk_count = 9
   -- сущности считаются до поиска: большую таблицу мод не строит
   for i = 1, 6 do chest(w, i + 0.5, 0.5, { ["iron-plate"] = 1 }) end
   F.MAX_ENTITIES = 5

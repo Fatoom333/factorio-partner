@@ -75,11 +75,55 @@ end
 ---------------------------------------------------------------------------
 local surface_index = 0
 
-local LIQUID = { water = "water_tile", deepwater = "water_tile", lava = "lava_tile", ["lava-hot"] = "lava_tile" }
+-- Прототипы плиток заглушки (маски — как в игре 2.0: обычная земля не сталкивается ни с чем из
+-- нашего, глубокая жидкость сталкивается с телом (`player`) и с постройками (`item`, `water_tile`),
+-- мелкая — только с постройками). Тест может добавить свою плитку: G.TILES[name] = {...} — так
+-- проверяется, что мод не знает имён плиток (планета из мода, PROTOCOL §6.12).
+--   {layers = {...}, cover = "имя плитки-подложки"|nil}
+G.TILES = {}
+local function default_tiles()
+  local deep = { water_tile = true, player = true, item = true, resource = true, doodad = true }
+  local shallow = { water_tile = true, item = true, resource = true, object = true }
+  return {
+    ["grass-1"] = { layers = { ground_tile = true } },
+    water = { layers = deep, cover = "landfill" },
+    deepwater = { layers = deep, cover = "landfill" },
+    lava = { layers = deep, cover = "foundation" },
+    ["lava-hot"] = { layers = deep, cover = "foundation" },
+    ["water-shallow"] = { layers = shallow, cover = "landfill" },
+    landfill = { layers = { ground_tile = true }, item = "landfill" },
+    foundation = { layers = { ground_tile = true }, item = "foundation" },
+  }
+end
+
 function G.tile_proto(name)
-  local layers = { ground_tile = true }
-  if LIQUID[name] then layers = { [LIQUID[name]] = true } end
-  return { name = name, collision_mask = { layers = layers } }
+  local t = G.TILES[name] or { layers = { ground_tile = true } }
+  local layers = {}
+  for k in pairs(t.layers) do layers[k] = true end
+  local proto = { name = name, collision_mask = { layers = layers } }
+  if t.cover then proto.default_cover_tile = G.tile_proto(t.cover) end
+  if t.item then proto.items_to_place_this = { { name = t.item, count = 1 } } end
+  return proto
+end
+
+-- Маски сущностей по типу (o.mask в G.entity сильнее).
+local ENTITY_MASK = {
+  resource = { resource = true },
+  ["entity-ghost"] = { ghost = true },
+  ["tile-ghost"] = { ghost = true },
+  ["transport-belt"] = { transport_belt = true, is_lower_object = true, water_tile = true },
+  character = { player = true, train = true, is_object = true },
+}
+local SOLID_MASK = { player = true, object = true, item = true, water_tile = true, is_lower_object = true }
+
+local function mask_hit(layers, want)
+  if want == nil then return true end
+  local list = type(want) == "table" and want or { want }
+  for k, v in pairs(list) do
+    local layer = type(k) == "string" and k or v
+    if layers[layer] then return true end
+  end
+  return false
 end
 
 function G.surface(name)
@@ -118,6 +162,9 @@ function G.surface(name)
       local dx, dy = e.position.x - px, e.position.y - py
       if dx * dx + dy * dy > r * r then return false end
     end
+    if f.collision_mask and not mask_hit(e.prototype.collision_mask.layers, f.collision_mask) then
+      return false
+    end
     return true
   end
 
@@ -137,7 +184,10 @@ function G.surface(name)
     for y = floor(ly), math.ceil(ry) - 1 do
       for x = floor(lx), math.ceil(rx) - 1 do
         local name = s.tiles[x .. ":" .. y] or "grass-1"
-        out[#out + 1] = { valid = true, name = name, position = { x = x, y = y }, prototype = G.tile_proto(name) }
+        local proto = G.tile_proto(name)
+        if mask_hit(proto.collision_mask.layers, f.collision_mask) then
+          out[#out + 1] = { valid = true, name = name, position = { x = x, y = y }, prototype = proto }
+        end
       end
     end
     return out
@@ -195,7 +245,8 @@ function G.entity(o)
       right_bottom = { x = pos.x + w / 2 - 0.1, y = pos.y + h / 2 - 0.1 },
     },
     prototype = { name = o.name, type = o.type or o.name,
-                  count_as_rock_for_filtered_deconstruction = o.rock or false },
+                  count_as_rock_for_filtered_deconstruction = o.rock or false,
+                  collision_mask = { layers = o.mask or ENTITY_MASK[o.type or o.name] or SOLID_MASK } },
   }
   if o.unit ~= false then
     next_unit = next_unit + 1
@@ -303,10 +354,14 @@ function G.reset(opts)
   _G.settings = { global = {} }
   settings.global["partner-owner"] = { value = opts.owner or "" }
 
-  _G.prototypes = { entity = { character = { crafting_categories = { crafting = true } } } }
+  G.TILES = default_tiles()
+  _G.prototypes = { entity = { character = {
+    name = "character", type = "character", crafting_categories = { crafting = true },
+    collision_mask = { layers = { player = true, train = true, is_object = true } },
+  } } }
 
   -- свежие модули восприятия
-  for _, n in ipairs { "state", "map", "resources", "stock", "ghosts", "recipes", "vision", "find" } do
+  for _, n in ipairs { "state", "map", "resources", "stock", "ghosts", "recipes", "vision", "find", "access", "tiles" } do
     package.loaded["scripts.perception." .. n] = nil
   end
   return world

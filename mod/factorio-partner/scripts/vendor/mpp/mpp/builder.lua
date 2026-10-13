@@ -123,6 +123,11 @@ function builder.create_entity_builder(state, opts)
     end
 
     P.placed = P.placed + 1
+    -- belts are remembered: the adapter finds the ends of the output lanes (storage.mining_last)
+    local ptype = proto.type
+    if P.belts and (ptype == "transport-belt" or ptype == "underground-belt") then
+      P.belts[#P.belts + 1] = { position[1], position[2], direction, ghost.type }
+    end
     add_need(P, proto)
     grow(P, position[1], position[2], w / 2, h / 2)
     if ghost.thing and grid then

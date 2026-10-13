@@ -73,7 +73,9 @@ local function ghosts_op(args, ctx)
   local surface, force, center = where.surface, where.force, where.center
   local view = C.chunk_view(force, surface)
 
-  local filter = { force = force, type = "entity-ghost" }
+  -- Призраки построек и призраки плиток (подложка, бетон): плитки идут в `need` и в `tiles`,
+  -- но не в `count`/`by_name` (STATE.md «ghosts»).
+  local filter = { force = force, type = { "entity-ghost", "tile-ghost" } }
   if area then
     filter.area = { area.left_top, area.right_bottom }
   else
@@ -87,8 +89,15 @@ local function ghosts_op(args, ctx)
   local found = surface.find_entities_filtered(filter)
 
   local count, by_name, need, blocked, blocked_total, checks = 0, {}, {}, {}, 0, 0
+  local tiles = 0
   for _, g in ipairs(found) do
-    if g.valid and view.charted(g.position) then
+    if g.valid and g.type == "tile-ghost" then
+      if view.charted(g.position) then
+        tiles = tiles + 1
+        local item, n = place_item(g)
+        if item then need[item] = (need[item] or 0) + n end
+      end
+    elseif g.valid and view.charted(g.position) then
       count = count + 1
       local gname = g.ghost_name
       by_name[gname] = (by_name[gname] or 0) + 1
@@ -122,6 +131,7 @@ local function ghosts_op(args, ctx)
 
   return {
     count = count,
+    tiles = tiles,
     by_name = by_name,
     need = need,
     have = { helper = have_helper, stock = have_stock },
