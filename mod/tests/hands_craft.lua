@@ -55,11 +55,11 @@ S.suite("hands_craft", {
       local c = C.counts(W.main)
       S.eq(c["iron-plate"] + 2 * (c["iron-gear-wheel"] or 0), 20, "железо сохранилось: " .. S.dump(c))
   end },
-  { "крафт стоит при полном инвентаре — inventory_full, stuck", function()
+  { "крафт стоит при полном инвентаре — inventory_full, no_space", function()
       local W = C.setup{ size = 2, items = { { name = "stone", count = 50 }, { name = "iron-plate", count = 50 } } }
       local job = craft{ recipe = "iron-gear-wheel", count = 1 }
       local d = C.wait(job, 3000)
-      S.eq({ d.code, d.detail.reason }, { "stuck", "inventory_full" })
+      S.eq({ d.code, d.detail.reason }, { "no_space", "inventory_full" })
       S.eq(#C.events("inventory_full"), 1)
       S.eq(W.h.crafting_queue_size, 0, "stop снял крафт")
       S.eq(C.counts(W.main), { stone = 50, ["iron-plate"] = 50 }, "ингредиенты вернулись")

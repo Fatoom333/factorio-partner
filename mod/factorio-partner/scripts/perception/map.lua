@@ -119,7 +119,7 @@ local function map_op(args, ctx)
   local ccx, ccy = floor(center.x), floor(center.y)
   local x0, y0, x1, y1 = ccx - radius, ccy - radius, ccx + radius, ccy + radius
   local W = x1 - x0 + 1
-  local view = C.chunk_view(force, surface)
+  local view = C.chunk_view(force, surface, where.helper_id)
   local charted_chunk = view.charted_chunk
 
   -- Сетка grid[row][col], по умолчанию земля; неоткрытое отмечено в unknown.

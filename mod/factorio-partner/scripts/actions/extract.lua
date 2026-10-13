@@ -9,9 +9,9 @@
 -- в алфавитном порядке (детерминированно); прежняя броня остаётся в инвентаре помощника и
 -- называется в detail.unequipped.
 -- done.detail = {extracted: items, missing?: items, equipped?: name, unequipped?: name}. Ничего
--- не взято → failed: reserved (всё нужное в чужом резерве), stuck{reason:"inventory_full"}
--- (инвентарь полон, плюс событие inventory_full), иначе no_items (если мешает только неделимый
--- стак — с detail.reason = "whole_stacks_only").
+-- не взято → failed: reserved (всё нужное в чужом резерве), иначе no_items (если мешает только
+-- неделимый стак — с detail.reason = "whole_stacks_only"). Не влезло в инвентарь помощника
+-- (взято всё или часть) — событие inventory_full и failed{no_space} (detail — что взято).
 local reserve = require("scripts.core.reserve")
 local inv = require("scripts.lib.inventory")
 
@@ -101,10 +101,12 @@ function M.tick(task, ctx)
   local extracted, missing, flags = M.take(task, ctx, src, task.args.items)
   local detail = { extracted = extracted }
   if next(missing) ~= nil then detail.missing = missing end
-  if flags.full then inv.inventory_full(task, ctx) end
+  if flags.full then
+    if task.args.equip then detail.equipped, detail.unequipped = equip_armor(h, extracted) end
+    return inv.full_result(task, ctx, detail)
+  end
   if next(extracted) == nil then
     if flags.reserved then return inv.failed("reserved", "items are reserved by another helper", detail) end
-    if flags.full then return inv.full_result(task, ctx, detail) end
     if flags.split then
       detail.reason = "whole_stacks_only"
       return inv.failed("no_items", "items with data or spoilage move only as whole stacks", detail)

@@ -66,9 +66,13 @@ do
   w.surface.add(G.entity { name = "small-biter", type = "unit", pos = { x = 35, y = 10 }, force = w.enemy })
   w.force.set_visible(1, 0, false)
   require("scripts.perception.vision").ops.vision({ on = false }, ctx)
+  -- без помощника в ctx (helper_id=nil) работает только is_chunk_visible: враг скрыт
+  local blind = require("scripts.perception.state").ops.state({}, { entity = e })
+  G.eq(#blind.near.enemies, 0, "enemy in not-visible chunk hidden")
+  -- «глаза» помощника (PROTOCOL §6.7): враг ≤ 32 клеток от тела виден и в невидимом чанке
   local d = require("scripts.perception.state").ops.state({}, ctx)
   G.plain(d)
-  G.eq(#d.near.enemies, 0, "enemy in not-visible chunk hidden")
+  G.eq(#d.near.enemies, 1, "enemy within 32 of the body is seen even in a not-visible chunk")
   G.eq(d.job, nil)
   G.eq(d.queue, 0)
   G.eq(d.armor, nil)

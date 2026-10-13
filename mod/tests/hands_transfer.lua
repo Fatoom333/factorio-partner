@@ -34,6 +34,21 @@ S.suite("hands_transfer", {
       S.ok(W.h.can_reach_entity(ch), "переносил только в досягаемости")
       S.ok(W.path.calls[#W.path.calls].dist <= W.h.reach_distance)
   end },
+  { "target {unit_number, pos}: движок не находит постройку по unit_number — поиск вокруг pos", function()
+      local W = C.setup()
+      local ch = C.chest({ x = 3.5, y = 0.5 }, { coal = 9 })
+      local find = game.get_entity_by_unit_number
+      game.get_entity_by_unit_number = function(n)
+        local e = find(n)
+        if e ~= nil and e.type == "container" then return nil end -- как в 2.0 для построек
+        return e
+      end
+      local d1 = C.wait(job_of("extract", { target = { unit_number = ch.unit_number } }))
+      S.eq(d1.code, "not_found", "без pos найти нечем")
+      local d2, k2 = C.wait(job_of("extract", { target = { unit_number = ch.unit_number, pos = { x = 3.5, y = 0.5 } } }))
+      S.eq(k2, "job_done", S.dump(d2))
+      S.eq(d2.detail.extracted, { coal = 9 })
+  end },
   { "insert: target {name,pos}; нет у помощника — no_items с missing, ничего не тронуто", function()
       local W = C.setup{ items = { ["iron-plate"] = 5 } }
       local ch = C.chest({ x = 3.5, y = 0.5 }, {})
@@ -137,7 +152,7 @@ S.suite("hands_transfer", {
       S.eq(C.counts(chest_inv(ch)), { yumako = 50 })
       local ch2 = C.chest({ x = 4.5, y = 2.5 }, {})
       local d3 = C.wait(job_of("insert", { target = { unit_number = ch2.unit_number }, items = { yumako = 5 } }))
-      S.eq(d3.detail, { inserted = {}, left = { yumako = 5 } })
+      S.eq(d3.detail, { inserted = {}, left = { yumako = 5 }, reason = "whole_stacks_only" })
       S.eq(C.counts(W.main), { yumako = 8 })
       S.eq(count_log("remove_item:"), 0)
   end },
@@ -167,16 +182,17 @@ S.suite("hands_transfer", {
       S.eq(C.wait(job_of("extract", { target = { unit_number = inf.unit_number } })).code, "no_items")
       S.eq(C.counts(W.main), {})
   end },
-  { "extract: полный инвентарь — inventory_full; частично — done и событие", function()
+  { "extract: полный инвентарь — inventory_full и no_space (и при частичном взятии)", function()
       local W = C.setup{ size = 2, items = { { name = "stone", count = 50 }, { name = "coal", count = 45 } } }
       local ch = C.chest({ x = 3.5, y = 0.5 }, { ["iron-plate"] = 10, coal = 20 })
       local job = job_of("extract", { target = { unit_number = ch.unit_number }, items = { ["iron-plate"] = 10 } })
       local d = C.wait(job)
-      S.eq({ d.code, d.detail.reason }, { "stuck", "inventory_full" })
+      S.eq({ d.code, d.detail.reason }, { "no_space", "inventory_full" })
       local job2 = job_of("extract", { target = { unit_number = ch.unit_number }, items = { coal = 20 } })
       local d2, k2 = C.wait(job2)
-      S.eq(k2, "job_done")
-      S.eq(d2.detail, { extracted = { coal = 5 }, missing = { coal = 15 } })
+      S.eq(k2, "job_failed")
+      S.eq(d2.code, "no_space")
+      S.eq(d2.detail, { extracted = { coal = 5 }, missing = { coal = 15 }, reason = "inventory_full" })
       S.eq(#C.events("inventory_full"), 2)
       S.eq(total(W.main, chest_inv(ch)), { stone = 50, coal = 65, ["iron-plate"] = 10 })
   end },

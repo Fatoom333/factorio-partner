@@ -66,24 +66,32 @@ def build_server(core: Core, admin: bool = False) -> FastMCP:
     async def partner_resources(helper: Helper, key: Key,
                                 radius: float | None = None,
                                 name: str | None = None,
-                                near_player: bool = False) -> dict:
-        """Пятна руды рядом с помощником (near_player=true — рядом с хозяином)."""
-        return await _run(core.op_resources(helper, key, radius, name, near_player))
+                                center: Pos | None = None,
+                                near: Literal["player"] | None = None) -> dict:
+        """Пятна руды вокруг помощника, center или хозяина (near="player"; center и near
+        вместе нельзя)."""
+        return await _run(core.op_resources(helper, key, radius, name, center, near))
 
     @mcp.tool()
     async def partner_stock(helper: Helper, key: Key,
                             radius: float | None = None,
                             items: list[str] | None = None,
-                            near_player: bool = False) -> dict:
-        """Склады своей силы и их содержимое (только видимые чанки)."""
-        return await _run(core.op_stock(helper, key, radius, items, near_player))
+                            limit: int | None = None,
+                            center: Pos | None = None,
+                            near: Literal["player"] | None = None) -> dict:
+        """Склады своей силы и их содержимое (только видимые чанки) вокруг помощника, center
+        или хозяина (near="player"; center и near вместе нельзя)."""
+        return await _run(core.op_stock(helper, key, radius, items, limit, center, near))
 
     @mcp.tool()
     async def partner_ghosts(helper: Helper, key: Key,
                              radius: float | None = None,
-                             area: Area | None = None) -> dict:
-        """Призраки в радиусе или области: сколько, что нужно, что есть, что заблокировано."""
-        return await _run(core.op_ghosts(helper, key, radius, area))
+                             area: Area | None = None,
+                             center: Pos | None = None,
+                             near: Literal["player"] | None = None) -> dict:
+        """Призраки в радиусе или области: сколько, что нужно, что есть, что заблокировано.
+        Центр радиуса — помощник, center или хозяин (near="player")."""
+        return await _run(core.op_ghosts(helper, key, radius, area, center, near))
 
     @mcp.tool()
     async def partner_rates(helper: Helper, key: Key,

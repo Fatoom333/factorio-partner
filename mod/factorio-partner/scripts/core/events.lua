@@ -20,7 +20,7 @@ M.MAX_CHAT = 500          -- player_said.text, символов
 -- Будят агента (EVENTS.md). `attacked` громкий только первый в эпизоде — модуль H передаёт
 -- opts.loud=false для повторных. `player_said` громкий только от хозяина.
 M.LOUD = {
-  job_done = true, job_failed = true, stuck = true, attacked = true, health_low = true,
+  job_done = true, job_failed = true, attacked = true, health_low = true,
   died = true, respawned = true, reflex_done = true, inventory_full = true, helper_lost = true,
 }
 

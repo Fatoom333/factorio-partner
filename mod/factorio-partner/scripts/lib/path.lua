@@ -164,6 +164,12 @@ function M.cancel(task, ctx)
   task.approach = nil
 end
 
+-- Шумное событие `stuck` (EVENTS.md): перепланирование/обход/потеря запроса. Не последнее слово:
+-- если не помогло, задача кончится громким job_failed{code:"stuck"}.
+local function noisy_stuck(task, ctx, pos, reason)
+  ctx.emit("stuck", { job = task.job, pos = util.pos(pos), reason = reason })
+end
+
 -- Неудача шага: остановиться, забыть запросы, вернуть result.
 local function give_up(task, ctx, code, text, pos)
   M.cancel(task, ctx)
@@ -197,6 +203,7 @@ local function poll_request(task, ctx, st, pos)
     if st.retries > M.MAX_RETRIES then
       return give_up(task, ctx, "path_failed", "pathfinder did not answer", pos)
     end
+    noisy_stuck(task, ctx, pos, "path_lost")
     request(task, ctx, st, st.goal, st.req_goal or st.goal, true)
     return nil
   end
@@ -318,6 +325,7 @@ function M.step(task, ctx, goal_pos, distance)
   if tick - st.last_move_tick >= M.STUCK_TICKS then
     if blocker_near(e, pos) and st.detours < M.MAX_DETOURS then
       st.detours = st.detours + 1
+      noisy_stuck(task, ctx, pos, "blocked")
       st.req_goal = detour_goal(goal, pos, st.detours)
       request(task, ctx, st, goal, st.req_goal, false)
       st.last_move_tick = tick
@@ -325,16 +333,13 @@ function M.step(task, ctx, goal_pos, distance)
     end
     if st.replans < M.MAX_REPLANS then
       st.replans = st.replans + 1
+      noisy_stuck(task, ctx, pos, "no_progress")
       st.req_goal = nil
       request(task, ctx, st, goal, goal, false)
       st.last_move_tick = tick
       return nil
     end
-    local job = task.job
-    local rpos = util.pos(pos)
-    local res = give_up(task, ctx, "stuck", "cannot move towards the goal", pos)
-    ctx.emit("stuck", { job = job, pos = rpos, reason = "no_movement" })
-    return res
+    return give_up(task, ctx, "stuck", "cannot move towards the goal", pos)
   end
 
   local target

@@ -7,7 +7,8 @@
 -- простые — remove_item у помощника →
 -- insert цели, не влезшее возвращается помощнику. Если у помощника не хватает чего-то из items —
 -- сразу failed{no_items, detail:{missing}} (ничего не переносится).
--- done.detail = {inserted: items, left?: items} — left: не влезло в цель (осталось у помощника).
+-- done.detail = {inserted: items, left?: items, reason?} — left: не влезло в цель (осталось у
+-- помощника); reason="whole_stacks_only" — часть left это неделимый стак больше заявки.
 local inv = require("scripts.lib.inventory")
 
 local M = {}
@@ -64,14 +65,19 @@ function M.tick(task, ctx)
     return inv.failed("no_items", "helper does not have the items", { missing = missing })
   end
   local main = h.get_main_inventory()
-  local inserted, left = {}, {}
+  local inserted, left, split = {}, {}, false
   for name, n in pairs(task.args.items) do
-    local moved = inv.move(main, { entity = t }, name, n, h)
+    local moved, whole = inv.move(main, { entity = t }, name, n, h)
+    if whole then split = true end
     inv.add(inserted, name, moved)
     inv.add(left, name, n - moved)
   end
   local detail = { inserted = inserted }
-  if next(left) ~= nil then detail.left = left end
+  if next(left) ~= nil then
+    detail.left = left
+    -- предмет с данными/портящийся не делится: стак больше заявки не переносится (ACTIONS.md)
+    if split then detail.reason = "whole_stacks_only" end
+  end
   return inv.done(detail)
 end
 
