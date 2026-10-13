@@ -268,6 +268,7 @@ S.suite("jobs", {
       S.tick(2)
       storage.helpers.h1.entity.die()
       S.eq(valid_in_stop, true)
-      S.eq(kinds(events_since()), { "job_failed:1:no_helper", "job_failed:2:no_helper" })
+      -- died шлёт рефлекс смерти (поток H, EVENTS.md) — после job_failed ядра
+      S.eq(kinds(events_since()), { "job_failed:1:no_helper", "job_failed:2:no_helper", "died:nil" })
   end },
 })
