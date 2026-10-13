@@ -123,6 +123,9 @@ function M.init()
     local _, e = registry.alive(id)
     jobs.fail_all(id, "cancelled", "helper removed", e)
     reserve.release_all(id)
+    -- набор рефлексов сбрасывает только helper_remove (EVENTS.md «Рефлексы v1»): смерть,
+    -- возрождение, перезагрузку сейва и возврат тела-игрока он переживает
+    reflexes.forget(id)
   end
   registry.hooks.on_dead = function(id)
     local rec = registry.get(id)
