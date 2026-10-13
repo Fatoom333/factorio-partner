@@ -95,10 +95,11 @@ return M                          --   и снять своё: mining_state, cra
 | `collect` | `items, center?│near?:"player", radius?=64` | `{collected: items, missing: items, from:[unit]}` | C |
 | `pickup` | `target?` (труп: `{name:"character-corpse", pos}`) │ `area?` (предметы на земле) | `{picked: items}` | C |
 | `place` | `item, pos, direction?:0..15, recipe?` | `{unit_number, name, pos}` | F |
-| `build_blueprint` | `blob, anchor:pos, direction?:0│4│8│12, mode?="auto", force?="forced", search?=16, partial?=false, dry_run?:bool` | `{ghosts:int, tiles:int, skipped:[...], skipped_total, tiles_skipped, on_liquid:int, liquids?, fit?, to_remove?, to_remove_total?, missing: items}` + поля `build_ghosts` | F |
+| `build_blueprint` | `blob, anchor:pos, direction?:0│4│8│12, mode?="auto", force?="forced", search?=16, rotate?=false, partial?=false, dry_run?:bool` | `{ghosts:int, tiles:int, skipped:[...], skipped_total, tiles_skipped, on_liquid:int, liquids?, fit?, to_remove?, to_remove_total?, missing: items}` + поля `build_ghosts` | F |
 | `build_ghosts` | `area?│radius?=64, mode?="auto"` | `{built:int, tiles_built:int, left:int, removed:int, not_removed:int, blocked:[...], blocked_total, missing: items}` | F |
 | `deconstruct` | `target│area, filter?:[name]` | `{removed:int, got: items}` (`removed` — только разобранное самим помощником) | F |
 | `plan_mining` | `resource?:string, area│near:pos, layout?="simple", direction?="north", miner?, belt?, pole?, pipe?, options?:object, dry_run?:bool` | `{ghosts:int, drills:int, tiles:int, skipped:int, area, need: items, layout, chosen:{miner, belt│chest, pole, pipe?}, warnings:[...], dry_run?}` | M |
+| `plan_belt` | `from:pos│"patch", to:pos, belt?, lanes?=1 (1..4), underground?="auto", start_direction?, dry_run?:bool` | `{ghosts:int, length:int, undergrounds:int, turns:int, need: items, area, path:[pos…] (углы, ≤ 40), warnings:[...]}` | N |
 | `wait` | `seconds:1..600` | `{}` — пауза в очереди, никогда не заменяет её | A |
 
 Отдельных подробностей требуют:
@@ -127,8 +128,9 @@ direction, build_mode=defines.build_mode.normal, skip_fog_of_war=false}` соз�
 - **Подложка невозможна хотя бы под одной клеткой** (обычный случай: фундамент открывается в конце
   игры) → чертёж **не ставится вовсе**: `failed{cannot_place}`, `detail.on_liquid` — число таких клеток,
   `detail.liquids:{[tile]=n}`, и `detail.fit` — ближайший сдвиг, при котором чертёж встаёт целиком:
-  `{anchor, shift:{dx,dy}}` либо `null`. Поиск сдвига — по спирали в пределах `search` клеток
-  (`search?=16`, 0..32; 0 — не искать), в несколько тиков. `dry_run` отдаёт то же без ошибки. Дальше
+  `{anchor, shift:{dx,dy}, direction?, mirror?}` либо `null`. Поиск сдвига — по спирали в пределах `search` клеток
+  (`search?=16`, 0..32; 0 — не искать), в несколько тиков; с `rotate:true` перебираются ещё четыре
+  поворота и зеркало (агент разрешает это сам, когда направление входа и выхода чертежа не важно). `dry_run` отдаёт то же без ошибки. Дальше
   решает агент: поставить по `fit`, взять другое место или спросить хозяина. Обрезанный чертёж
   ставится только с `partial:true` — по прямому согласию хозяина (тогда клетки идут в `skipped` с
   `reason:"liquid"`). Вода с отсыпкой живьём не проверена (в тестовом сейве воды нет).
@@ -210,5 +212,28 @@ P.U.M.P., чертёж, или `build_blueprint`). Перед стартом: с
   если `direction` не задан явно хозяином).
 - Живьём проверены `simple`, `compact`, `super_compact`, `sparse`; три `logistics`-режима, трубы, лампы
   и буры 5×5 — только юнит-тестами.
+
+**`plan_belt`** — прокладка конвейера призраками от точки до точки с обходом препятствий (поток N).
+Нужна, чтобы добыча не заканчивалась лентой в никуда: у MPP свой «планировщик лент» умеет только
+прямые и углы без обхода и подземных, не дальше 100 клеток.
+- `from` — клетка начала (конец существующей ленты или выход разметки) либо `"patch"`: взять выходы
+  последней разметки `plan_mining` этого помощника (сведение нескольких лент в пачку — как в MPP);
+  `to` — клетка конца (например, у ленты или сундука базы). Обе — в открытых чанках, расстояние
+  по прямой ≤ 512 клеток (`limit`).
+- Поиск пути — A* по клеткам с ценой поворотов, в несколько тиков (бюджет работы; исчерпан →
+  `failed{path_failed}` с `detail.reached` — докуда дошёл). Основа кода — маршрутизатор из мода
+  Wuastbude Belt & Pipe Router (MIT, с сохранением лицензии в `scripts/vendor/`), если он подойдёт под
+  2.0.77 и отделяется от рук игрока; иначе свой A*. Auto Belt (GPLv3) — только как идея, код не брать.
+- Правила мира — из игры (PROTOCOL §6.12): клетка годна, если там можно поставить ленту
+  (`can_place_entity`, проверка `manual_ghost`); плитки без опоры обходятся; подземный участок
+  разрешён, только если ни одна клетка под ним не запрещена `underground_collision_mask` (под лавой
+  нельзя), длина — `max_distance` прототипа. `underground`: `"auto"` — подземные только через помехи
+  (чужие ленты, трубы, постройки), `"never"`, `"prefer"`.
+- Свои постройки и чужие ленты не сносит и не помечает; деревья и камни на пути помечает к сносу
+  (их уберёт `build_ghosts`).
+- Итог — призраки силы хозяина и `need`; стройка — отдельным `build_ghosts` по `area` (если длинная
+  лента не влезает в 128 — `areas:[...]` кусками). `dry_run` — только посчитать.
+- `warnings`: `long_detour` (путь длиннее прямой больше чем вдвое), `narrow` (проходит через место
+  шириной 1–2 клетки), `near_enemy` (ближе 32 клеток к видимому врагу).
 
 Прогресс долгих задач — шумное `job_progress{job, done, total}` не чаще раза в 5 с.

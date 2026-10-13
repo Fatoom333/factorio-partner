@@ -24,6 +24,7 @@ Claude играет вторым персонажем в твоём сейве F
 [MIT](LICENSE). Идеи взяты, код написан заново:
 - [Rate Calculator](https://github.com/raiguard/RateCalculator) (MIT) — расчёт скоростей машин в `rates`;
 - [Mining Patch Planner](https://mods.factorio.com/mod/mining-patch-planner) (MIT) — раскладка буров;
+- [Wuastbude Belt & Pipe Router](https://mods.factorio.com/mod/wuastbude-router) (MIT) — прокладка лент в `plan_belt`;
 - [Factory Search](https://github.com/tburrows13/FactorySearch) (MIT) — поиск по базе в `find`;
 - [linsyking/factorio-mcp](https://github.com/linsyking/factorio-mcp) и
   [Factorio Learning Environment](https://github.com/JackHopkins/factorio-learning-environment) — образцы
