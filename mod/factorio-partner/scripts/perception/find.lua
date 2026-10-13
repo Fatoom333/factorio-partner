@@ -26,7 +26,8 @@ M.DEFAULT_LIMIT = 20
 M.MAX_LIMIT = 50
 M.GROUP_DIST = 32        -- постройки ближе 32 клеток друг к другу — одна группа
 M.CELL = 16              -- сетка для группировки (см. cluster)
-M.MAX_CHUNKS = 4000      -- поверхность больше — `limit`
+-- Лимит — по работе, а не по размеру карты: числа чанков поверхности он не касается, открытость
+-- проверяется у каждой найденной сущности (STATE.md «find»).
 M.MAX_ENTITIES = 20000   -- найдено больше — `limit`
 M.MAX_NAMES = 8          -- имён построек в одной группе (самые частые)
 M.NAME_MAX = 200
@@ -208,8 +209,7 @@ local function machine_role(e, item)
     return false, contains(prop(prop(e, "prototype") or {}, "lab_inputs"), item), nil
   end
   if t == "offshore-pump" then
-    local fluid = name_of(call0(e, "get_fluid_source_fluid"))
-    if fluid ~= nil then return fluid == item, false, nil end
+    -- что качает насос, видно по его содержимому (пустой насос производителем не считается)
     local contents = call0(e, "get_fluid_contents")
     return type(contents) == "table" and (contents[item] or 0) > 0, false, nil
   end
@@ -228,16 +228,6 @@ local function search(surface, filter, budget)
   end
   if n == 0 then return {} end
   return surface.find_entities_filtered(filter)
-end
-
-local function check_surface_size(surface)
-  local n = 0
-  for _ in surface.get_chunks() do
-    n = n + 1
-    if n > M.MAX_CHUNKS then
-      err.raise("limit", "surface " .. surface.name .. " has more than " .. M.MAX_CHUNKS .. " chunks")
-    end
-  end
 end
 
 local function machine_types(kinds, is_item, is_fluid)
@@ -418,7 +408,6 @@ local function find_op(args, ctx)
   local a = parse_args(args)
   local is_item, is_fluid, entity_name = classify(a)
   local surface, force, center, helper_id = resolve(a, ctx)
-  check_surface_size(surface)
 
   local recs, hidden = collect(a, surface, force, helper_id, is_item, is_fluid, entity_name)
 

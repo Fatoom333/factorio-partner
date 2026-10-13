@@ -994,15 +994,18 @@ function mpp_util.report(state, message)
 	list[#list+1] = message
 end
 
---- [partner] Tile layers a building can't stand on without a cover tile. The original looks
---- only for water; on Vulcanus (Space Age) lava needs the same treatment (foundation).
----@return string[]
-function mpp_util.liquid_tile_layers()
-	local layers = {"water_tile"}
-	if prototypes.collision_layer and prototypes.collision_layer["lava_tile"] then
-		layers[2] = "lava_tile"
-	end
-	return layers
+--- [partner] Tiles of an area a mining drill can't stand on without a cover tile. The original
+--- looks only for water tiles by name of the layer; here the rule comes from the game: a tile
+--- counts if its collision mask collides with the collision mask of the chosen drill prototype
+--- (the adapter stores the layers in `state.partner.avoid_layers`). No tile, planet or fluid names:
+--- planets added by mods work the same way.
+---@param state State
+---@param area BoundingBox
+---@return LuaTile[]
+function mpp_util.unsupported_tiles(state, area)
+	local layers = state.partner and state.partner.avoid_layers
+	if type(layers) ~= "table" or #layers == 0 then return {} end
+	return state.surface.find_tiles_filtered{area=area, collision_mask=layers}
 end
 
 return mpp_util
