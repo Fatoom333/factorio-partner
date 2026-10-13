@@ -156,7 +156,8 @@ function checkers.target(v, spec, path)
     for k in pairs(v) do
       if k ~= "unit_number" and k ~= "pos" then fail(path, "unexpected field " .. tostring(k)) end
     end
-    if not is_int(v.unit_number) or v.unit_number < 0 then fail(path .. ".unit_number", "expected integer") end
+    -- unit_number — целое ≥ 1 (ACTIONS.md «Общие типы»): нуля у сущностей не бывает
+    if not is_int(v.unit_number) or v.unit_number < 1 then fail(path .. ".unit_number", "expected integer ≥ 1") end
     if v.pos ~= nil then
       return { unit_number = v.unit_number, pos = checkers.pos(v.pos, spec, path .. ".pos") }
     end

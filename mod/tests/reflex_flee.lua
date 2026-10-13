@@ -401,6 +401,7 @@ S.suite("reflex_flee", {
   { "два помощника: отступает только тот, у кого враг и набор", function()
       local _, h = H.setup()
       B.tick(1)
+      S.okr(S.req("helper_limit", { max = 2 }))
       S.okr(S.req("helper_spawn", {}, "h2"))
       local h2 = H.body("h2")
       S.move(h2, { x = 100, y = 100 })
@@ -447,5 +448,73 @@ S.suite("reflex_flee", {
       })
       S.ok(storage.reflex_state.h1.flee.job, "идёт отступление")
       S.eq(#S.logs, 0, table.concat(S.logs, "\n"))
+  end },
+
+  { "после неудачи ходьбы кандидаты считаются заново: от нового места и нынешнего врага (ревизия 3.2)", function()
+      local _, h = H.setup()
+      H.set{ { type = "flee" } }
+      local biter = H.enemy({ x = -8, y = 0 })
+      B.tick(10)
+      S.eq(B.events("reflex_fired")[1].data.detail.to, { x = 32, y = 0 })
+      B.tick(60) -- прошёл часть пути на восток
+      local x1 = h.position.x
+      S.ok(x1 > 8, S.dump(h.position))
+      -- упёрся: ходьба кончится stuck; тем временем прежний враг пропал, а новый пришёл с севера
+      local until_tick = game.tick + 200
+      B.blocked = function() return game.tick < until_tick end
+      biter.destroy()
+      H.enemy({ x = h.position.x, y = -10 })
+      B.until_(function() return #walk_jobs() >= 1 end, 400)
+      S.eq(walk_jobs()[1].data.code, "stuck")
+      B.tick(12)
+      local f = storage.reflex_state.h1.flee
+      S.ok(f, "отступление продолжается: " .. H.kinds())
+      -- старый список (от места (2,0) и врага на западе) дал бы (23, 21); новый — прочь от врага на севере
+      S.near(f.goal.x, h.position.x, 3)
+      S.ok(f.goal.y > 25, S.dump(f.goal))
+      S.eq(#f.tried, 1)
+      S.eq(f.tried[1], { x = 32, y = 0 })
+      S.eq(f.legs, 1, "это тот же переход, а не новый")
+      local done = H.wait("reflex_done")
+      S.eq(done.data.outcome, "ok", S.dump(done.data))
+      S.eq(#B.events("reflex_fired"), 1)
+  end },
+
+  { "испробованная точка не выбирается снова, попыток на переход — не больше MAX_TRIES", function()
+      local _, h = H.setup()
+      local F = flee_mod()
+      F.MAX_TRIES = 3
+      B.pathfinder = function() return {} end
+      H.set{ { type = "flee" } }
+      H.enemy({ x = -8, y = 0 })
+      local done = H.wait("reflex_done")
+      S.eq({ done.data.outcome, done.data.detail.reason }, { "failed", "path_failed" })
+      local goals, seen = {}, {}
+      for _, e in ipairs(B.events()) do
+        if e.kind == "job_failed" and e.data["do"] == "walk" then goals[#goals + 1] = e end
+      end
+      S.eq(#goals, 3, "три попытки и стоп")
+      S.eq(storage.reflex_state.h1.flee, nil)
+  end },
+
+  { "видимость точки отступления — через core.vis: 32 клетки от тела или видимый чанк", function()
+      local _, h = H.setup()
+      local C = require("scripts.reflexes.common")
+      local calls = {}
+      local vis = require("scripts.core.vis")
+      local orig = vis.visible
+      vis.visible = function(id, surface, pos, force)
+        calls[#calls + 1] = { id = id, surface = surface, force = force }
+        return orig(id, surface, pos, force)
+      end
+      S.eq(C.visible("h1", h, { x = 20, y = 0 }), true, "рядом с телом")
+      h.force.invisible[S.chunk_key(S.nauvis, { x = 3, y = 0 })] = true
+      S.eq(C.visible("h1", h, { x = 100, y = 0 }), false, "далеко и чанк не виден")
+      S.eq(C.visible("h1", h, { x = 200, y = 0 }), true, "далеко, но чанк виден силе")
+      S.eq(#calls, 3)
+      S.eq(calls[1].id, "h1")
+      S.eq(calls[1].surface, S.nauvis)
+      S.eq(calls[1].force, h.force)
+      vis.visible = orig
   end },
 })

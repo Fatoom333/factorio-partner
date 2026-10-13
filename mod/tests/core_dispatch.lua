@@ -23,6 +23,7 @@ S.suite("dispatch", {
       S.eq(r.data.players, { { index = 1, name = "Tartaluga", online = true, surface = "nauvis", pos = { x = 1.3, y = -3 } } })
       S.eq(r.data.helpers, {})
       S.eq(r.data.players_online, 1)
+      S.eq(r.data.module_errors, 0)
   end },
   { "hello: players_online считает только подключённых; офлайн-игрок в списке с online=false", function()
       S.load_mod()
@@ -37,6 +38,7 @@ S.suite("dispatch", {
   end },
   { "hello: helpers — живые и мёртвые, но не удалённые", function()
       S.load_mod()
+      S.okr(S.req("helper_limit", { max = 3 }))
       S.add_player{ name = "Tartaluga" }
       S.okr(S.req("helper_spawn", {}, "h1"))
       S.okr(S.req("helper_spawn", {}, "h2"))

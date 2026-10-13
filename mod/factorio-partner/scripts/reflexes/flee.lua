@@ -15,8 +15,9 @@
 --     помощник бросает задачи (им приходит job_failed{cancelled}) и идёт обычной задачей `walk`
 --     к безопасной точке: на distance клеток прочь от врага (или к точке возрождения силы / к
 --     хозяину, если до них далеко от врага). Точка — в открытом чанке, свободная, без врагов рядом.
---     Путь не нашёлся — следующая точка (в стороны от первой). Дошёл, а враг снова рядом — ещё
---     переход (до 5). Шумное reflex_fired{type, detail:{job, to, threat, dist}} в начале, громкое
+--     Путь не нашёлся — точки считаются заново (от места, где помощник стоит теперь, и от
+--     врага, который ближе теперь), уже испробованные пропускаются; попыток на переход — до 8.
+--     Дошёл, а враг снова рядом — ещё переход (до 5). Шумное reflex_fired{type, detail:{job, to, threat, dist}} в начале, громкое
 --     reflex_done{type, outcome, detail:{pos, legs, reason?}} в конце.
 --     reason: no_safe_point │ cancelled (задачу сняли — агент решил иначе) │ still_threatened │
 --     no_helper │ код ошибки ходьбы (path_failed, stuck, …).
@@ -40,6 +41,8 @@ M.LOW_REARM = 0.5          -- … и снова после восстановл�
 M.RECENT_HIT = 120         -- удар врага издалека считается угрозой столько тиков
 M.MAX_LEGS = 5             -- переходов подряд за одно отступление
 M.GOAL_RADIUS = 2          -- walk.radius: на сколько близко подойти к точке
+M.MAX_TRIES = 8            -- точек на один переход (после path_failed / stuck — другая)
+M.TRIED_RADIUS = 3         -- точка ближе этого к уже испробованной — та же самая
 M.MIN_GOAL = 8             -- ближе этого точка спасения бессмысленна
 M.SAFE_RADIUS = 8          -- врагов ближе этого к точке быть не должно
 M.FREE_RADIUS = 4          -- поиск свободного места у точки
@@ -157,21 +160,32 @@ local function candidates(entity, p, threat)
 end
 
 --- Годится ли точка: открытый чанк, есть свободное место, рядом (если видно) нет врагов.
-local function usable(entity, pt)
+local function usable(id, entity, pt)
   if not charted(entity, pt) then return nil end
   local spot = entity.surface.find_non_colliding_position("character", pt, M.FREE_RADIUS, 0.5)
   if spot == nil then return nil end
   spot = util.xy(spot)
   if not charted(entity, spot) then return nil end
-  if C.visible(entity, spot) and C.enemies(entity, M.SAFE_RADIUS, C.THREAT, spot)[1] ~= nil then return nil end
+  if C.visible(id, entity, spot) and C.enemies(entity, M.SAFE_RADIUS, C.THREAT, spot)[1] ~= nil then return nil end
   return { x = util.round1(spot.x), y = util.round1(spot.y) }
 end
 
---- Поставить задачу ходьбы к первой годной точке начиная с first. → true | false, причина.
-local function start_leg(id, entity, st, p, threat, tick, legs, first)
+local function was_tried(tried, spot)
+  for _, t in ipairs(tried) do
+    if util.dist(t, spot) <= M.TRIED_RADIUS then return true end
+  end
+  return false
+end
+
+--- Поставить задачу ходьбы к первой годной точке. Кандидаты всегда считаются от нынешнего
+--- места тела и от threat; tried — точки этого перехода, к которым дойти уже не вышло
+--- (пропускаются). → true | false, причина.
+local function start_leg(id, entity, st, p, threat, tick, legs, tried)
+  tried = tried or {}
   local cands = candidates(entity, p, threat)
-  for i = first, #cands do
-    local spot = usable(entity, cands[i])
+  for i = 1, #cands do
+    local spot = usable(id, entity, cands[i])
+    if spot ~= nil and was_tried(tried, spot) then spot = nil end
     if spot ~= nil then
       local since = events.last_seq()
       local ok, res = pcall(jobs.op_act,
@@ -182,7 +196,7 @@ local function start_leg(id, entity, st, p, threat, tick, legs, first)
         return false, code
       end
       st.flee = {
-        job = res.job, goal = spot, legs = legs, cand = i, since_seq = since, started = tick,
+        job = res.job, goal = spot, legs = legs, cand = i, tried = tried, since_seq = since, started = tick,
         threat = { name = threat.name, pos = { x = threat.pos.x, y = threat.pos.y } },
         p = { radius = p.radius, distance = p.distance, to = p.to },
       }
@@ -217,7 +231,7 @@ function M.consider(id, entity, params, tick, st, health)
   if C.health(entity, health) > params.health then return false end
   local threat = find_threat(entity, params, st, tick)
   if threat == nil then return false end
-  local ok, reason = start_leg(id, entity, st, params, threat, tick, 1, 1)
+  local ok, reason = start_leg(id, entity, st, params, threat, tick, 1)
   if ok then
     local f = st.flee
     events.emit(id, "reflex_fired", { type = "flee", detail = {
@@ -288,15 +302,25 @@ local function progress(id, entity, st, tick)
     if f.legs >= M.MAX_LEGS then
       return finish(id, entity, st, tick, "failed", { reason = "still_threatened", legs = f.legs })
     end
-    local ok, reason = start_leg(id, entity, st, f.p, near, tick, f.legs + 1, 1)
+    local ok, reason = start_leg(id, entity, st, f.p, near, tick, f.legs + 1)
     if not ok then finish(id, entity, st, tick, "failed", { reason = reason, legs = f.legs }) end
     return
   end
   if code == "cancelled" then
     return finish(id, entity, st, tick, "failed", { reason = "cancelled", legs = f.legs })
   end
-  -- путь не нашёлся / застрял: другая точка
-  local ok = start_leg(id, entity, st, f.p, f.threat, tick, f.legs, f.cand + 1)
+  -- путь не нашёлся / застрял: другая точка. Кандидаты пересчитываются: помощник мог уйти с
+  -- места, где считался прежний список, а враг — подойти с другой стороны (номер в старом
+  -- списке к новому не подходит). Точки, к которым уже не дошли, пропускаются.
+  local tried = {}
+  for _, t in ipairs(f.tried or {}) do tried[#tried + 1] = t end
+  tried[#tried + 1] = { x = f.goal.x, y = f.goal.y }
+  local ok = false
+  if #tried < M.MAX_TRIES then
+    local near = C.enemies(entity, f.p.radius)[1]
+    local threat = near ~= nil and { name = near.name, pos = near.pos } or f.threat
+    ok = start_leg(id, entity, st, f.p, threat, tick, f.legs, tried)
+  end
   if not ok then finish(id, entity, st, tick, "failed", { reason = code or "unknown", legs = f.legs }) end
 end
 

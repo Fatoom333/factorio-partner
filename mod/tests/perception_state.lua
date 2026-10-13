@@ -165,7 +165,7 @@ end
 do
   local w = G.reset()
   local C = require("scripts.perception.state").common
-  G.raises("no_helper", function() C.resolve({}, {}) end, "nobody")
+  G.raises("no_player", function() C.resolve({}, {}) end, "nobody")
   local p = G.add_player(w, { name = "T", pos = { x = 7, y = 8 } })
   local r = C.resolve({}, {})
   G.eq(r.center, { x = 7, y = 8 }, "owner as center when no helper")

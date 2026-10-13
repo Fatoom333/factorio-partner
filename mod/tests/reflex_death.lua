@@ -253,4 +253,24 @@ S.suite("reflex_death", {
       end
       S.eq(#S.logs, 0, table.concat(S.logs, "\n"))
   end },
+
+  { "тело-игрок (PROTOCOL §7): died приходит, а возрождает движок — мод новое тело не создаёт", function()
+      local _, h = H.setup()
+      storage.helpers.h1.player_index = 2
+      B.tick(5)
+      H.damage(h, 300)
+      S.eq(#B.events("died"), 1)
+      local created = #S.nauvis.created
+      B.tick(1300)
+      S.eq(storage.helpers.h1.state, "dead")
+      S.eq(#B.events("respawned"), 0)
+      S.eq(#S.nauvis.created, created, "мод не создал тело")
+      S.eq(#B.events("reflex_done"), 0)
+      -- поток P отдаёт новое тело игрока ядру — состояние смерти забывается
+      local body = S.nauvis.create_entity{ name = "character", position = { 5, 5 }, force = "player" }
+      require("scripts.core.registry").set_body("h1", body)
+      B.tick(10)
+      S.eq(storage.reflex_state.h1.death, nil)
+      S.eq(storage.helpers.h1.player_index, 2, "запись остаётся телом-игроком")
+  end },
 })

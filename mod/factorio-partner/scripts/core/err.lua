@@ -43,6 +43,19 @@ end
 
 function M.is(e) return type(e) == "table" and e.partner_error == true end
 
+-- Счётчик `hello.module_errors` (PROTOCOL §4, EVENTS «Рефлексы v1»): сколько раз модуль или
+-- рефлекс упал под pcall с загрузки. Не в storage: это диагностика процесса, на состояние
+-- игры не влияет (читает её только `hello` по RCON), после загрузки сейва снова 0.
+local module_errors = 0
+
+--- Учесть падение модуля под pcall (ядро зовёт рядом с записью в журнал игры).
+function M.count_module_error()
+  module_errors = module_errors + 1
+  return module_errors
+end
+
+function M.module_errors() return module_errors end
+
 --- Ошибка (что угодно из pcall) -> code, text.
 function M.normalize(e)
   if M.is(e) then

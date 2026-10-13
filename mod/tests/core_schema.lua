@@ -68,6 +68,9 @@ S.suite("schema", {
       bad(sch, { target = { unit_number = 12, pos = { x = 1 } } }, "args.target.pos")
       bad(sch, { target = { unit_number = 12, pos = { x = 1, y = 2 }, name = "x" } }, "args.target")
       bad(sch, { target = { unit_number = 1.5 } }, "unit_number")
+      bad(sch, { target = { unit_number = 0 } }, "unit_number") -- целое ≥ 1 (ACTIONS.md)
+      bad(sch, { target = { unit_number = -3 } }, "unit_number")
+      S.eq(schema().validate(sch, { target = { unit_number = 1 } }).target, { unit_number = 1 })
       bad(sch, { target = { unit_number = 1, name = "x" } }, "args.target")
       bad(sch, { target = { name = "x" } }, "args.target.pos")
   end },

@@ -69,7 +69,8 @@ function M.run(tick)
 
   for id, h in pairs(helpers) do
     local e = type(h) == "table" and h.entity or nil
-    if e and h.state == "alive" and e.valid and C.vision_on(id) then
+    -- тело-игрок (PROTOCOL §7): карту ему открывает движок, мод обзор не ведёт
+    if e and h.state == "alive" and h.player_index == nil and e.valid and C.vision_on(id) then
       local surface, force = e.surface, e.force
       for _, c in ipairs(M.pick_chunks(e, charted, tick)) do
         local x0, y0 = c.cx * 32, c.cy * 32

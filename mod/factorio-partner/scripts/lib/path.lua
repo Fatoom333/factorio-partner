@@ -19,6 +19,7 @@
 --     detours,            -- обходы игрока (≤ MAX_DETOURS)
 --     extends,            -- маршрут кончился далеко от цели → новый запрос (≤ MAX_EXTENDS)
 --     best_dist, last_move_tick, last_pos,
+--     noted,              -- шумное stuck об этом перепланировании уже отправлено (сброс — когда пришёл маршрут)
 --     goal,               -- цель, под которую строился маршрут (настоящая, без смещения обхода)
 --     distance, plan_tick, retry_tick, goal_moved }
 --
@@ -166,7 +167,12 @@ end
 
 -- Шумное событие `stuck` (EVENTS.md): перепланирование/обход/потеря запроса. Не последнее слово:
 -- если не помогло, задача кончится громким job_failed{code:"stuck"}.
-local function noisy_stuck(task, ctx, pos, reason)
+-- Одно событие на одно перепланирование: пока новый маршрут не пришёл (st.noted), повторные
+-- причины (запрос потерялся, а тело при этом ещё и стоит) молчат — иначе на одно и то же
+-- перепланирование агент видел два stuck подряд.
+local function noisy_stuck(task, ctx, st, pos, reason)
+  if st.noted then return end
+  st.noted = true
   ctx.emit("stuck", { job = task.job, pos = util.pos(pos), reason = reason })
 end
 
@@ -203,8 +209,11 @@ local function poll_request(task, ctx, st, pos)
     if st.retries > M.MAX_RETRIES then
       return give_up(task, ctx, "path_failed", "pathfinder did not answer", pos)
     end
-    noisy_stuck(task, ctx, pos, "path_lost")
+    noisy_stuck(task, ctx, st, pos, "path_lost")
     request(task, ctx, st, st.goal, st.req_goal or st.goal, true)
+    -- новый запрос — новое окно «не двигаюсь»: иначе в этом же тике сработало бы ещё и
+    -- перепланирование no_progress, которое выбросило бы только что отправленный запрос
+    st.last_move_tick = tick
     return nil
   end
   if not r.finished then return nil end
@@ -241,6 +250,7 @@ local function poll_request(task, ctx, st, pos)
   st.i = 1
   st.state = "walking"
   st.retries = 0
+  st.noted = nil -- маршрут пришёл: перепланирование закончено
   st.last_move_tick = tick
   st.last_pos = pos
   return nil
@@ -325,7 +335,7 @@ function M.step(task, ctx, goal_pos, distance)
   if tick - st.last_move_tick >= M.STUCK_TICKS then
     if blocker_near(e, pos) and st.detours < M.MAX_DETOURS then
       st.detours = st.detours + 1
-      noisy_stuck(task, ctx, pos, "blocked")
+      noisy_stuck(task, ctx, st, pos, "blocked")
       st.req_goal = detour_goal(goal, pos, st.detours)
       request(task, ctx, st, goal, st.req_goal, false)
       st.last_move_tick = tick
@@ -333,7 +343,7 @@ function M.step(task, ctx, goal_pos, distance)
     end
     if st.replans < M.MAX_REPLANS then
       st.replans = st.replans + 1
-      noisy_stuck(task, ctx, pos, "no_progress")
+      noisy_stuck(task, ctx, st, pos, "no_progress")
       st.req_goal = nil
       request(task, ctx, st, goal, goal, false)
       st.last_move_tick = tick

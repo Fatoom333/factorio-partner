@@ -97,7 +97,8 @@ function M.sweep(tick)
         st.death = nil
       else
         if not d.announced and tick > d.tick then announce(id, d, rec.corpse_pos) end
-        if tick >= d.tick + M.RESPAWN_TICKS and tick >= (d.retry_tick or 0) then
+        -- тело-игрок (PROTOCOL §7): возрождает движок, новое тело подхватывает поток P
+        if rec.player_index == nil and tick >= d.tick + M.RESPAWN_TICKS and tick >= (d.retry_tick or 0) then
           respawn(id, st, d, tick)
         end
       end

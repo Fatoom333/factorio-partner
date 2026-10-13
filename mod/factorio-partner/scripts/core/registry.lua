@@ -3,13 +3,22 @@
 --
 -- storage.helpers[id] = {
 --   entity, unit_number, state = "alive"|"dead"|"removed", reg (номер register_on_object_destroyed),
---   spawned_tick, died_tick, died_pos, corpse_pos, removed_tick }
+--   spawned_tick, died_tick, died_pos, corpse_pos, removed_tick,
+--   player_index? }  -- тело-игрок (PROTOCOL §7 «Два вида тела»): персонаж второго клиента
+--
+-- Лимит (PROTOCOL §4, ревизия 3.2): живых и ждущих возрождения ≤ storage.proto.max_helpers
+-- (по умолчанию 1, задаёт игрок при запуске: операция helper_limit {max:1..16}).
 --
 -- API для модулей (только чтение storage.helpers напрямую; запись — через функции ниже):
 --   registry.get(id) -> rec|nil
 --   registry.alive(id) -> rec, entity | nil       (state="alive" и entity.valid)
 --   registry.mark_dead(id, corpse_pos?)           (ядро делает это само в on_entity_died)
 --   registry.set_body(id, entity)                 (возрождение, поток H: новое тело после смерти)
+--   registry.max_helpers() / registry.occupied(except_id?)   (лимит и занятые места)
+--   registry.check_slot(id)                       (limit, если для нового тела id нет места)
+--   registry.bind(id, entity, fields?) -> rec     (новая запись с живым телом; fields.player_index —
+--                                                  тело-игрок, операция helper_attach потока P)
+--   registry.is_player_body(id) -> bool
 local err = require("scripts.core.err")
 local util = require("scripts.core.util")
 local owner = require("scripts.core.owner")
@@ -20,7 +29,8 @@ local M = {}
 
 M.COOLDOWN = 5 * 60 * 60   -- 5 мин после helper_remove / смерти (PROTOCOL §4)
 M.SPAWN_RADIUS = 10        -- тело появляется не дальше 10 клеток от хозяина
-M.MAX_ALIVE = 4            -- одновременно живых помощников
+M.DEFAULT_MAX_HELPERS = 1  -- storage.proto.max_helpers, пока игрок не задал своё (helper_limit)
+M.MAX_HELPERS_CAP = 16     -- верхняя граница helper_limit
 M.MAX_RECORDS = 32         -- записей в storage.helpers (включая удалённые — для перезарядки)
 
 -- Крючки, которые ставит ядро (init.lua): что сделать с задачами и резервами помощника.
@@ -67,12 +77,31 @@ function M.ids(filter_state)
   return out
 end
 
-local function count_alive(except)
-  local n = 0
-  for id in pairs(storage.helpers) do
-    if id ~= except and M.alive(id) then n = n + 1 end
+--- Сколько помощников разрешил игрок (storage.proto.max_helpers; по умолчанию 1).
+function M.max_helpers()
+  local p = storage.proto
+  local v = type(p) == "table" and p.max_helpers or nil
+  if type(v) ~= "number" or v < 1 then return M.DEFAULT_MAX_HELPERS end
+  if v > M.MAX_HELPERS_CAP then return M.MAX_HELPERS_CAP end
+  return math.floor(v)
+end
+
+--- Занятые места лимита: живые и мёртвые, ждущие возрождения (PROTOCOL §6.9: мёртвый место
+--- держит, поэтому возрождение лимит не превышает). except — id, который не считать.
+--- Второе значение — сколько из них живых.
+function M.occupied(except)
+  local n, alive = 0, 0
+  for id, rec in pairs(storage.helpers) do
+    if id ~= except then
+      if M.alive(id) then
+        n = n + 1
+        alive = alive + 1
+      elseif rec.state == "dead" then
+        n = n + 1
+      end
+    end
   end
-  return n
+  return n, alive
 end
 
 --- Сколько тиков ещё ждать до helper_spawn (0 — можно).
@@ -96,6 +125,44 @@ local function attach(rec, entity)
   rec.unit_number = entity.unit_number
   rec.state = "alive"
   rec.reg = script.register_on_object_destroyed(entity)
+end
+
+--- Есть ли место для нового тела помощника id: лимит max_helpers (сам id не считается — его
+--- запись заменяется) и число записей. Нет — ошибка `limit`.
+function M.check_slot(id)
+  local max = M.max_helpers()
+  if M.occupied(id) >= max then
+    err.raise("limit", "at most " .. max .. " helpers (helper_limit sets the number)")
+  end
+  if storage.helpers[id] == nil and util.count(storage.helpers) >= M.MAX_RECORDS then
+    purge_old_records()
+    if util.count(storage.helpers) >= M.MAX_RECORDS then err.raise("limit", "too many helper ids") end
+  end
+end
+
+--- Новая запись помощника с живым телом (заменяет прежнюю запись id; отметки перезарядки
+--- переносятся). fields — простые поля записи (player_index у тела-игрока).
+--- Проверки (лимит, перезарядка, чьё тело) делает вызывающий: helper_spawn здесь, helper_attach — поток P.
+function M.bind(id, entity, fields)
+  if not (entity and entity.valid and entity.type == "character") then error("registry.bind: not a character", 2) end
+  local old = storage.helpers[id]
+  local new = {
+    spawned_tick = game.tick,
+    removed_tick = old and old.removed_tick or nil,
+    died_tick = old and old.died_tick or nil,
+  }
+  for k, v in pairs(fields or {}) do
+    if type(v) == "number" or type(v) == "string" or type(v) == "boolean" then new[k] = v end
+  end
+  attach(new, entity)
+  storage.helpers[id] = new
+  return new
+end
+
+--- Тело-игрок (персонаж подключённого второго клиента, PROTOCOL §7)?
+function M.is_player_body(id)
+  local rec = storage.helpers[id]
+  return rec ~= nil and rec.player_index ~= nil
 end
 
 --- Отметить смерть (state alive -> dead). Вызывается ядром из on_entity_died.
@@ -135,13 +202,7 @@ function M.op_spawn(args, ctx)
   if left > 0 then
     err.raise("cooldown", "helper_spawn possible in " .. math.ceil(left / 60) .. " s")
   end
-  if count_alive(id) >= M.MAX_ALIVE then
-    err.raise("limit", "at most " .. M.MAX_ALIVE .. " helpers")
-  end
-  if rec == nil and util.count(storage.helpers) >= M.MAX_RECORDS then
-    purge_old_records()
-    if util.count(storage.helpers) >= M.MAX_RECORDS then err.raise("limit", "too many helper ids") end
-  end
+  M.check_slot(id)
   local p, surface, anchor = owner.spawn_anchor()
   if not p then err.raise("no_player", "owner is not in the save, or is online without a character") end
   local center = util.xy(anchor)
@@ -151,13 +212,7 @@ function M.op_spawn(args, ctx)
   if util.dist(pos, center) > M.SPAWN_RADIUS then err.raise("cannot_place", "no free place near the owner") end
   local e = surface.create_entity{ name = "character", position = pos, force = p.force, quality = "normal" }
   if e == nil then err.raise("cannot_place", "character was not created") end
-  local new = {
-    spawned_tick = game.tick,
-    removed_tick = rec and rec.removed_tick or nil,
-    died_tick = rec and rec.died_tick or nil,
-  }
-  attach(new, e)
-  storage.helpers[id] = new
+  M.bind(id, e)
   return { helper = id, unit_number = e.unit_number, surface = surface.name, pos = util.pos(e.position) }
 end
 
@@ -186,6 +241,17 @@ function M.op_remove(args, ctx)
     rec.entity = nil
     return { corpse = rec.corpse_pos }
   end
+  if rec.player_index ~= nil then
+    -- тело-игрок: только отвязать, персонажа игрока не убивать (PROTOCOL §7); перезарядки нет —
+    -- тело не создаётся и не переносится, телепортом пара detach/attach служить не может
+    M.hooks.before_remove(id)
+    rec.state = "removed"
+    rec.removed_tick = nil
+    rec.died_tick = nil
+    rec.entity = nil
+    rec.reg = nil
+    return {}
+  end
   M.hooks.before_remove(id)
   local data = {}
   local e = rec.entity
@@ -205,6 +271,25 @@ function M.op_remove(args, ctx)
   end
   rec.entity = nil
   return data
+end
+
+local LIMIT_SCHEMA = { max = { type = "int", required = true, min = 1, max = M.MAX_HELPERS_CAP } }
+
+--- helper_limit {max:1..16} -> {max, alive} (PROTOCOL §4). Админская операция: её шлёт скрипт
+--- запуска напарника («сколько помощников?»), агентам сервер её не даёт. Ниже числа занятых
+--- мест (живые и ждущие возрождения) опустить нельзя — `limit`.
+function M.op_limit(args, ctx)
+  local a = schema.validate(LIMIT_SCHEMA, args)
+  local occupied, alive = M.occupied()
+  if a.max < occupied then
+    err.raise("limit", "max " .. a.max .. " is below the number of helpers alive or awaiting respawn (" .. occupied .. ")")
+  end
+  if type(storage.proto) ~= "table" then
+    -- сейв со схемой 1 (proto — число), миграция ещё не шла: версию сохранить
+    storage.proto = { version = type(storage.proto) == "number" and storage.proto or 0 }
+  end
+  storage.proto.max_helpers = a.max
+  return { max = a.max, alive = alive }
 end
 
 function M.op_list(args, ctx, jobs_active)

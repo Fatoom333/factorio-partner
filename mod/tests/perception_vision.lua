@@ -147,3 +147,16 @@ do
   V.run(100)
   G.eq(#w.force.charts, 8)
 end
+
+-- 7. Тело-игрок (PROTOCOL §7): карту ему открывает движок, мод обзор не ведёт
+do
+  local w = G.reset()
+  G.add_helper(w, "h1", { pos = { x = 0, y = 0 } })
+  storage.helpers.h1.player_index = 2
+  local V = require("scripts.perception.vision")
+  V.run(100)
+  G.eq(#w.force.charts, 0)
+  storage.helpers.h1.player_index = nil
+  V.run(200)
+  G.eq(#w.force.charts, 8)
+end

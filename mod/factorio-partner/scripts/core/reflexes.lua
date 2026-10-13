@@ -61,6 +61,7 @@ function M.run(tick)
           if def then
             local ok, e = pcall(def.check, helper, entity, params, tick)
             if not ok then
+              err.count_module_error() -- hello.module_errors (EVENTS.md «Рефлексы v1»)
               local key = params.type
               if last_log[key] == nil or tick - last_log[key] >= 3600 then
                 last_log[key] = tick
