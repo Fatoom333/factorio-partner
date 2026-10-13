@@ -44,6 +44,7 @@
 | `partner_map` | `radius?=16 (≤32), center?│near?, types?, names?` | op `map` |
 | `partner_resources` | `radius?, name?, center?│near?` | op `resources` |
 | `partner_stock` | `radius?, items?, limit?, center?│near?` | op `stock` |
+| `partner_find` | `item, kinds?, surface?, limit?` | op `find` — где по всей базе делают, тратят, хранят предмет |
 | `partner_ghosts` | `radius?│area?, center?│near?` | op `ghosts` |
 | `partner_rates` | `scope?, period?, area?, surface?, items? (≤100), top? (1..100)` | op `rates` (`surface` — статистика другой планеты) |
 | `partner_recipes` | `filter?` | op `recipes` — что помощник может скрафтить из своего инвентаря |

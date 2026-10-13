@@ -114,6 +114,7 @@ MCP-сервер `factorio_partner` (Python) общаются **только** �
 | `stock` | h? | `{center?│near?:"player", radius?=64 (≤128), items?, limit?=50 (≤200)}` | STATE.md | G |
 | `ghosts` | h? | `{area?│radius?=64, center?│near?}` | STATE.md | G |
 | `recipes` | h | `{filter?}` | STATE.md | G |
+| `find` | h? | `{item, kinds?, surface?, limit?=20 (≤50)}` | STATE.md | G |
 | `rates` | h? | `{scope?="surface"│"area", area?, surface?, period?="1m"│"10m"│"1h", items? (≤100), top?=20 (≤100)}` | STATE.md | L |
 
 Правила:
