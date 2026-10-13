@@ -238,4 +238,76 @@ S.suite("move_path", {
       P.cancel(task, ctx())
       S.eq(task.approach, nil)
   end },
+
+  { "path_lost и «не двигаюсь» в одном тике: одно шумное stuck и один новый запрос (ревизия 3.2)", function()
+      local _, h = B.setup()
+      local P = path_mod()
+      local task = { job = 60, helper = "h1" }
+      local emitted = {}
+      local function ctx()
+        return { entity = h, tick = game.tick, emit = function(kind, data) emitted[#emitted + 1] = { kind = kind, data = data } end }
+      end
+      local goal = { x = 30, y = 0 }
+      for _ = 1, 10 do
+        S.eq(P.step(task, ctx(), goal, 1), nil)
+        B.tick(1)
+      end
+      local st = task.approach
+      S.eq(st.state, "walking")
+      S.eq(#emitted, 0)
+      -- тело упёрлось и стоит уже 60 тиков, а ждущий запрос пути потерян (как после загрузки сейва)
+      B.blocked = function() return true end
+      B.pathfinder = nil -- «движок» больше не отвечает: перепланирование остаётся незавершённым
+      st.path_id = 987654
+      st.last_move_tick = game.tick - P.STUCK_TICKS
+      local before = #B.all_requests()
+      S.eq(P.step(task, ctx(), goal, 1), nil)
+      S.eq(#emitted, 1, "одно событие на одно перепланирование")
+      S.eq({ emitted[1].kind, emitted[1].data.reason, emitted[1].data.job }, { "stuck", "path_lost", 60 })
+      S.eq(#B.all_requests(), before + 1, "и один новый запрос пути, а не два")
+      S.eq(B.count(storage.path_requests), 1, "только что отправленный запрос не выброшен")
+      -- пока маршрут не пришёл, новые причины молчат; счётчик перепланирований при этом идёт
+      for _ = 1, P.STUCK_TICKS + 5 do
+        B.tick(1)
+        local r = P.step(task, ctx(), goal, 1)
+        if r ~= nil then break end
+      end
+      S.eq(#emitted, 1, "повторного шумного stuck на то же перепланирование нет")
+      S.eq(task.approach.replans, 1)
+      -- маршрут пришёл — перепланирование закончено, следующее застревание снова видно агенту
+      B.blocked = nil
+      B.pathfinder = B.straight_path
+      for _ = 1, 20 do
+        B.tick(1)
+        S.eq(P.step(task, ctx(), goal, 1), nil)
+      end
+      S.eq(task.approach.noted, nil)
+      S.eq(task.approach.state, "walking")
+      B.blocked = function() return true end
+      local p = S.add_player{ name = "Blocker", position = { h.position.x + 0.5, h.position.y } }
+      for _ = 1, P.STUCK_TICKS + 2 do
+        B.tick(1)
+        P.step(task, ctx(), goal, 1)
+      end
+      S.eq(#emitted, 2)
+      S.eq(emitted[2].data.reason, "blocked")
+      P.cancel(task, ctx())
+  end },
+
+  { "потерянный запрос при планировании: шумное path_lost одно, пока маршрут не пришёл", function()
+      local _, h = B.setup()
+      local P = path_mod()
+      B.pathfinder = nil
+      local job = B.act("walk", { to = { x = 30, y = 0 } }).job
+      B.tick(3)
+      storage.path_requests = {} -- запросы потеряны
+      B.tick(2)
+      S.eq(#B.events("stuck"), 1)
+      S.eq(B.events("stuck")[1].data.reason, "path_lost")
+      storage.path_requests = {}
+      B.tick(2)
+      S.eq(#B.events("stuck"), 1, "маршрут так и не пришёл — то же перепланирование, второго события нет")
+      B.pathfinder = B.straight_path
+      S.eq(B.run(job, 2000).kind, "job_done")
+  end },
 })

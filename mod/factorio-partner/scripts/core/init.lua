@@ -41,6 +41,7 @@ end
 
 local last_log = {}
 local function log_error(where, e)
+  err.count_module_error() -- hello.module_errors: каждое падение, а в журнал — не чаще раза в минуту
   local key = where
   local tick = game and game.tick or 0
   if last_log[key] ~= nil and tick - last_log[key] < 3600 then return end
@@ -103,6 +104,7 @@ function M.init()
   dispatch.register_op("say", ops.say)
   dispatch.register_op("helper_spawn", registry.op_spawn)
   dispatch.register_op("helper_remove", registry.op_remove)
+  dispatch.register_op("helper_limit", registry.op_limit)
   dispatch.register_op("helper_list", function(args, ctx)
     return registry.op_list(args, ctx, function(id)
       local t = jobs.active(id)

@@ -91,7 +91,7 @@ do
   G.raises("bad_args", function() R.ops.resources({ near = "player", center = { x = 0, y = 0 } }, ctx) end)
   -- без помощника и без хозяина онлайн
   w.players[1].connected = false
-  G.raises("no_helper", function() R.ops.resources({}, {}) end)
+  G.raises("no_player", function() R.ops.resources({}, {}) end)
 end
 
 -- 5. Кластеризация большого пятна (без глубокой рекурсии)

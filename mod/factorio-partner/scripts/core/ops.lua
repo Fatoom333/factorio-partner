@@ -40,6 +40,7 @@ function M.hello(args, ctx)
     players_online = online,
     players = players,
     helpers = ids,
+    module_errors = err.module_errors(),
   }
 end
 

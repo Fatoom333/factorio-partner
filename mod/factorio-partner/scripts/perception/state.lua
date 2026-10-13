@@ -201,9 +201,9 @@ function C.resolve(args, ctx, opts)
   end
 
   if not where.surface then
-    -- Без помощника — поверхность и сила хозяина.
+    -- Без помощника — поверхность и сила хозяина; хозяина нет онлайн → no_player (PROTOCOL §4).
     if not present then
-      err.raise("no_helper", "no helper given and owner is not online")
+      err.raise("no_player", "no helper given and owner is not online")
     end
     where.surface = owner.physical_surface
     where.force = owner.force

@@ -185,7 +185,7 @@ do
   G.add_player(w, { name = "T", pos = { x = 100, y = 100 } })
   d = M.ops.map({ center = { x = 50.7, y = -3.2 }, radius = 2 }, {})
   G.eq(d.bbox, { x0 = 48, y0 = -6, x1 = 52, y1 = -2 })
-  G.raises("no_helper", function()
+  G.raises("no_player", function()
     w.players[1].connected = false
     M.ops.map({ center = { x = 0, y = 0 } }, {})
   end)

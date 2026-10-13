@@ -22,17 +22,18 @@ M.MAX_RESPONSE = 200000
 -- указан — должен быть жив; "spawn"/"remove" — обязателен, проверку делает сама операция;
 -- false — не нужен (если указан, игнорируется).
 M.HELPER_REQ = {
-  hello = false, helper_list = false, events = false, blob_put = false,
+  hello = false, helper_list = false, events = false, blob_put = false, helper_limit = false,
   helper_spawn = "spawn", helper_remove = "remove",
+  helper_attach = "spawn", -- операция потока P (scripts/core/attach.lua): id обязателен, тело проверяет сама
   act = "h", cancel = "h", jobs = "h", reflexes = "h", say = "h", vision = "h", state = "h", recipes = "h",
-  map = "h?", resources = "h?", stock = "h?", ghosts = "h?", rates = "h?",
+  map = "h?", resources = "h?", stock = "h?", ghosts = "h?", rates = "h?", find = "h?",
 }
 M.DEFAULT_MODULE_REQ = "h?"
 
 -- Только чтение: большой ответ таких операций не храним в recent (повтор безопасен).
 M.READ_ONLY = {
   hello = true, helper_list = true, jobs = true, events = true, state = true, map = true,
-  resources = true, stock = true, ghosts = true, recipes = true, rates = true,
+  resources = true, stock = true, ghosts = true, recipes = true, rates = true, find = true,
 }
 
 M.ops = {} -- op -> function(args, ctx) -> data
@@ -117,7 +118,10 @@ local function execute(id, req)
   end)
   if not ok then
     local code, text = err.normalize(res)
-    if code == "internal" then log("[factorio-partner] op " .. op .. " failed: " .. text) end
+    if code == "internal" then
+      err.count_module_error()
+      log("[factorio-partner] op " .. op .. " failed: " .. text)
+    end
     return error_line(id, code, text)
   end
   local data = res

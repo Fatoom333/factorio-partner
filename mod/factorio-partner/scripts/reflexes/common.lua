@@ -6,13 +6,14 @@
 --   { unit    = unit_number тела, к которому относятся attack/low/flee/watch_tick,
 --     attack  = { first_tick, last_tick, noisy_tick, pending, by, threat = {name, pos}? },
 --     low     = true — health_low уже отправлен (сброс при здоровье ≥ 50 %),
---     flee    = { job, goal, legs, cand, since_seq, started, threat, p = {radius, distance, to} },
+--     flee    = { job, goal, legs, cand, tried, since_seq, started, threat, p = {radius, distance, to} },
 --     flee_block = тик, раньше которого отступление не начинается снова,
 --     flee_fail = { reason, tick } — последняя неудача «даже не начал» (чтобы не повторять громко),
 --     watch_tick = тик последнего saw_enemy,
 --     death   = { tick, unit, pos, surface, force, announced, retries, retry_tick } }
 -- Только простые таблицы: без LuaEntity и функций.
 local util = require("scripts.core.util")
+local vis = require("scripts.core.vis")
 
 local C = {}
 
@@ -75,9 +76,9 @@ function C.chunk_of(p)
 end
 
 --- Видит ли помощник точку: ≤ 32 клеток от тела или чанк виден силе (PROTOCOL §6.7).
-function C.visible(entity, p)
-  if util.dist(util.xy(entity.position), p) <= C.EYES then return true end
-  return entity.force.is_chunk_visible(entity.surface, C.chunk_of(p)) and true or false
+--- Проверка одна на весь мод — scripts.core.vis; напрямую is_chunk_visible здесь не зовётся.
+function C.visible(helper_id, entity, p)
+  return vis.visible(helper_id, entity.surface, p, entity.force)
 end
 
 --- Враги вокруг точки center (по умолчанию — тела) в радиусе radius, ближние первыми:

@@ -149,6 +149,17 @@ function G.surface(name)
     return not s.ungenerated[chunk_key(cx, cy)]
   end
 
+  -- Итератор чанков, как LuaSurface.get_chunks(): s.chunk_count — сколько чанков у поверхности.
+  s.chunk_count = 9
+  s.get_chunks = function()
+    local i = 0
+    return function()
+      if i >= s.chunk_count then return nil end
+      i = i + 1
+      return { x = i, y = 0, area = { left_top = { x = i * 32, y = 0 }, right_bottom = { x = i * 32 + 32, y = 32 } } }
+    end
+  end
+
   -- blocked["x:y"] = true → can_place_entity = false в этой позиции
   s.can_place_entity = function(p)
     s.calls[#s.calls + 1] = { "can_place_entity", p }
@@ -295,7 +306,7 @@ function G.reset(opts)
   _G.prototypes = { entity = { character = { crafting_categories = { crafting = true } } } }
 
   -- свежие модули восприятия
-  for _, n in ipairs { "state", "map", "resources", "stock", "ghosts", "recipes", "vision" } do
+  for _, n in ipairs { "state", "map", "resources", "stock", "ghosts", "recipes", "vision", "find" } do
     package.loaded["scripts.perception." .. n] = nil
   end
   return world

@@ -41,6 +41,7 @@ S.suite("helpers", {
   end },
   { "spawn: хозяин офлайн (ревизия 3) — у его последней позиции на его поверхности", function()
       S.load_mod()
+      S.okr(S.req("helper_limit", { max = 2 }))
       local vulc = S.surface{ name = "vulcanus" }
       local p = S.add_player{ name = "Tartaluga", surface = vulc, position = { 300, -40 }, connected = false }
       p.position = { x = 5, y = 5 } -- камера не в счёт: берётся physical_position
@@ -66,15 +67,88 @@ S.suite("helpers", {
       S.err(S.req("helper_spawn", {}, "h1"), "cannot_place")
       S.eq(storage.helpers.h1, nil)
   end },
-  { "spawn: живой с этим id -> helper_exists; лимит живых", function()
+  { "spawn: живой с этим id -> helper_exists; по умолчанию помощник один (max_helpers = 1)", function()
       S.load_mod()
       S.add_player{ name = "Tartaluga" }
+      S.eq(storage.proto.max_helpers, 1)
       S.okr(S.req("helper_spawn", {}, "h1"))
       S.err(S.req("helper_spawn", {}, "h1"), "helper_exists")
+      S.err(S.req("helper_spawn", {}, "h2"), "limit")
+      S.eq(storage.helpers.h2, nil)
+  end },
+  { "helper_limit: игрок задаёт число помощников, {max, alive}; третий spawn при max=2 -> limit", function()
+      S.load_mod()
+      S.add_player{ name = "Tartaluga" }
+      S.eq(S.okr(S.req("helper_limit", { max = 2 })), { max = 2, alive = 0 })
+      S.eq(storage.proto.max_helpers, 2)
+      S.okr(S.req("helper_spawn", {}, "h1"))
       S.okr(S.req("helper_spawn", {}, "h2"))
+      S.err(S.req("helper_spawn", {}, "h3"), "limit")
+      S.eq(S.okr(S.req("helper_limit", { max = 16 })), { max = 16, alive = 2 })
       S.okr(S.req("helper_spawn", {}, "h3"))
-      S.okr(S.req("helper_spawn", {}, "h4"))
-      S.err(S.req("helper_spawn", {}, "h5"), "limit")
+      -- значение переживает сохранение/загрузку
+      S.reload()
+      S.eq(storage.proto.max_helpers, 16)
+      S.eq(S.okr(S.req("helper_limit", { max = 3 })).alive, 3)
+      S.err(S.req("helper_spawn", {}, "h4"), "limit")
+  end },
+  { "helper_limit: границы 1..16, ниже числа занятых мест нельзя, помощник не нужен", function()
+      S.load_mod()
+      S.add_player{ name = "Tartaluga" }
+      S.err(S.req("helper_limit", {}), "bad_args")
+      S.err(S.req("helper_limit", { max = 0 }), "bad_args")
+      S.err(S.req("helper_limit", { max = 1.5 }), "bad_args")
+      S.err(S.req("helper_limit", { max = "2" }), "bad_args")
+      S.err(S.req("helper_limit", { max = 17 }), "limit")
+      S.err(S.req("helper_limit", { max = 2, extra = 1 }), "bad_args")
+      S.eq(storage.proto.max_helpers, 1, "неудачные вызовы значение не меняют")
+      S.okr(S.req("helper_limit", { max = 3 }))
+      S.okr(S.req("helper_spawn", {}, "h1"))
+      S.okr(S.req("helper_spawn", {}, "h2"))
+      S.err(S.req("helper_limit", { max = 1 }), "limit")
+      S.eq(storage.proto.max_helpers, 3)
+      S.okr(S.req("helper_limit", { max = 2 }))
+      -- id помощника в конверте не обязателен и не проверяется (операция не «h»)
+      S.eq(S.okr(S.req("helper_limit", { max = 2 }, "nobody")).max, 2)
+  end },
+  { "лимит считает живых и мёртвых, ждущих возрождения: возрождение его не превышает", function()
+      S.load_mod()
+      S.add_player{ name = "Tartaluga" }
+      require("scripts.reflexes.death").RESPAWN_TICKS = math.huge -- остаётся мёртвым
+      S.okr(S.req("helper_limit", { max = 2 }))
+      S.okr(S.req("helper_spawn", {}, "h1"))
+      S.okr(S.req("helper_spawn", {}, "h2"))
+      S.tick(5)
+      storage.helpers.h1.entity.die()
+      S.eq(storage.helpers.h1.state, "dead")
+      S.err(S.req("helper_spawn", {}, "h3"), "limit", "мёртвый держит место")
+      S.err(S.req("helper_limit", { max = 1 }), "limit", "занято два места: живой и ждущий возрождения")
+      S.eq(S.okr(S.req("helper_limit", { max = 2 })), { max = 2, alive = 1 })
+      -- удалили мёртвого — место свободно
+      S.okr(S.req("helper_remove", {}, "h1"))
+      S.okr(S.req("helper_spawn", {}, "h3"))
+      S.okr(S.req("helper_limit", { max = 2 }))
+  end },
+  { "registry.bind / тело-игрок: helper_remove только отвязывает, персонаж игрока жив", function()
+      S.load_mod()
+      S.add_player{ name = "Tartaluga" }
+      local friend = S.add_player{ name = "Second", position = { 20, 0 } }
+      local reg = require("scripts.core.registry")
+      reg.check_slot("p1")
+      local rec = reg.bind("p1", friend.character, { player_index = friend.index, junk = function() end })
+      S.eq(rec.state, "alive")
+      S.eq(rec.player_index, friend.index)
+      S.eq(rec.junk, nil, "в запись идут только простые значения")
+      S.eq(reg.is_player_body("p1"), true)
+      S.eq(select(1, reg.occupied()), 1)
+      S.raises(function() reg.check_slot("h1") end, "limit")
+      S.okr(S.req("jobs", {}, "p1"))
+      S.eq(S.okr(S.req("helper_remove", {}, "p1")), {})
+      S.eq(friend.character.valid, true, "персонажа игрока не убиваем")
+      S.eq(storage.helpers.p1.state, "removed")
+      S.eq(reg.cooldown_left(storage.helpers.p1), 0, "отвязка — без перезарядки")
+      S.eq(select(1, reg.occupied()), 0)
+      S.raises(function() reg.bind("p1", nil) end, "not a character")
   end },
   { "spawn: лишние аргументы -> bad_args", function()
       S.load_mod()
@@ -210,6 +284,7 @@ S.suite("helpers", {
   end },
   { "helper_list: id, state, surface, pos, job", function()
       S.load_mod()
+      S.okr(S.req("helper_limit", { max = 2 }))
       S.add_player{ name = "Tartaluga" }
       S.okr(S.req("helper_spawn", {}, "h2"))
       S.okr(S.req("helper_spawn", {}, "h1"))
