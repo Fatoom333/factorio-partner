@@ -27,6 +27,7 @@ class Model:
         self.alive = ["old"] if preexisting else []
         self.removed = []
         self.module_errors = 0
+        self.body = {"body": "character"}   # helper_list.body (ревизия 3.3); {} — мод до 3.3
         self.ops = []
 
     def __call__(self, cmd):
@@ -48,7 +49,7 @@ class Model:
             return ok({"proto": 1, "mod": "0.1.0", "owner": "Tartaluga", "module_errors": self.module_errors,
                        "helpers": list(self.alive)})
         if op == "helper_list":
-            return ok({"helpers": [{"id": h, "state": "alive"} for h in self.alive]
+            return ok({"helpers": [dict({"id": h, "state": "alive"}, **self.body) for h in self.alive]
                        + [{"id": h, "state": "removed", "cooldown_s": 300} for h in self.removed]})
         if op == "helper_spawn":
             if helper in self.alive:
@@ -156,3 +157,17 @@ def test_limit_cleans_up_on_exception(fake_rcon, monkeypatch):
         with pytest.raises(KeyboardInterrupt):
             m.run(c)
     assert model.alive == [] and model.max == 1
+
+
+def test_limit_needs_body_in_helper_list(fake_rcon):
+    """Ревизия 3.3: в helper_list у каждой записи есть body; мод без него сценарий не проходит."""
+    m = load()
+    model = Model()
+    model.body = {}
+    srv = fake_rcon(handler=model)
+    with lc.LiveClient(srv.port, PASSWORD, timeout=5) as c:
+        res = m.run(c)
+    assert res["ok"] is False
+    bad = {s["name"]: s.get("error", "") for s in res["steps"] if not s["ok"]}
+    assert "default_one" in bad and "body" in bad["default_one"], bad
+    assert model.alive == [], "помощники убраны и при провале"
