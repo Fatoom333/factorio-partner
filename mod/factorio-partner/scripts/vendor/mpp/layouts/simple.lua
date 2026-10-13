@@ -226,7 +226,7 @@ function layout:preprocess_grid(state)
 	local conv = coord_convert[state.direction_choice]
 	local gx, gy = state.coords.ix1 - 1, state.coords.iy1 - 1
 	if state.avoid_water_choice then
-		local avoid_tiles = state.surface.find_tiles_filtered{area=tile_area, collision_mask=mpp_util.liquid_tile_layers()} -- [partner] water and lava
+		local avoid_tiles = mpp_util.unsupported_tiles(state, tile_area) -- [partner] any tile the drill collides with (rules from the game)
 
 		for i, avoid_tile in ipairs(avoid_tiles) do
 			local tx, ty = avoid_tile.position.x-.5, avoid_tile.position.y-.5
@@ -1896,7 +1896,7 @@ function layout:placement_landfill(state)
 		if state.is_space then
 			fill_tiles = surface.find_tiles_filtered{area=area, name="se-space"}
 		else
-			fill_tiles = surface.find_tiles_filtered{area=area, collision_mask=mpp_util.liquid_tile_layers()} -- [partner] water and lava
+			fill_tiles = mpp_util.unsupported_tiles(state, area) -- [partner] any tile the drill collides with (rules from the game)
 		end
 		state.fill_tiles = fill_tiles
 	end

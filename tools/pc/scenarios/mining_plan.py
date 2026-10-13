@@ -12,6 +12,9 @@
    - буры покрывают руду: нет предупреждения `uncovered_ore_tiles`, буров столько же, сколько в ответе,
      пятно из `resources` лежит внутри размеченной области;
    - лента выходит в заданную сторону: все призраки ленты на карте (`map`) смотрят туда.
+   - ревизия 3.3: карта до разметки (`map`) — клетки жидкости; ни один бур на них не стоит;
+     предупреждения `enclosed` / `narrow_access` / `access_side` согласны с операцией `access` по
+     рамке пятна (если пятно не обрезано кругом поиска и размечено целиком).
 5. Повторная разметка того же пятна записывается в итог как справка (`repeat`): что отвечает движок на
    призрак поверх такого же призрака, заглушкой не проверить.
 Только конверты `/partner <JSON>` через live_client (TESTING.md §3). Сейв — копия стенда.
@@ -228,6 +231,113 @@ def covers(area, patch_area, margin=COVER_MARGIN):
             and area["right_bottom"]["y"] + margin >= patch_area["right_bottom"]["y"])
 
 
+# ---- ревизия 3.3: жидкость и выходы с участка (PROTOCOL §6.12 — имён плиток в сценарии нет)
+
+WARNING_PREFIXES = ("on_liquid:", "access_side:", "marked_for_deconstruction:", "uncovered_ore_tiles:", "skipped:",
+                    "not_researched:")
+WARNING_WORDS = ("narrow_access", "enclosed", "no_pole_researched", "fluid_needed_no_pipes", "failed_placing_belt",
+                 "unable_to_create_a_layout")
+ACCESS_SIDES = ("north", "east", "south", "west")
+MAP_RADIUS = 32
+
+
+def _windows(area):
+    """Центры окон карты (65×65), которыми накрывается область."""
+    xs = list(range(int(math.floor(area["left_top"]["x"])) + MAP_RADIUS, int(math.ceil(area["right_bottom"]["x"])) + MAP_RADIUS,
+                    2 * MAP_RADIUS + 1))
+    ys = list(range(int(math.floor(area["left_top"]["y"])) + MAP_RADIUS, int(math.ceil(area["right_bottom"]["y"])) + MAP_RADIUS,
+                    2 * MAP_RADIUS + 1))
+    return [{"x": x, "y": y} for x in xs for y in ys]
+
+
+def liquid_cells(client, area):
+    """Клетки области, где карта рисует жидкость: `~` (не пройти) и `,` (нужна подложка).
+    Снимать ДО разметки: призраки закрашивают клетки под собой. → (множество клеток, имена плиток)."""
+    cells, names = set(), set()
+    for center in _windows(area):
+        m = client.call_ok("map", {"center": center, "radius": MAP_RADIUS}, HELPER)
+        bbox = m.get("bbox") or {}
+        for r, row in enumerate(m.get("rows") or []):
+            for c, ch in enumerate(row):
+                if ch in "~,":
+                    cells.add((bbox["x0"] + c, bbox["y0"] + r))
+        liquids = m.get("liquids")
+        if isinstance(liquids, dict):
+            names.update(liquids)
+    return cells, sorted(names)
+
+
+def drills_on_liquid(client, area, miner, cells):
+    """Призраки буров, у которых центр или соседняя с ним клетка — жидкость. → (список, сколько буров видели)."""
+    bad, seen = [], set()
+    if not miner:
+        return bad, 0
+    for center in _windows(area):
+        m = client.call_ok("map", {"center": center, "radius": MAP_RADIUS, "names": [miner]}, HELPER)
+        for e in m.get("entities") or []:
+            if not (e.get("ghost") and e.get("name") == miner):
+                continue
+            x, y = e["pos"]["x"], e["pos"]["y"]
+            if (x, y) in seen:
+                continue
+            seen.add((x, y))
+            # клетки, чей центр не дальше клетки от центра бура: для бура 3×3 — все девять, для 2×2 — четыре
+            hit = [(cx, cy) for cx in range(int(math.floor(x - 1)), int(math.floor(x + 1)) + 1)
+                   for cy in range(int(math.floor(y - 1)), int(math.floor(y + 1)) + 1)
+                   if abs(cx + 0.5 - x) <= 1 and abs(cy + 0.5 - y) <= 1 and (cx, cy) in cells]
+            if hit:
+                bad.append({"pos": e["pos"], "cells": hit[:4]})
+    return bad, len(seen)
+
+
+def check_warnings(detail, reasons):
+    """Предупреждения — только известные слова; `access_side` называет сторону."""
+    warnings = detail.get("warnings") or []
+    for w in warnings:
+        w = str(w)
+        if not (w in WARNING_WORDS or w.startswith(WARNING_PREFIXES)):
+            reasons.append(f"неизвестное предупреждение {w!r}")
+        if w.startswith("access_side:") and w.split(":", 1)[1] not in ACCESS_SIDES:
+            reasons.append(f"access_side без стороны: {w!r}")
+        if w.startswith("on_liquid:") and not w.split(":", 1)[1].isdigit():
+            reasons.append(f"on_liquid без числа: {w!r}")
+    return [str(w) for w in warnings]
+
+
+def check_liquid_and_access(client, patch, detail, cells, result, reasons):
+    """Буры не стоят на жидкости; предупреждения о выходах согласны с операцией `access`."""
+    warnings = check_warnings(detail, reasons)
+    area = detail.get("area")
+    miner = (detail.get("chosen") or {}).get("miner")
+    bad, seen = drills_on_liquid(client, area, miner, cells) if area else ([], 0)
+    result["liquid"] = {"cells_in_area": len(cells), "drills_seen": seen, "drills_on_liquid": bad[:5],
+                        "on_liquid": [w for w in warnings if w.startswith("on_liquid:")]}
+    if bad:
+        reasons.append(f"буры стоят на жидкости: {len(bad)} из {seen}, первый {bad[0]}")
+    if patch.get("window") or patch.get("clipped"):
+        result["access"] = {"skipped": "пятно размечено окном или обрезано кругом поиска: рамка пятна неизвестна"}
+        return
+    r = client.call("access", {"area": patch["area"]}, HELPER)
+    if not r.get("ok"):
+        reasons.append(f"access по пятну: {(r.get('error') or {}).get('code')}")
+        return
+    acc = r["data"]
+    exits = acc.get("exits") or []
+    best_neck = exits[0].get("neck") if exits else None
+    sides = [w.split(":", 1)[1] for w in warnings if w.startswith("access_side:")]
+    result["access"] = {"land": acc.get("land"), "liquid": acc.get("liquid"), "liquids": acc.get("liquids"),
+                        "enclosed": acc.get("enclosed"), "best": acc.get("best"), "best_neck": best_neck,
+                        "exits": len(exits), "plan_warnings": [w for w in warnings if not w.startswith(("skipped:", "uncovered"))]}
+    if bool(acc.get("enclosed")) != ("enclosed" in warnings):
+        reasons.append(f"access.enclosed={acc.get('enclosed')}, а предупреждения разметки — {warnings}")
+    if (best_neck == "narrow") != ("narrow_access" in warnings):
+        reasons.append(f"лучший выход по access — {best_neck}, а предупреждения разметки — {warnings}")
+    if sides and sides != [acc.get("best")]:
+        reasons.append(f"access_side {sides}, а access.best = {acc.get('best')!r}")
+    if acc.get("enclosed") and sides:
+        reasons.append(f"выходов нет, а разметка называет сторону {sides}")
+
+
 def verify(client, patch, before, real, result, reasons, direction=None, belts=True):
     """Сверка поставленного с игрой (шаг 4). before — ответ `ghosts` до постановки."""
     detail = detail_of(real)
@@ -305,7 +415,7 @@ def run(client) -> dict:
     patch, dry = picked
     dry_detail = detail_of(dry)
     result["patch"] = {"name": patch["name"], "center": patch["center"], "area": patch["area"], "tiles": patch.get("tiles"),
-                       "dist": patch.get("dist"), "window": patch.get("window")}
+                       "dist": patch.get("dist"), "window": patch.get("window"), "clipped": patch.get("clipped")}
     result["dry"] = {"ghosts": dry_detail.get("ghosts"), "need": dry_detail.get("need"), "area": dry_detail.get("area"),
                      "chosen": dry_detail.get("chosen"), "warnings": dry_detail.get("warnings")}
 
@@ -317,7 +427,9 @@ def run(client) -> dict:
                                 "tiles": pd.get("tiles"), "skipped": pd.get("skipped"), "drills": pd.get("drills"),
                                 "need": pd.get("need"), "warnings": pd.get("warnings")}
 
-    before = ghosts_in(client, dry_detail["area"]) if dry_detail.get("area") and max(side(dry_detail["area"])) <= 128 else {}
+    dry_area_ok = bool(dry_detail.get("area")) and max(side(dry_detail["area"])) <= 128
+    before = ghosts_in(client, dry_detail["area"]) if dry_area_ok else {}
+    cells, _ = liquid_cells(client, dry_detail["area"]) if dry_area_ok else (set(), [])  # до разметки
     real = act(client, "plan_mining", plan_args(patch, LAYOUT, DIRECTION))
     result["plan"] = brief(real)
     detail = detail_of(real)
@@ -328,7 +440,11 @@ def run(client) -> dict:
             reasons.append(f"призраков {detail.get('ghosts')}, а сухой прогон обещал {dry_detail.get('ghosts')}")
         if detail.get("need") != dry_detail.get("need"):
             reasons.append(f"need {detail.get('need')}, а сухой прогон обещал {dry_detail.get('need')}")
+        if detail.get("warnings") != dry_detail.get("warnings"):
+            reasons.append(f"предупреждения {detail.get('warnings')}, а сухой прогон обещал {dry_detail.get('warnings')}")
     verify(client, patch, before, real, result, reasons, direction=DIRECTION)
+    if real["kind"] == "job_done":
+        check_liquid_and_access(client, patch, detail, cells, result, reasons)
 
     if not reasons:
         again = act(client, "plan_mining", plan_args(patch, LAYOUT, DIRECTION))
