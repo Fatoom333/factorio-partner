@@ -6,6 +6,7 @@ MCP-сервер `factorio_partner` (Python) общаются **только** �
 [MCP.md](MCP.md), [TESTING.md](TESTING.md), [PLAN.md](PLAN.md). Менять контракты может только
 координатор (главная сессия); потоку нужна правка — пишет её в отчёт `contract_issues`.
 Ревизия 2: после ревью-панели 2026-10-08 (3 ревьюера Fable).
+Ревизия 3.2 (2026-10-13): по `contract_issues` волны 2b (стройка, рефлексы).
 Ревизия 3.1 (2026-10-09): по `contract_issues` волны 2a.
 Ревизия 3 (2026-10-08): по `contract_issues` волны 1 и живым замерам ([research/live-e-2026-10-08.md](../research/live-e-2026-10-08.md)).
 
@@ -95,7 +96,7 @@ MCP-сервер `factorio_partner` (Python) общаются **только** �
 
 | op | h | args | data | владелец |
 |---|---|---|---|---|
-| `hello` | | `{}` | `{proto:1, mod, tick, seq, owner, players_online, players:[{index,name,online,surface,pos}], helpers:[id]}` (`helpers` — все не удалённые, живые и мёртвые) | A |
+| `hello` | | `{}` | `{proto:1, mod, tick, seq, owner, players_online, players:[{index,name,online,surface,pos}], helpers:[id], module_errors:int}` (`helpers` — все не удалённые, живые и мёртвые; `module_errors` — сколько раз модуль или рефлекс упал под `pcall` с загрузки) | A |
 | `helper_spawn` | h | `{}` | `{helper, unit_number, surface, pos}` — только рядом с игроком-хозяином (≤ 10 клеток, его поверхность) | A |
 | `helper_remove` | h | `{}` | `{corpse?:pos}` — тело `die()`, вещи в трупе; для мёртвого помощника тоже можно (без трупа) | A |
 | `helper_list` | | `{}` | `{helpers:[{id, state, surface, pos, job, cooldown_s, corpse?}]}` (у мёртвых `pos` — место смерти) | A |
@@ -163,6 +164,10 @@ MCP-сервер `factorio_partner` (Python) общаются **только** �
 5. **Стройка руками:** `LuaControl.can_place_entity` (досягаемость + коллизии) →
    `surface.create_entity{..., force, raise_built=true, quality="normal"}` → списать 1 предмет
    `remove_item{name, count=1, quality="normal"}`; не списалось → `destroy()` и `no_items`.
+   **Призрак руками:** тело в `build_distance` от призрака + `ghost_revive` = true →
+   `ghost.revive{raise_revive=true}` (событие `script_raised_revive`) → списать предмет; не списалось →
+   постройку убрать, призрак вернуть, `no_items`. `LuaControl.can_place_entity` здесь не зовётся
+   (он считает сам призрак помехой).
    **Постановка призрака:** `surface.can_place_entity{name=<inner>, position, direction, force,
    build_check_type=defines.build_check_type.manual_ghost}`. **Призрак «заблокирован»**
    (ловушка 06.10: дроны висят вечно), если `surface.can_place_entity{name=ghost.ghost_name, ...,
@@ -189,6 +194,10 @@ MCP-сервер `factorio_partner` (Python) общаются **только** �
 9. **Появление тела.** Только `helper_spawn` рядом с хозяином (пустой инвентарь) и
    возрождение после смерти: через 600 тиков у `force.get_spawn_position(surface)` той же
    поверхности, пустой инвентарь, событие `respawned` (как у игрока). Вещи остаются в трупе.
+   Нет свободного места у точки появления — повтор каждые 5 с, до 12 раз, потом
+   `reflex_done{type:"respawn", outcome:"failed"}` (помощник остаётся `dead`, его можно `helper_remove`).
+   Мёртвый помощник, ждущий возрождения, **занимает место** в лимите живых (≤ 4): `helper_spawn`
+   считает `alive` + `dead`, поэтому возрождение лимит не превышает.
 10. **Никакого произвольного Lua** ни в моде, ни в сервере, ни в тестовом стенде.
 11. **Качество (Space Age):** в v1 только `normal`. Все вызовы API с предметами и
     сущностями явно передают `quality="normal"`; предметы другого качества не видны и не трогаются.
@@ -210,9 +219,13 @@ MCP-сервер `factorio_partner` (Python) общаются **только** �
 - Резерв (для нескольких помощников): `storage.reservations = {items={[helper]={[name]=count}},
   areas={[helper]=area}}`. `collect`/`extract` не берут чужой резерв, `build_*` держат область на
   время задачи (пересечение → `reserved`). В v1 с одним помощником реализация может быть пустой,
-  но поля и код — есть.
+  но поля и код — есть. Область держат `build_ghosts`, `build_blueprint`, `deconstruct{area}`;
+  `place` и `deconstruct{target}` чужой резерв только проверяют.
+- Доступ модулей к ядру (кроме `ctx`): чтение — `jobs.active`, `jobs.queue_len`, `jobs.queue_of(helper)`,
+  `events.query`; постановка задачи рефлексом — `jobs.op_act` (только H). В `storage.jobs` никто, кроме
+  ядра, не пишет.
 - Ключи верхнего уровня `storage`: `proto`, `helpers`, `jobs`, `events`, `recent`, `blobs`,
-  `reservations`, `vision`, `reflexes`, `path_requests`. Модуль пишет только под своим ключом;
+  `reservations`, `vision`, `reflexes`, `reflex_state`, `path_requests`. Модуль пишет только под своим ключом;
   миграции — `scripts/core/migrate.lua` (A).
 - В `storage` можно хранить LuaEntity (API это позволяет), но рядом — `unit_number`, и перед
   использованием проверять `valid`. Функции в `storage` не класть.
