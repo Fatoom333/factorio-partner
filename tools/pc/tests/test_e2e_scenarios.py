@@ -1,4 +1,4 @@
-"""Сквозные сценарии e2e_ghosts и e2e_mining (поток K) против модели мода (e2e_world.World):
+"""Сквозные сценарии e2e_ghosts и e2e_mining (потоки K, V4) против модели мода (e2e_world.World):
 настоящий LiveClient → фейковый RCON → модель. Плюс общие помощники scenarios/_e2e.py."""
 from __future__ import annotations
 
@@ -240,9 +240,10 @@ def test_mining_happy_path(live):
     assert res["ok"] is True, res
     assert res["chosen"] == {"miner": MINER, "belt": BELT, "pole": POLE}
     assert res["patch"]["name"] == "iron-ore" and res["patch"]["ore_in_window"] == 81
+    route = res["belt"]["length"]
     need = res["inventory"]["need"]
-    assert need == {MINER: 6, BELT: 9, POLE: 1} and res["inventory"]["spent"] == need
-    assert len(built(world, MINER)) == 6 and len(built(world, BELT)) == 9 and not ghosts(world)
+    assert route > 0 and need == {MINER: 6, BELT: 9 + route, POLE: 1} and res["inventory"]["spent"] == need
+    assert len(built(world, MINER)) == 6 and len(built(world, BELT)) == 9 + route and not ghosts(world)
     assert res["on_map"]["drills"] == 6 and res["coverage"]["drills_off_ore"] == []
     assert res["coverage"]["covered_share"] >= 0.6 and res["belt_dirs"] == [0]
     plans = [a for do, a in world.acts if do == "plan_mining"]
@@ -250,6 +251,137 @@ def test_mining_happy_path(live):
     assert all(p["miner"] == MINER and p["belt"] == BELT and p["pole"] == POLE for p in plans)
     assert [do for do, _ in world.acts][-1] == "build_ghosts"
     assert all(c.startswith("/partner {") for c in srv.commands)
+    # порядок поручения: access → plan_mining → plan_belt (от выходов разметки) → collect → build_ghosts
+    belts = [a for do, a in world.acts if do == "plan_belt"]
+    assert belts[0].get("dry_run") is True and not belts[-1].get("dry_run")
+    assert all(b["from"] == "patch" and b["belt"] == BELT and b["underground"] == "never" for b in belts)
+    dos = [do for do, a in world.acts if not a.get("dry_run")]
+    assert [d for d in dos if d in ("plan_mining", "plan_belt", "collect", "build_ghosts")][:2] == ["plan_mining",
+                                                                                                   "plan_belt"]
+    assert dos.index("plan_belt") < dos.index("collect") < dos.index("build_ghosts")
+    assert world.ops.index("access") < world.ops.index("act") or "access" in world.ops
+    assert res["access"]["enclosed"] is False and res["access"]["liquid"] == 0 and res["access"]["exits"]
+    # лента непрерывна: конец стоит севернее разметки, все ленты разметки и трассы доезжают до него
+    info = res["belt"]
+    assert info["laid"] == route and info["laid_lost"] == [] and info["mining_belts"] == 9 and info["mining_cut"] == []
+    assert info["to"][1] < res["patch"]["window"]["left_top"]["y"]
+    assert res["built"] == {"total": 16 + route, "expected": 16 + route}
+
+
+def test_mining_belt_goes_around_liquid(live):
+    """Перед разметкой с севера лежит полоса жидкости: лента обходит её, а не идёт напрямик."""
+    lava = {(x, y) for x in range(20, 50) for y in range(-6, -3)}
+    world = mining_world(liquid=lava)
+    client, _ = live(world)
+    res = load("e2e_mining").run(client)
+    assert res["ok"] is True, res
+    route = [pos for pos, e in world.entities.items() if e["name"] == BELT and pos[1] < 0]
+    assert route and not any((int(x), int(y) if y >= 0 else int(y) - 1) in lava for x, y in route)
+    assert not any((int(pos[0]), int(pos[1] // 1)) in lava for pos in world.entities)
+    assert res["belt"]["length"] > 20 and res["belt"]["laid_lost"] == []      # обход длиннее прямой
+    assert res["access"]["liquid"] == 0 and res["belt_plan"]["data"]["detail"]["turns"] >= 2
+
+
+def test_mining_detects_a_gap_in_the_belt(live):
+    world = mining_world()
+    orig = world.do_plan_belt
+
+    def gap(h, a):
+        detail = orig(h, a)
+        if not a.get("dry_run"):
+            cells = sorted(pos for pos, e in world.entities.items() if e["ghost"] and e["name"] == BELT
+                           and pos[1] < 0)
+            world.entities.pop(cells[len(cells) // 2])        # одна клетка трассы не встала
+        return detail
+
+    world.do_plan_belt = gap
+    client, _ = live(world)
+    res = load("e2e_mining").run(client)
+    assert res["ok"] is False
+    assert any("лента рвётся" in r for r in res["reasons"]) and res["belt"]["laid_lost"]
+    assert any("не соединена" in r for r in res["reasons"]) and len(res["belt"]["mining_cut"]) > 0
+
+
+def test_mining_detects_a_belt_that_does_not_start_at_the_patch(live):
+    """Лента проложена, но не от выхода разметки: руда с буров до конца не доедет."""
+    world = mining_world()
+    orig = world.do_plan_belt
+
+    def aside(h, a):
+        shifted = dict(a, **{"from": {"x": a["to"]["x"] + 6.0, "y": a["to"]["y"]}})
+        return orig(h, shifted)
+
+    world.do_plan_belt = aside
+    client, _ = live(world)
+    res = load("e2e_mining").run(client)
+    assert res["ok"] is False and any("не соединена" in r for r in res["reasons"])
+    assert res["belt"]["laid_lost"] == [] and len(res["belt"]["mining_cut"]) > 0
+
+
+def test_mining_detects_a_belt_turned_the_wrong_way(live):
+    world = mining_world()
+    orig = world.do_plan_belt
+
+    def turned(h, a):
+        detail = orig(h, a)
+        if not a.get("dry_run"):
+            cells = sorted(pos for pos, e in world.entities.items() if e["ghost"] and e["name"] == BELT
+                           and pos[1] < 0)
+            world.entities[cells[len(cells) // 2]]["dir"] = 8          # лента посреди трассы едет назад
+        return detail
+
+    world.do_plan_belt = turned
+    client, _ = live(world)
+    res = load("e2e_mining").run(client)
+    assert res["ok"] is False and any("лента рвётся" in r for r in res["reasons"])
+
+
+def test_mining_belt_has_no_route(live):
+    """Разметка окружена жидкостью со всех сторон вплотную к рамке: ленте некуда — честный отказ."""
+    ring = {(x, y) for x in range(18, 56) for y in range(-12, 26)
+            if not (24 <= x < 50 and -6 <= y < 20)}
+    world = mining_world(liquid=ring)
+    client, _ = live(world)
+    res = load("e2e_mining").run(client)
+    assert res["ok"] is False
+    assert any("enclosed" in r or "plan_belt" in r for r in res["reasons"])
+    assert not built(world, MINER)                      # без ленты добычу не строим
+
+
+def test_mining_island_is_not_marked(live):
+    """Остров в жидкости: `access` говорит enclosed — сценарий не размечает и не строит."""
+    # суша — пятно руды и две клетки вокруг: рамка access (участок + 8 клеток) вся в жидкости
+    moat = {(x, y) for x in range(10, 64) for y in range(-20, 34) if not (28 <= x < 46 and -2 <= y < 16)}
+    world = mining_world(liquid=moat, helper_pos={"x": 37.5, "y": 14.5})
+    client, _ = live(world)
+    res = load("e2e_mining").run(client)
+    assert res["ok"] is False and res["access"]["enclosed"] is True
+    assert any("enclosed" in r for r in res["reasons"])
+    assert not ghosts(world) and all(do != "plan_belt" for do, _ in world.acts)
+
+
+def test_mining_access_refusal_is_a_reason(live):
+    world = mining_world()
+
+    def refuse(args, helper):
+        from e2e_world import ModError
+        raise ModError("unknown_op", "access")
+
+    world.op_access = refuse
+    client, _ = live(world)
+    res = load("e2e_mining").run(client)
+    assert res["ok"] is False and any("access" in r for r in res["reasons"]) and not ghosts(world)
+
+
+def test_mining_belt_longer_than_the_run_can_carry(live):
+    world = mining_world()
+    scen = load("e2e_mining")
+    scen.MAX_BELT = 3
+    client, _ = live(world)
+    res = scen.run(client)
+    assert res["ok"] is False and any("plan_belt (dry_run)" in r for r in res["reasons"])
+    assert res["belt_dry_run"] and all(t["kind"] == "job_done" for t in res["belt_dry_run"])
+    assert not built(world, MINER)
 
 
 def test_mining_skips_ore_the_drill_cannot_mine(live):
@@ -285,6 +417,49 @@ def test_mining_ore_under_buildings_has_no_free_window(live):
     res = load("e2e_mining").run(client)
     assert res["ok"] is False and "свободном окне" in res["reasons"][0]
     assert not ghosts(world)
+
+
+def test_belt_helpers(E, live):
+    belts = {(0, 3): {"dir": 0}, (0, 2): {"dir": 0}, (0, 1): {"dir": 4}, (1, 1): {"dir": 4}, (2, 1): {"dir": 4},
+             (5, 5): {"dir": 12}, (4, 5): {"dir": 4}, (9, 9): {"dir": 2}}
+    assert E.flows_to(belts, (0, 3), (2, 1)) == (True, (2, 1))
+    assert E.flows_to(belts, (2, 1), (2, 1)) == (True, (2, 1))
+    assert E.flows_to(belts, (0, 3), (1, 1))[0] is True
+    assert E.flows_to(belts, (1, 1), (0, 3)) == (False, (3, 1))         # лента кончилась
+    assert E.flows_to(belts, (5, 5), (0, 0))[0] is False                # две ленты друг в друга — круг
+    assert E.flows_to(belts, (9, 9), (0, 0)) == (False, (9, 9))         # диагональ: не лента
+    assert E.flows_to(belts, (7, 7), (7, 7)) == (False, (7, 7))         # в начале ленты нет
+    assert E.cell_of({"x": -0.5, "y": 3.5}) == (-1, 3) and E.cell_center((-1, 3)) == {"x": -0.5, "y": 3.5}
+    # клетки лент читаются с карты окнами; призраки и постройки различаются
+    world = World()
+    for i in range(30):
+        world.entities[(i + 0.5, 0.5)] = {"name": BELT, "dir": 4, "ghost": i % 2 == 0}
+    world.entities[(3.5, 5.5)] = {"name": MINER, "dir": 0, "ghost": False}
+    client, _ = live(world)
+    client.call_ok("helper_spawn", {}, "e2e")
+    area = {"left_top": {"x": 0, "y": 0}, "right_bottom": {"x": 30, "y": 1}}
+    cells, truncated = E.belt_cells(E.LiveApi(client), [area, area], [BELT])
+    assert len(cells) == 30 and not truncated and cells[(4, 0)] == {"name": BELT, "dir": 4, "ghost": True}
+    assert cells[(5, 0)]["ghost"] is False and (3, 5) not in cells
+    assert world.ops.count("map") == 2                                   # одна и та же область дважды не читается
+
+
+def test_belt_targets_are_ahead_of_the_patch_on_bare_ground(E, live):
+    world = World(ore={"iron-ore": ore_rect(0, -50, 80, 48)})          # к северу от участка — сплошная руда
+    client, _ = live(world)
+    client.call_ok("helper_spawn", {}, "e2e")
+    area = {"left_top": {"x": 29, "y": -1}, "right_bottom": {"x": 40, "y": 10}}
+    log = []
+    assert E.belt_targets(E.LiveApi(client), area, "north", log) == []   # впереди только руда: голой земли нет
+    east = E.belt_targets(E.LiveApi(client), area, "east", log)
+    assert east and all(x >= 40 + 3 for x, y in east) and len(east) <= 4
+    assert log[-1]["step"] == "belt_target" and log[-1]["ahead"] >= len(east)
+    # посреди большого пятна голой земли нет: площадка на той же руде годится (лента по руде идёт)
+    north = E.belt_targets(E.LiveApi(client), area, "north", log, resource="iron-ore")
+    assert north and all(y <= -1 - 3 for x, y in north)
+    world.entities[(34.5, -12.5)] = {"name": BELT, "dir": 0, "ghost": True}      # призрак на площадке — мимо
+    again = E.belt_targets(E.LiveApi(client), area, "north", log, resource="iron-ore")
+    assert again and not any(abs(x - 34) <= 1 and abs(y + 13) <= 1 for x, y in again)
 
 
 def test_mining_missing_items_leaves_ghosts_and_explains(live):

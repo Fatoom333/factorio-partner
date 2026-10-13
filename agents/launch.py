@@ -1,13 +1,16 @@
 """Запуск напарника: тела помощников, ключи, конфигурация MCP и первые сообщения агентам.
 
     python agents/launch.py --helpers 2 --body character
-    python agents/launch.py --helpers 1 --body player --players Bob
+    python agents/launch.py --helpers 1 --body player --player Bob
+    python agents/launch.py --body player --helper h2 --player Bob
 
 Что делает (подробно — agents/README.md):
 1. спрашивает у игрока число помощников и вид тела, если они не заданы флагами;
 2. выдаёт каждому помощнику ключ (``FP_HOME/helpers.json``);
-3. через мост сервера (только ``/partner <JSON>`` по RCON на 127.0.0.1) шлёт ``hello``,
-   ``helper_limit`` и на каждого помощника ``helper_spawn`` или ``helper_attach``;
+3. служебными функциями сервера ``admin_*`` из ``factorio_partner/core.py`` (те же, что стоят за
+   инструментами ``admin_*``; мимо них скрипт в мод не ходит — docs/MCP.md) шлёт ``hello``,
+   ``helper_limit`` и на каждого помощника ``helper_spawn`` или ``helper_attach``. В игру при этом
+   уходит только ``/partner <JSON>`` по RCON на 127.0.0.1;
 4. пишет в ``FP_HOME/launch/`` конфигурацию MCP-сервера ``partner`` и файл сессии с первыми
    сообщениями агентам.
 
@@ -31,6 +34,9 @@ HELPERS_MAX = 16                      # PROTOCOL §4: helper_limit {max:1..16}
 BODIES = ("character", "player")      # PROTOCOL §7 «Два вида тела»
 MIN_KEY = 32                          # MCP.md: ключ помощника — 32+ символа
 PLAYER_RE = re.compile(r"^[^\x00-\x1f\"\\]{1,60}$")
+HELPER_RE = re.compile(r"^[a-z0-9_-]{1,16}$")   # PROTOCOL §2: id помощника
+# отказы сервера, которые значат «мод недоступен», а не «мод отказал»: их разбирает main()
+TRANSPORT_CODES = ("transport_timeout", "game_paused")
 SERVER_NAME = "partner"               # имя MCP-сервера = префикс инструментов mcp__partner__*
 # переменные окружения, которые уходят процессу MCP-сервера (docs/MCP.md «Доступ и настройки»)
 PASS_ENV = ("FP_HOME", "FP_RCON_HOST", "FP_RCON_PORT", "FP_RCON_PASSWORD_FILE",
@@ -72,8 +78,30 @@ def parse_players(value: Any, count: int) -> list[str]:
     return names
 
 
+def parse_ids(values: Any) -> list[str]:
+    """Явные id помощников (``--helper``, можно несколько раз); пусто — будут h1…hN."""
+    ids = [str(v).strip() for v in (values or [])]
+    for hid in ids:
+        if not HELPER_RE.match(hid):
+            raise LaunchError("id помощника (--helper): до 16 символов из a-z, 0-9, _ и -")
+    if len(set(ids)) != len(ids):
+        raise LaunchError("id помощников (--helper) не должны повторяться")
+    if len(ids) > HELPERS_MAX:
+        raise LaunchError("помощников не больше 16")
+    return ids
+
+
+def player_flags(ns: argparse.Namespace) -> str | None:
+    """``--player`` (по одному имени, можно несколько раз) и ``--players`` (через запятую) — одно и то же."""
+    names = [str(p) for p in (getattr(ns, "player", None) or [])]
+    if getattr(ns, "players", None):
+        names.append(str(ns.players))
+    return ",".join(names) if names else None
+
+
 def ask_missing(ns: argparse.Namespace, ask: Callable[[str], str] | None) -> tuple[int, str, list[str]]:
-    """Число помощников и вид тела решает игрок: нет флага — спросить, спросить некого — отказ."""
+    """Число помощников и вид тела решает игрок: нет флага — спросить, спросить некого — отказ.
+    Явные ``--helper`` сами говорят, сколько тел нужно: тогда про число не спрашиваем."""
     def need(value, question: str, default: str) -> str:
         if value is not None:
             return str(value)
@@ -81,12 +109,19 @@ def ask_missing(ns: argparse.Namespace, ask: Callable[[str], str] | None) -> tup
             raise LaunchError("спроси игрока и передай флагом: " + question)
         return ask(f"{question} [{default}] ").strip() or default
 
-    n = parse_helpers(need(ns.helpers, "Сколько помощников запустить (--helpers 1..16)?", "1"))
+    ids = parse_ids(getattr(ns, "helper", None))
+    if ns.helpers is None and ids:
+        n = len(ids)
+    else:
+        n = parse_helpers(need(ns.helpers, "Сколько помощников запустить (--helpers 1..16)?", "1"))
+    if len(ids) > n:
+        raise LaunchError(f"тел просишь {len(ids)} (--helper), а помощников разрешено {n} (--helpers)")
+    bodies = len(ids) if ids else n
     body = parse_body(need(ns.body, "Вид тела (--body character | player)?", "character"))
     players: list[str] = []
     if body == "player":
         players = parse_players(
-            need(ns.players, f"Имена игроков вторых клиентов (--players, через запятую, {n} шт.)?", ""), n)
+            need(player_flags(ns), f"Имена игроков вторых клиентов (--player, {bodies} шт.)?", ""), bodies)
     return n, body, players
 
 
@@ -164,15 +199,6 @@ def first_message(hid: str, key: str, body: str, player: str | None, total: int,
 
 
 # ---------------------------------------------------------------- мод
-async def _op(bridge, op: str, args: dict | None = None, helper: str | None = None) -> dict:
-    resp = await bridge.request(op, args or {}, helper)
-    if resp.get("ok"):
-        data = resp.get("data")
-        return data if isinstance(data, dict) else {}
-    err = resp.get("error") if isinstance(resp.get("error"), dict) else {}
-    raise ModError(str(err.get("code") or "internal")[:40], str(err.get("text") or "")[:300])
-
-
 class ModError(Exception):
     def __init__(self, code: str, text: str = ""):
         super().__init__(f"{code}: {text}" if text else code)
@@ -180,10 +206,31 @@ class ModError(Exception):
         self.text = text
 
 
-async def prepare_mod(bridge, ids: list[str], body: str, players: list[str],
-                      say: Callable[[str], None]) -> dict:
-    """``hello`` → ``helper_limit`` → тело каждому помощнику. Возвращает сводку без секретов."""
-    hello = await _op(bridge, "hello")
+async def _admin(call) -> dict:
+    """Одна служебная функция ``core.admin_*`` → её ``data``. Отказ (``PartnerError`` сервера — у
+    него есть ``code``) становится ``ModError``; «мод недоступен» летит дальше как есть."""
+    try:
+        resp = await call
+    except Exception as e:  # noqa: BLE001 — пакет сервера здесь не импортируется: смотрим на code
+        code = getattr(e, "code", None)
+        if not isinstance(code, str) or code in TRANSPORT_CODES:
+            raise
+        raise ModError(code[:40], str(getattr(e, "text", None) or "")[:300]) from None
+    data = resp.get("data") if isinstance(resp, dict) else None
+    return data if isinstance(data, dict) else {}
+
+
+async def prepare_mod(core, ids: list[str], body: str, players: list[str],
+                      say: Callable[[str], None], limit: int | None = None) -> dict:
+    """``admin_hello`` → ``admin_limit`` → тело каждому помощнику (``admin_spawn`` │ ``admin_attach``).
+
+    ``core`` — ``factorio_partner.core.Core``: в мод скрипт ходит только его служебными функциями
+    (docs/MCP.md), со всеми их проверками. Возвращает сводку без секретов."""
+    limit = len(ids) if limit is None else limit
+    try:
+        hello = await _admin(core.admin_hello())
+    except ModError as e:
+        raise LaunchError(f"мод отказал в hello: {e}") from None
     if hello.get("proto") != 1:
         raise LaunchError("мод factorio-partner другой версии протокола — обнови мод или сервер")
     errors = hello.get("module_errors")
@@ -192,44 +239,36 @@ async def prepare_mod(bridge, ids: list[str], body: str, players: list[str],
         raise LaunchError("в сейве нет хозяина (настройка мода partner-owner) — зайди в игру и повтори")
 
     try:
-        await _op(bridge, "helper_limit", {"max": len(ids)})
+        await _admin(core.admin_limit(limit))
     except ModError as e:
-        if e.code == "unknown_op" and len(ids) == 1:
+        if e.code == "unknown_op" and limit == 1:
             say("мод не знает helper_limit (старше ревизии 3.2) — для одного помощника это не мешает")
         elif e.code == "limit":
-            raise LaunchError("в игре сейчас больше живых помощников, чем ты просишь: "
+            raise LaunchError("в игре сейчас больше занятых мест помощников, чем ты просишь: "
                               "сначала убери лишних или запусти с большим --helpers") from None
         else:
             raise LaunchError(f"мод отказал в helper_limit: {e}") from None
-
-    known = hello.get("helpers")
-    known = set(known) if isinstance(known, list) else set()
-    alive: set[str] = set()
-    if known and body == "character":
-        listed = (await _op(bridge, "helper_list")).get("helpers")
-        for row in listed if isinstance(listed, list) else []:
-            if isinstance(row, dict) and row.get("state") == "alive":
-                alive.add(str(row.get("id")))
 
     bodies: dict[str, dict] = {}
     for i, hid in enumerate(ids):
         if body == "player":
             try:
-                bodies[hid] = await _op(bridge, "helper_attach", {"player": players[i]}, hid)
+                bodies[hid] = await _admin(core.admin_attach(hid, players[i]))
             except ModError as e:
                 if e.code == "no_player":
                     raise LaunchError(f"игрок «{players[i]}» должен быть в игре (второй клиент), "
                                       "не хозяин и с персонажем") from None
+                if e.code == "helper_exists":
+                    raise LaunchError(f"{hid}: этот помощник или игрок «{players[i]}» уже заняты — "
+                                      "сначала отвяжи прежнее тело (helper_remove)") from None
                 raise LaunchError(f"мод отказал в helper_attach для {hid}: {e}") from None
             continue
-        if hid in alive:
-            say(f"{hid}: тело уже есть в игре — беру его")
-            bodies[hid] = {"helper": hid, "reused": True}
-            continue
         try:
-            bodies[hid] = await _op(bridge, "helper_spawn", {}, hid)
+            bodies[hid] = await _admin(core.admin_spawn(hid))
         except ModError as e:
             if e.code == "helper_exists":
+                # живое тело с этим id уже есть (прошлый запуск): берём его, второго не создаём
+                say(f"{hid}: тело уже есть в игре — беру его")
                 bodies[hid] = {"helper": hid, "reused": True}
             elif e.code == "cooldown":
                 raise LaunchError(f"{hid}: тело недавно погибло или удалено — новое можно создать "
@@ -243,13 +282,15 @@ async def prepare_mod(bridge, ids: list[str], body: str, players: list[str],
 
 
 # ---------------------------------------------------------------- запуск целиком
-async def launch(cfg, n: int, body: str, players: list[str], *, bridge,
-                 env: dict[str, str], python: str, say: Callable[[str], None]) -> dict:
-    ids = helper_ids(n)
+async def launch(cfg, n: int, body: str, players: list[str], *, core,
+                 env: dict[str, str], python: str, say: Callable[[str], None],
+                 ids: list[str] | None = None) -> dict:
+    """``n`` — сколько помощников разрешил игрок (``helper_limit``); тела — ``ids`` (по умолчанию h1…hN)."""
+    ids = list(ids) if ids else helper_ids(n)
     keys = ensure_keys(cfg.helpers_file, ids)
     if install_style(cfg.home):
         say("стиль общения скопирован в папку данных (style.md) — его можно править под себя")
-    mod = await prepare_mod(bridge, ids, body, players, say)
+    mod = await prepare_mod(core, ids, body, players, say, limit=n)
 
     out_dir = cfg.home / "launch"
     mcp_path = out_dir / "mcp.json"
@@ -275,7 +316,11 @@ def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(prog="launch.py", description="Запуск напарника factorio-partner")
     ap.add_argument("--helpers", help="сколько помощников (1..16); не задано — спросит")
     ap.add_argument("--body", help="character — тело без игрока; player — персонаж второго клиента")
-    ap.add_argument("--players", help="для --body player: имена игроков через запятую, по одному на помощника")
+    ap.add_argument("--helper", action="append", metavar="ID",
+                    help="id помощника (можно несколько раз); не задано — h1…hN")
+    ap.add_argument("--player", action="append", metavar="NAME",
+                    help="для --body player: имя игрока второго клиента, по одному на помощника (можно несколько раз)")
+    ap.add_argument("--players", help="то же одним флагом: имена игроков через запятую")
     return ap
 
 
@@ -290,9 +335,10 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         n, body, players = ask_missing(ns, input if sys.stdin.isatty() else None)
+        ids = parse_ids(ns.helper)
         try:
-            from factorio_partner.bridge import Bridge
             from factorio_partner.config import Config
+            from factorio_partner.core import Core
             from factorio_partner.errors import ConfigError, PartnerError
         except ImportError:
             raise LaunchError("не найден пакет factorio_partner: запусти из venv, где он установлен "
@@ -304,12 +350,12 @@ def main(argv: list[str] | None = None) -> int:
             raise LaunchError(f"настройки сервера: {e}") from None
 
         async def run() -> dict:
-            bridge = Bridge(cfg)
+            core = Core(cfg)
             try:
-                return await launch(cfg, n, body, players, bridge=bridge, env=dict(os.environ),
-                                    python=sys.executable, say=say)
+                return await launch(cfg, n, body, players, core=core, env=dict(os.environ),
+                                    python=sys.executable, say=say, ids=ids)
             finally:
-                await bridge.close()
+                await core.close()
 
         try:
             result = asyncio.run(run())

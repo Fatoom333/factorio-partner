@@ -48,7 +48,10 @@ _SHRINK_KEEP = ("job", "do", "code", "type", "outcome", "reason")
 BLUEPRINT_RE = re.compile(r"^0[A-Za-z0-9+/=]+$")
 _SECRET_FIELDS = {"key", "password", "blob_data", "blueprint", "data"}
 
+BODY_KINDS = ("character", "player")    # STATE.md «state».body, PROTOCOL §7 «Два вида тела»
+
 HINTS = {
+    "partner_access": "pass a smaller area or radius",
     "partner_map": "reduce radius or pass types/names",
     "partner_resources": "reduce radius or pass name",
     "partner_stock": "reduce radius or pass items",
@@ -257,9 +260,35 @@ class Core:
         return await self._tool("partner_brief", helper, key, {}, run)
 
     async def op_state(self, helper, key) -> dict:
+        """op ``state`` (STATE.md). The answer carries ``body`` (the kind of the helper's body) and
+        ``module_errors`` (the mod's counter of module and reflex failures): the agent watches the
+        counter grow during the game."""
         async def run(h):
-            return self._stamp(await self._mod("state", {}, h))
+            return self._stamp(await self._state_extras(h, await self._mod("state", {}, h)))
         return await self._tool("partner_state", helper, key, {}, run)
+
+    async def _state_extras(self, helper: str, data: dict) -> dict:
+        """``body`` and ``module_errors`` come with ``state`` itself (revision 3.3). A mod that
+        does not send them yet is asked the old way — ``hello`` and ``helper_list``. A failure of
+        these extra reads never hides the state the mod has already given."""
+        if _is_int(data.get("module_errors")) and data.get("body") in BODY_KINDS:
+            return data
+        out = dict(data)
+        try:
+            if not _is_int(out.get("module_errors")):
+                out.pop("module_errors", None)
+                hello = await self._mod("hello", {}, None)
+                if _is_int(hello.get("module_errors")):
+                    out["module_errors"] = hello["module_errors"]
+            if out.get("body") not in BODY_KINDS:
+                out.pop("body", None)
+                listed = await self._mod("helper_list", {}, None)
+                for row in _as_list(listed.get("helpers")):
+                    if isinstance(row, dict) and row.get("id") == helper and row.get("body") in BODY_KINDS:
+                        out["body"] = row["body"]
+        except PartnerError as e:
+            log.info("state extras are not available: %s", e.code)
+        return out
 
     async def op_map(self, helper, key, radius=16, center=None, types=None, names=None,
                      near=None) -> dict:
@@ -375,6 +404,24 @@ class Core:
                 args["limit"] = V.integer(1, V.FIND_LIMIT_MAX)("limit", limit)
             return await self._mod("find", args, h)
         return await self._tool("partner_find", helper, key, a, run)
+
+    async def op_access(self, helper, key, area=None, radius=None, center=None, near=None) -> dict:
+        """op ``access`` (STATE.md): land, liquid and the exits of a site — either ``area``, or a
+        square of ``radius`` around the helper, ``center`` or the owner (``near``)."""
+        a = {"area": area, "radius": radius, "center": center, "near": near}
+
+        async def run(h):
+            args: dict = {}
+            if area is not None:
+                if radius is not None or center is not None or near is not None:
+                    raise V.bad("args", "use either area or center / near with radius")
+                args["area"] = V.area("area", area)
+            else:
+                if radius is not None:
+                    args["radius"] = V.integer(1, V.ACCESS_RADIUS_MAX)("radius", radius)
+                self._where(args, center, near)
+            return await self._mod("access", args, h)
+        return await self._tool("partner_access", helper, key, a, run)
 
     async def op_recipes(self, helper, key, filter=None) -> dict:  # noqa: A002
         a = {"filter": filter}

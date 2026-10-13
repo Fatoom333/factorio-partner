@@ -79,6 +79,70 @@ def test_mcp_scenario_passes_against_the_model(server):
     assert "partner_act" in calls and secrets_out[0] not in calls
 
 
+def test_mcp_scenario_checks_access_state_and_new_refusals(server):
+    """Ревизия 3.3 через настоящий сервер: partner_access, body / module_errors, отказы plan_belt."""
+    lava = {(x, y) for x in range(14, 30) for y in range(0, 6)}
+    world = World(liquid=lava)
+    scen = load("e2e_mcp")
+    client, _, _ = server(world, scen)
+    res = scen.run(client)
+    assert res["ok"] is True, res
+    steps = {s["step"]: s.get("info") for s in res["steps"]}
+    assert steps["state"]["body"] == "character" and steps["state"]["module_errors"] == 0
+    acc = steps["access"]
+    assert acc["liquid"] > 0 and list(acc["liquids"]) == ["lava"] and acc["enclosed"] is False and acc["exits"] > 0
+    assert world.ops.count("access") == 2                  # радиусом и областью; отказы до мода не дошли
+    assert steps["brief"]["reason"] is None
+    assert steps["refusals"]["bad_requests"].count("limit") == 3
+    assert [do for do, _ in world.acts] == ["walk"]        # plan_belt и build_blueprint с ошибкой в мод не ушли
+
+
+def test_mcp_scenario_catches_a_broken_access_answer(server):
+    world = World()
+    orig = world.op_access
+
+    def broken(args, helper):
+        d = orig(args, helper)
+        d["best"] = "up"
+        return d
+
+    world.op_access = broken
+    scen = load("e2e_mcp")
+    client, _, _ = server(world, scen)
+    res = scen.run(client)
+    assert res["ok"] is False and res["failed"] == ["access"]
+
+
+def test_mcp_scenario_catches_a_state_without_body(server):
+    world = World(body="ghost")
+    world.op_helper_list = lambda args, helper: {"helpers": [{"id": "e2e", "state": "alive"}]}
+    scen = load("e2e_mcp")
+    client, _, _ = server(world, scen)
+    res = scen.run(client)
+    assert res["ok"] is False and "state" in res["failed"]
+
+
+def test_mcp_scenario_with_an_old_forge_keeps_raw_output_away(server, forge_module):
+    """Старый forge: заметок нет, причина — код `forge_too_old`; сценарий зелёный (это не ошибка сервера)."""
+    world = World()
+    scen = load("e2e_mcp")
+    client, _, _ = server(world, scen)
+    forge = forge_module()
+    forge.brief_notes = lambda config: {"profile": None, "notes": "", "truncated": False, "reason": "forge_too_old"}
+    client.core.forge_module = forge.__name__
+    res = scen.run(client)
+    assert res["ok"] is True, res
+    brief = next(s for s in res["steps"] if s["step"] == "brief")["info"]
+    assert brief["reason"] == "forge_too_old" and brief["notes_missing"] == "forge_too_old" and brief["notes_chars"] == 0
+    # а сырой вывод forge в заметках сценарий ловит
+    forge.brief_notes = lambda config: {"profile": None, "notes": "", "truncated": False,
+                                        "reason": "forge notes: usage: forge [-h] {build}"}
+    client2, _, _ = server(World(), scen)
+    client2.core.forge_module = forge.__name__
+    res = scen.run(client2)
+    assert res["ok"] is False and "brief" in res["failed"]
+
+
 def test_mcp_scenario_catches_a_helper_that_did_not_move(server):
     world = World()
     world.do_walk = lambda h, a: {"pos": dict(h["pos"]), "walked": 0}     # «дошёл», но стоит на месте
@@ -111,6 +175,30 @@ def test_forge_unsupported_is_reported_verbatim(server):
                                   "home_set": False, "profile_set": False}
     assert res["plans"][0]["resource"] == "iron-ore"
     assert not world.entities and "build_blueprint" not in [do for do, _ in world.acts]
+
+
+def test_forge_too_old_is_an_honest_outcome(server, forge_module):
+    """Старый forge на машине стенда: `forge_unsupported`, причина — код, заметки пустые с тем же кодом."""
+    world = World(ore={"iron-ore": ore_rect(30, 0, 14, 14)})
+    scen = load("e2e_forge")
+    client, _, _ = server(world, scen)
+    forge = forge_module()
+    forge.plan = lambda *a, config, **kw: {"supported": False, "reason": "forge_too_old"}
+    forge.brief_notes = lambda config: {"profile": None, "notes": "", "truncated": False, "reason": "forge_too_old"}
+    client.core.forge_module = forge.__name__
+    res = scen.run(client)
+    assert res["ok"] is False and res["outcome"] == "forge_unsupported"
+    assert res["forge"] == {"supported": False, "reason": "forge_too_old", "too_old": True}
+    assert res["brief"] == {"notes": False, "reason": "forge_too_old", "raw_forge_output": False}
+    assert len(res["reasons"]) == 1 and "обновить forge" in res["next_step"]
+    assert not world.entities and "build_blueprint" not in [do for do, _ in world.acts]
+    # заметки с сырым выводом forge или с другой причиной — отдельные замечания
+    forge.brief_notes = lambda config: {"profile": None, "notes": "", "truncated": False,
+                                        "reason": "forge notes: usage: forge [-h] {build}"}
+    client2, _, _ = server(World(ore={"iron-ore": ore_rect(30, 0, 14, 14)}), scen)
+    client2.core.forge_module = forge.__name__
+    res = scen.run(client2)
+    assert res["brief"]["raw_forge_output"] is True and len(res["reasons"]) == 3
 
 
 def fake_forge(shift=(0, 0)):

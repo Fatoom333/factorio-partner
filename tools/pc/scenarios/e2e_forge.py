@@ -12,6 +12,8 @@
 3. `partner_plan {task: "mining", resource: {name, area}, options}` → `{plan, anchor, direction,
    items, size, summary}`. Если forge не может (`supported: false`) — причина записывается дословно,
    сценарий не проходит: это и есть результат проверки, forge сценарий не чинит и профили не трогает.
+   Старый forge без нужных команд даёт причину `forge_too_old` — и у `partner_plan`, и у
+   `partner_brief` (пустые заметки), без сырого вывода forge: сценарий сверяет и это.
 4. `partner_act build_blueprint {plan, anchor, direction, dry_run}` — привязка чертежа к месту:
    призраков столько же, сколько предметов в `items`, без пропусков.
 5. Предметы честно (`collect` со складов, поход к складам, сырьё и `craft`) — ровно `items`.
@@ -39,6 +41,7 @@ ORES = ("iron-ore", "copper-ore", "coal", "stone", "calcite", "scrap")
 MAX_PLANS = 3
 BUILD_TIMEOUT_S = 420.0
 PLAN_KEYS = {"plan", "anchor", "direction", "items", "size", "summary"}
+FORGE_TOO_OLD = "forge_too_old"    # MCP.md: старый forge без нужных команд — у partner_plan и partner_brief
 
 
 def _load(name):
@@ -151,11 +154,26 @@ def run(client) -> dict:
         if answer.get("supported") is False:
             # forge не может: это итог проверки, а не сбой стенда. Причина — дословно, как её увидит агент.
             entry.update(supported=False, reason=answer.get("reason"))
+            too_old = answer.get("reason") == FORGE_TOO_OLD
             result.update(ok=False, outcome="forge_unsupported",
-                          forge={"supported": False, "reason": answer.get("reason")},
+                          forge={"supported": False, "reason": answer.get("reason"), "too_old": too_old},
                           reasons=["partner_plan: forge не дал чертёж — " + str(answer.get("reason"))],
-                          next_step="по MCP.md агент просит хозяина поставить призраки и строит build_ghosts "
-                                    "(этот путь проверяет сценарий e2e_ghosts)")
+                          next_step=("forge на этой машине старый (нет нужных команд): хозяину — обновить forge и "
+                                     "активировать профиль сейва; агент тем временем размечает сам (plan_mining, "
+                                     "сценарий e2e_mining)") if too_old else
+                                    ("по MCP.md агент просит хозяина поставить призраки и строит build_ghosts "
+                                     "(этот путь проверяет сценарий e2e_ghosts)"))
+            # заметки профиля при старом forge: пустые, с тем же кодом, без сырого вывода forge
+            b = client.try_tool("brief")
+            if b["ok"]:
+                missing = str(b["data"].get("notes_missing") or "")
+                result["brief"] = {"notes": b["data"].get("notes") is not None, "reason": b["data"].get("reason"),
+                                   "raw_forge_output": "usage:" in missing.lower() or "invalid choice" in missing.lower()}
+                if result["brief"]["raw_forge_output"]:
+                    result["reasons"].append("partner_brief отдал агенту сырой вывод forge (usage)")
+                if too_old and b["data"].get("reason") != FORGE_TOO_OLD:
+                    result["reasons"].append(f"partner_plan сказал forge_too_old, а partner_brief — "
+                                             f"{b['data'].get('reason')!r}")
             return result
         notes = check_plan(answer)
         if not notes and answer["anchor"] != E.area_center(cand["area"]):
