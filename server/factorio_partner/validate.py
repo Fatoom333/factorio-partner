@@ -22,6 +22,11 @@ ITEM_COUNT_MAX = 100_000
 AREA_SIDE_MAX = 128
 NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.\-]{0,99}$")
 ID_RE = re.compile(r"^[a-z0-9-]{1,32}$")   # blob / plan ids (PROTOCOL §4 blob_put)
+MAX_HELPERS = 16                   # PROTOCOL §4 helper_limit {max:1..16}
+FIND_LIMIT_MAX = 50                # STATE.md «find»
+FIND_KINDS = ("producers", "consumers", "storage", "entities")
+PLAYER_NAME_MAX = 60
+MAX_OPTIONS = 32                   # plan_mining.options: MPP flags
 
 Validator = Callable[[str, Any], Any]
 
@@ -145,11 +150,45 @@ def name_list(max_len: int) -> Validator:
     return check
 
 
+def flags(max_len: int) -> Validator:
+    """``plan_mining.options``: flat {flag: bool | number | name}; the mod knows the flags."""
+    def check(field: str, v: Any):
+        if not isinstance(v, dict):
+            raise bad(field, "must be an object of flags")
+        if len(v) > max_len:
+            raise PartnerError("limit", f"{field}: at most {max_len} flags")
+        out = {}
+        for k, x in v.items():
+            name(f"{field} key", k)
+            if isinstance(x, bool):
+                out[k] = x
+            elif isinstance(x, (int, float)):
+                out[k] = number(-COORD_LIMIT, COORD_LIMIT)(f"{field}.{k}", x)
+            elif isinstance(x, str):
+                out[k] = name(f"{field}.{k}", x)
+            else:
+                raise bad(f"{field}.{k}", "must be true/false, a number or a name")
+        return out
+    return check
+
+
+def blueprint_direction(field: str, v: Any):
+    """``build_blueprint.direction``: only the four cardinal directions (ACTIONS.md, v1)."""
+    v = integer()(field, v)
+    if v not in (0, 4, 8, 12):
+        raise bad(field, "must be 0, 4, 8 or 12")
+    return v
+
+
 # ---- act -----------------------------------------------------------------------
 
 MODE = enum("auto", "robots", "hand")
 DIRECTION = integer(0, 15)
 REACH = number(0, 64)
+# build_blueprint.force (ACTIONS.md): how the blueprint is placed — click, Shift, Ctrl+Shift
+BUILD_FORCE = enum("normal", "forced", "superforced")
+MINING_LAYOUT = enum("simple", "compact", "super_compact", "sparse", "logistics", "compact_logistics",
+                     "sparse_logistics")
 
 # do -> (fields, required, groups of mutually exclusive fields with "exactly one" flag)
 ACTIONS: dict[str, tuple[dict[str, Validator], tuple[str, ...], tuple[tuple[tuple[str, ...], bool], ...]]] = {
@@ -162,16 +201,22 @@ ACTIONS: dict[str, tuple[dict[str, Validator], tuple[str, ...], tuple[tuple[tupl
     "craft": ({"recipe": name, "count": integer(1, 10_000)}, ("recipe", "count"), ()),
     "insert": ({"target": target, "items": items}, ("target", "items"), ()),
     "extract": ({"target": target, "items": items, "equip": boolean}, ("target",), ()),
-    "collect": ({"items": items, "center": pos, "near": enum("player"), "radius": number(0, 128)},
+    "collect": ({"items": items, "center": pos, "near": enum("player"), "radius": number(1, 128)},
                 ("items",), ((("center", "near"), False),)),
     "pickup": ({"target": target, "area": area}, (), ((("target", "area"), False),)),
     "place": ({"item": name, "pos": pos, "direction": DIRECTION, "recipe": name}, ("item", "pos"), ()),
-    "build_blueprint": ({"blob": ident, "plan": ident, "anchor": pos, "direction": DIRECTION,
-                        "mode": MODE, "dry_run": boolean}, ("anchor",), ((("blob", "plan"), True),)),
-    "build_ghosts": ({"area": area, "radius": number(0, 128), "mode": MODE}, (),
+    "build_blueprint": ({"blob": ident, "plan": ident, "anchor": pos, "direction": blueprint_direction,
+                        "mode": MODE, "force": BUILD_FORCE, "dry_run": boolean},
+                        ("anchor",), ((("blob", "plan"), True),)),
+    "build_ghosts": ({"area": area, "radius": number(1, 64), "mode": MODE}, (),
                      ((("area", "radius"), False),)),
     "deconstruct": ({"target": target, "area": area, "filter": name_list(32)}, (),
                     ((("target", "area"), True),)),
+    "plan_mining": ({"resource": name, "area": area, "near": pos, "layout": MINING_LAYOUT,
+                     "direction": enum("north", "east", "south", "west"),
+                     "miner": name, "belt": name, "pole": name, "pipe": name,
+                     "options": flags(MAX_OPTIONS), "dry_run": boolean},
+                    (), ((("area", "near"), True),)),
     "wait": ({"seconds": integer(1, 600)}, ("seconds",), ()),
 }
 
@@ -235,6 +280,34 @@ def recipe_filter(field: str, v: Any) -> str:
     """``partner_recipes.filter``: a substring of a recipe name; ``""`` means no filter."""
     if not isinstance(v, str) or len(v) > MAX_FILTER or not re.fullmatch(r"[A-Za-z0-9_.\-]*", v):
         raise bad(field, f"must be a recipe-name substring of up to {MAX_FILTER} characters")
+    return v
+
+
+def check_kinds(field: str, v: Any) -> list:
+    """``partner_find.kinds``: a subset of producers / consumers / storage / entities."""
+    if not isinstance(v, list) or not v:
+        raise bad(field, "must be a non-empty list of " + ", ".join(FIND_KINDS))
+    if len(v) > len(FIND_KINDS):
+        raise PartnerError("limit", f"{field}: at most {len(FIND_KINDS)} kinds")
+    out = []
+    for i, k in enumerate(v):
+        if not isinstance(k, str) or k not in FIND_KINDS:
+            raise bad(f"{field}[{i}]", "must be one of " + ", ".join(FIND_KINDS))
+        if k not in out:
+            out.append(k)
+    return out
+
+
+def helper_max(field: str, v: Any) -> int:
+    """``helper_limit.max`` (PROTOCOL §4): 1..16, above -> ``limit``."""
+    return integer(1, MAX_HELPERS)(field, v)
+
+
+def player_name(field: str, v: Any) -> str:
+    """A Factorio player name for ``helper_attach``: one line, no control characters."""
+    if (not isinstance(v, str) or not 1 <= len(v) <= PLAYER_NAME_MAX or v != v.strip()
+            or any(ord(c) < 32 or ord(c) == 127 for c in v)):
+        raise bad(field, f"must be a player name of 1..{PLAYER_NAME_MAX} characters")
     return v
 
 

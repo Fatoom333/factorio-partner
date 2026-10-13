@@ -106,6 +106,18 @@ def build_server(core: Core, admin: bool = False) -> FastMCP:
         return await _run(core.op_rates(helper, key, scope, period, area, items, top, surface))
 
     @mcp.tool()
+    async def partner_find(helper: Helper, key: Key, item: str,
+                           kinds: list[Literal["producers", "consumers", "storage", "entities"]] | None = None,
+                           surface: str | None = None,
+                           limit: int | None = None) -> dict:
+        """Где по всей базе делают, тратят и хранят предмет или жидкость (не в области, а на всей
+        поверхности). kinds — что искать (по умолчанию producers, consumers, storage; entities —
+        сами постройки с таким именем). Ответ — группы построек, ближайшие первыми:
+        {groups:[{kind, pos, dist, count, names, recipe?, amount?}], total, hidden?, truncated?};
+        pos группы годится как center для карты и как цель walk. limit ≤ 50."""
+        return await _run(core.op_find(helper, key, item, kinds, surface, limit))
+
+    @mcp.tool()
     async def partner_recipes(helper: Helper, key: Key, filter: str | None = None) -> dict:  # noqa: A002
         """Что помощник может скрафтить из своего инвентаря: {craftable:{рецепт:сколько}}.
         filter — подстрока имени рецепта."""
@@ -115,7 +127,7 @@ def build_server(core: Core, admin: bool = False) -> FastMCP:
     async def partner_act(helper: Helper, key: Key, do: str,
                           args: dict[str, Any] | None = None, replace: bool = False) -> dict:
         """Поставить задачу в очередь: walk, approach, follow, mine, craft, insert, extract, collect,
-        pickup, place, build_blueprint, build_ghosts, deconstruct, wait. Ответ — {job, queued_before};
+        pickup, place, build_blueprint, build_ghosts, deconstruct, plan_mining, wait. Ответ — {job, queued_before};
         итог придёт событием job_done / job_failed. Для build_blueprint вместо blob передай plan
         (id из partner_plan). replace=true отменяет текущую задачу и очередь."""
         return await _run(core.op_act(helper, key, do, args, replace))
@@ -144,7 +156,7 @@ def build_server(core: Core, admin: bool = False) -> FastMCP:
     @mcp.tool()
     async def partner_say(helper: Helper, key: Key,
                           text: str) -> dict:
-        """Сказать в чат игры (до 200 символов), с префиксом [helper]."""
+        """Сказать в чат игры (до 200 символов); в чате текст идёт с префиксом «helper: »."""
         return await _run(core.op_say(helper, key, text))
 
     @mcp.tool()
@@ -171,6 +183,16 @@ def build_server(core: Core, admin: bool = False) -> FastMCP:
         async def admin_remove(helper: Helper) -> dict:
             """(оркестр) удалить тело помощника (вещи останутся в трупе)."""
             return await _run(core.admin_remove(helper))
+
+        @mcp.tool()
+        async def admin_limit(max: int) -> dict:  # noqa: A002
+            """(оркестр) сколько помощников разрешил игрок: helper_limit {max:1..16}."""
+            return await _run(core.admin_limit(max))
+
+        @mcp.tool()
+        async def admin_attach(helper: Helper, player: str) -> dict:
+            """(оркестр) тело помощника — персонаж второго подключённого клиента (--body player)."""
+            return await _run(core.admin_attach(helper, player))
 
         @mcp.tool()
         async def admin_raw_events(since: int = 0,

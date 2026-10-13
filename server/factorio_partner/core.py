@@ -55,6 +55,7 @@ HINTS = {
     "partner_ghosts": "reduce radius or pass a smaller area",
     "partner_rates": "pass items or a smaller top",
     "partner_recipes": "pass filter",
+    "partner_find": "pass a smaller limit or fewer kinds",
     "partner_state": "",
     "partner_wait": "",     # never too large: _fit_wait cuts the page and sets more=true
 }
@@ -357,6 +358,23 @@ class Core:
                 args["surface"] = V.name("surface", surface)
             return await self._mod("rates", args, h)
         return await self._tool("partner_rates", helper, key, a, run)
+
+    async def op_find(self, helper, key, item=None, kinds=None, surface=None, limit=None) -> dict:
+        """op ``find`` (STATE.md): where the whole base makes, uses and stores an item."""
+        a = {"item": item, "kinds": kinds, "surface": surface, "limit": limit}
+
+        async def run(h):
+            if item is None:
+                raise V.bad("item", "required")
+            args: dict = {"item": V.name("item", item)}
+            if kinds is not None:
+                args["kinds"] = V.check_kinds("kinds", kinds)
+            if surface is not None:
+                args["surface"] = V.name("surface", surface)
+            if limit is not None:
+                args["limit"] = V.integer(1, V.FIND_LIMIT_MAX)("limit", limit)
+            return await self._mod("find", args, h)
+        return await self._tool("partner_find", helper, key, a, run)
 
     async def op_recipes(self, helper, key, filter=None) -> dict:  # noqa: A002
         a = {"filter": filter}
@@ -682,6 +700,19 @@ class Core:
         if not isinstance(helper, str) or not HELPER_RE.match(helper):
             raise V.bad("helper", "must match ^[a-z0-9_-]{1,16}$")
         return _admin_result(await self.bridge.request("helper_remove", {}, helper))
+
+    async def admin_limit(self, max: int) -> dict:  # noqa: A002
+        """``helper_limit {max}``: how many helpers the player allowed (PROTOCOL §4)."""
+        args = {"max": V.helper_max("max", max)}
+        return _admin_result(await self.bridge.request("helper_limit", args))
+
+    async def admin_attach(self, helper: str, player: str) -> dict:
+        """``helper_attach {player}``: the helper's body is the character of a second connected
+        client (PROTOCOL §7, ``--body player``). The operation itself lives in the mod."""
+        if not isinstance(helper, str) or not HELPER_RE.match(helper):
+            raise V.bad("helper", "must match ^[a-z0-9_-]{1,16}$")
+        args = {"player": V.player_name("player", player)}
+        return _admin_result(await self.bridge.request("helper_attach", args, helper))
 
     async def admin_raw_events(self, since: int = 0, helper: str | None = None, limit: int = 100) -> dict:
         args = {"since": V.integer(0, 2**53)("since", since), "limit": V.integer(1, 200)("limit", limit)}
