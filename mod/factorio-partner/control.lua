@@ -10,6 +10,7 @@ local ACTIONS = {
   "mine", "craft", "insert", "extract", "collect", "pickup",
   "place", "build_blueprint", "build_ghosts", "deconstruct",
   "plan_mining",
+  "plan_belt",
 }
 for _, name in ipairs(ACTIONS) do
   core.register_action(require("scripts.actions." .. name))

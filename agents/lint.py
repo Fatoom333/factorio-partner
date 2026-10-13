@@ -28,7 +28,7 @@ DOCS = ROOT / "docs"
 
 TOOL_PREFIX = "mcp__partner__"
 # инструменты из docs/MCP.md, которые добавляет другой поток той же волны (сервер может отставать)
-PENDING_TOOLS = {"partner_find"}
+PENDING_TOOLS = {"partner_access"}
 # аргументы partner_plan описаны в MCP.md отдельным разделом, а не в таблице
 PLAN_ARGS = {"task", "resource", "patch", "options"}
 # MCP.md: для build_blueprint вместо blob можно plan
