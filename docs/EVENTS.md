@@ -11,7 +11,8 @@
 - **Размер события:** `data` ≤ 4000 байт JSON. Больше — ужатие: скаляры `job`, `do`, `code`, `text`
   сохраняются всегда; строки режутся до 200 символов; `detail` → `{truncated:true}`; вложенные
   таблицы ≤ 256 байт остаются, остальные выбрасываются; на верхнем уровне `data.truncated=true`.
-  Несериализуемые данные `emit` не роняют (событие уходит ужатым).
+  Несериализуемые данные `emit` не роняют (событие уходит ужатым). Действия сами режут длинные
+  списки в `detail` до 20 записей (ACTIONS.md), а при сумме списков больше 30 — до 10 каждый.
 - `events{since, helper?, limit?=100 (≤200)}` → события с `seq > since` (для `helper` — его
   и мировые; фильтр по `helper` применяется **до** среза по `limit`), `lost=true`, если `since`
   старше самого старого. Ответ ограничен ещё и по байтам (~150 КБ), поэтому событий может быть
@@ -27,11 +28,11 @@
 | `attacked` | `{by, damage, health}` — только **первое** за эпизод (эпизод кончается через 30 с без урона) | H |
 | `health_low` | `{health, max}` — здоровье < 40 %; повторно — только после восстановления до 50 % | H |
 | `died` | `{pos, corpse:pos}` — приходит **после** `job_failed{code:"no_helper"}` снятых задач | H |
-| `respawned` | `{pos}` | H |
+| `respawned` | `{pos, reason?}` — у тела-игрока шлёт ядро: `reason` `"player_joined"` (игрок вернулся) │ `"body_restored"`; после возрождения движком — без `reason` | H, A |
 | `reflex_done` | `{type, outcome:"ok"│"failed", reason?, detail}` — итог рефлекса, не каждое срабатывание; возрождение не удалось: `{type:"respawn", outcome:"failed", reason:"no_place"│"surface_gone"│"force_gone"}` | H |
 | `inventory_full` | `{job?}` — задача, если не может продолжать, завершается `job_failed{code:"no_space"}` | C |
 | `player_said` (хозяин) | `{player, owner:true, text, pos, selected?:{name, pos, unit_number?}}` | A |
-| `helper_lost` | `{reason}` — тело исчезло не по смерти | A |
+| `helper_lost` | `{reason}` — тело исчезло не по смерти: `destroyed`; у тела-игрока — `player_left`, `no_character`, `body_changed`, `player_removed` | A |
 | `game_reloaded` | `{tick}` — шлёт сервер, не мод | D |
 
 Шумные (не будят; к ответу ожидания прикладываются последние 6):
@@ -56,6 +57,8 @@
 | `flee` | `radius` 4..32 = 20, `distance` 8..64 = 30, `health` 0..1 = 1, `on_attack` = true, `to`: `"away"│"spawn"│"player"` | враг в `radius` (или атака) и здоровье ≤ `health` → задача-отход, заменяет очередь |
 | `watch` | `radius` 4..32 = 32, `every_s` 1..600 = 10 | шумное `saw_enemy` о ближайшем враге |
 
+`flee.to` по умолчанию `"away"`. Набор рефлексов хранится в `storage.reflexes` и **переживает** возрождение,
+перезагрузку сейва и возврат тела-игрока; сбрасывается только `helper_remove`.
 Задача рефлекса ставится через ядро как обычная (`jobs.op_act` с `replace=true`), её `req` = `"reflex:<type>"`;
 итог — и `job_done`/`job_failed`, и `reflex_done`. Ошибка внутри проверки рефлекса не роняет мод: растёт
 счётчик `module_errors` в ответе `hello`, текст — в журнале игры.

@@ -6,6 +6,8 @@ MCP-сервер `factorio_partner` (Python) общаются **только** �
 [MCP.md](MCP.md), [TESTING.md](TESTING.md), [PLAN.md](PLAN.md). Менять контракты может только
 координатор (главная сессия); потоку нужна правка — пишет её в отчёт `contract_issues`.
 Ревизия 2: после ревью-панели 2026-10-08 (3 ревьюера Fable).
+Ревизия 3.3 (2026-10-13): по `contract_issues` волны 3 и живой сверке режимов постройки; лава без
+фундамента, проходимость (`access`), состояние `away` у тела-игрока.
 Ревизия 3.2 (2026-10-13): по `contract_issues` волны 2b (стройка, рефлексы).
 Ревизия 3.1 (2026-10-09): по `contract_issues` волны 2a.
 Ревизия 3 (2026-10-08): по `contract_issues` волны 1 и живым замерам ([research/live-e-2026-10-08.md](../research/live-e-2026-10-08.md)).
@@ -74,7 +76,7 @@ MCP-сервер `factorio_partner` (Python) общаются **только** �
 | `not_found` | цель не найдена или не своей/нейтральной силы |
 | `not_reachable` | цель на другой поверхности (ходить между поверхностями нельзя) |
 | `no_items` | не хватает предметов |
-| `cannot_place` | постановка невозможна (`can_place_entity` = false) |
+| `cannot_place` | постановка невозможна (`can_place_entity` = false); у чертежа и разметки — ни один призрак не встал |
 | `not_charted` | цель или область в неоткрытых чанках |
 | `not_visible` | живые данные (враги, содержимое) запрошены вне видимых чанков |
 | `reserved` | предметы/область заняты другим помощником |
@@ -99,7 +101,9 @@ MCP-сервер `factorio_partner` (Python) общаются **только** �
 | `hello` | | `{}` | `{proto:1, mod, tick, seq, owner, players_online, players:[{index,name,online,surface,pos}], helpers:[id], module_errors:int}` (`helpers` — все не удалённые, живые и мёртвые; `module_errors` — сколько раз модуль или рефлекс упал под `pcall` с загрузки) | A |
 | `helper_spawn` | h | `{}` | `{helper, unit_number, surface, pos}` — только рядом с игроком-хозяином (≤ 10 клеток, его поверхность) | A |
 | `helper_remove` | h | `{}` | `{corpse?:pos}` — тело `die()`, вещи в трупе; для мёртвого помощника тоже можно (без трупа) | A |
-| `helper_list` | | `{}` | `{helpers:[{id, state, surface, pos, job, cooldown_s, corpse?}]}` (у мёртвых `pos` — место смерти) | A |
+| `helper_list` | | `{}` | `{helpers:[{id, state, surface, pos, job, cooldown_s, corpse?, body?, away?}]}` (у мёртвых `pos` — место смерти, у `away` — место, где тело было в последний раз; `body` — `"character"│"player"`) | A |
+| `helper_limit` | | `{max:1..16}` | `{max, alive}` — админская (агентам сервер её не выдаёт) | A |
+| `helper_attach` | h | `{player:string}` | `{helper, pos, surface}` — админская; id помощника — в конверте `helper` (§7 «Два вида тела») | A (P) |
 | `act` | h | `{do, args, replace?=false}` | `{job, queued_before}` | A |
 | `cancel` | h | `{job?│all?:true}` | `{cancelled:[job]}` | A |
 | `jobs` | h | `{}` | `{active?:{job,do,since,progress,req}, queue:[{job,do,req}]}` (`req` — `id` запроса, поставившего задачу) | A |
@@ -115,6 +119,7 @@ MCP-сервер `factorio_partner` (Python) общаются **только** �
 | `ghosts` | h? | `{area?│radius?=64, center?│near?}` | STATE.md | G |
 | `recipes` | h | `{filter?}` | STATE.md | G |
 | `find` | h? | `{item, kinds?, surface?, limit?=20 (≤50)}` | STATE.md | G |
+| `access` | h? | `{area│center?+radius?=32 (≤64)}` | STATE.md — суша, преграды и выходы с участка | G |
 | `rates` | h? | `{scope?="surface"│"area", area?, surface?, period?="1m"│"10m"│"1h", items? (≤100), top?=20 (≤100)}` | STATE.md | L |
 
 Правила:
@@ -124,7 +129,8 @@ MCP-сервер `factorio_partner` (Python) общаются **только** �
 - Помощников: живых и ждущих возрождения ≤ `max_helpers` (иначе `limit`), записей в `storage.helpers` ≤ 32.
   `max_helpers` задаёт игрок при запуске напарника («сколько помощников?»): запускающий скрипт
   шлёт админскую операцию `helper_limit {max:1..16}` → `{max, alive}`; значение лежит в
-  `storage.proto.max_helpers`, по умолчанию 1. Уменьшить ниже числа уже живых нельзя (`limit`).
+  `storage.proto = {version, max_helpers}`, по умолчанию 1. Уменьшить ниже числа **занятых мест** (живые +
+  ждущие возрождения + `away`) нельзя (`limit`); `alive` в ответе — только живые. Тело-игрок место тоже занимает.
 - **h? без помощника** (операции чтения): поверхность, сила и центр берутся у хозяина
   (`physical_surface/position`); хозяина нет онлайн → `no_player`. `near:"player"` при хозяине на
   другой поверхности, чем помощник → `no_player`.
@@ -209,8 +215,8 @@ MCP-сервер `factorio_partner` (Python) общаются **только** �
 ## 7. Хозяин, помощники, хранилище
 - **Хозяин** — игрок из настройки мода `partner-owner` (runtime-global, строка; пусто → игрок
   с индексом 1). Приказы агент принимает только от хозяина (EVENTS.md `player_said.owner`).
-- `storage.helpers[id] = {entity, unit_number, state="alive"│"dead"│"removed", died_tick, died_pos,
-  corpse_pos, removed_tick}`. Ядро ставит `state="removed"` **до** `die()`, поэтому рефлекс смерти
+- `storage.helpers[id] = {entity, unit_number, state="alive"│"dead"│"away"│"removed", died_tick, died_pos,
+  corpse_pos, removed_tick, player_index?, hold?, away?}`. Ядро ставит `state="removed"` **до** `die()`, поэтому рефлекс смерти
   такие события игнорирует. Исчезновение тела не по смерти — `script.register_on_object_destroyed`
   → событие `helper_lost`.
 - **Смерть** (ядро, `on_entity_died`/`on_post_entity_died`): `state="dead"`, `died_tick`, `died_pos`,
@@ -228,6 +234,8 @@ MCP-сервер `factorio_partner` (Python) общаются **только** �
 - Доступ модулей к ядру (кроме `ctx`): чтение — `jobs.active`, `jobs.queue_len`, `jobs.queue_of(helper)`,
   `events.query`; постановка задачи рефлексом — `jobs.op_act` (только H). В `storage.jobs` никто, кроме
   ядра, не пишет.
+- Файл `control.lua` принадлежит ядру: модули других потоков регистрируются в списке ядра, сами
+  `control.lua` не правят (правку просят у владельца ядра).
 - Ключи верхнего уровня `storage`: `proto`, `helpers`, `jobs`, `events`, `recent`, `blobs`,
   `reservations`, `vision`, `reflexes`, `reflex_state`, `path_requests`. Модуль пишет только под своим ключом;
   миграции — `scripts/core/migrate.lua` (A).
@@ -240,8 +248,17 @@ MCP-сервер `factorio_partner` (Python) общаются **только** �
     ходьбы и добычи мод выставляет **каждый тик** (ввод клиента их сбрасывает); карту открывает и
     возрождает движок (обзор §6.8 и возрождение §6.9 для такого тела мод не делает, после возрождения
     берёт новый `player.character` сам); игрок вышел из игры → задачи `job_failed{no_helper}`, событие
-    `helper_lost{reason:"player_left"}`, вернулся — тело подхватывается снова. `helper_remove` только
-    отвязывает, персонажа игрока не убивает.
+    `helper_lost{reason:"player_left"}`, запись получает `state="away"` и `away=<причина>` (место в лимите
+    держится, операции «h» отвечают `no_helper`); вернулся — тело подхватывается снова, событие
+    `respawned{reason:"player_joined"}`. `helper_remove` только отвязывает: персонажа игрока не убивает,
+    трупа и перезарядки нет, сразу можно `helper_attach` снова.
+  - `helper_attach`: имя игрока — точное; игрок другой силы → `no_player`; уже привязан к другому
+    помощнику или id занят живым телом → `helper_exists`; запись с мёртвым телом-персонажем заменяется.
+  - **Удержание и ввод человека.** Мод держит только то состояние, которое в этом тике выставило
+    **активное действие** (`hold = {walking?, mining?}` пишет ядро по вызовам действия). Если действие
+    ходьбой не управляет (`wait`, `mine`, `craft`…), ходьбу мод не трогает и не запоминает: человек за
+    вторым клиентом может нажать клавишу, тело сделает шаг и остановится само. Без задачи мод телом
+    не управляет вовсе.
   - Зачем: у тела-игрока работает то, что игра и чужие моды дают только игроку (рамки выделения,
     окна модов). Управление рамкой — отдельный слой ввода на стороне клиента, **в v1 его нет**.
 - В `storage` можно хранить LuaEntity (API это позволяет), но рядом — `unit_number`, и перед
