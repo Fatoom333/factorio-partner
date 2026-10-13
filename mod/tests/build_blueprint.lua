@@ -336,10 +336,11 @@ S.suite("build_blueprint", {
       put(two_chests())
       F.set_tile(20, 0, "water")
       local normal = F.wait(bp{ dry_run = true, force = "normal" })
-      -- normal подложку не ставит: клетка — обычный пропуск с причиной liquid, чертёж не отменяется
+      -- normal подложку не ставит: клетка без опоры, чертёж не ставится, мод ищет сдвиг (как forced)
       S.eq({ normal.detail.ghosts, normal.detail.skipped_total, normal.detail.tiles }, { 1, 1, 0 })
-      S.eq({ normal.detail.skipped[1].reason, normal.detail.on_liquid, normal.detail.liquids, normal.detail.fit },
-        { "liquid", 1, { water = 1 }, nil })
+      S.eq({ normal.detail.skipped[1].reason, normal.detail.on_liquid, normal.detail.liquids },
+        { "liquid", 1, { water = 1 } })
+      S.ok(normal.detail.fit ~= nil and normal.detail.fit.shift ~= nil, "normal тоже ищет сдвиг")
       local dry = F.wait(bp{ dry_run = true })
       S.eq({ dry.detail.ghosts, dry.detail.skipped_total, dry.detail.tiles, dry.detail.missing },
         { 2, 0, 1, {} })

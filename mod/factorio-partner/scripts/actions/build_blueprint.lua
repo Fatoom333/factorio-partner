@@ -32,8 +32,8 @@
 --   перебираются ещё повороты и зеркало. dry_run отдаёт то же без ошибки;
 -- * partial:true (только по согласию хозяина) — чертёж ставится обрезанным: такие клетки идут в
 --   skipped с reason "liquid";
--- * normal (клик) подложку не ставит никогда: клетка на плитке без опоры — в skipped с reason
---   "liquid", как любая другая помеха этого режима (чертёж при этом не отменяется).
+-- * normal (клик) подложку не ставит никогда, поэтому любая клетка на плитке без опоры для него
+--   «без возможной подложки»: чертёж так же не ставится и ищется сдвиг (решение автора 13.10).
 --
 -- Пометки к сносу, которые поставила сама задача (forced/superforced), она снимает при failed,
 -- cancel и stuck (M.stop → cancel_deconstruction): иначе дроны хозяина снесут помеченное без замены.
@@ -443,8 +443,8 @@ local function precheck(h, plan, tplan, mode, env)
       if same then
         it.reason = "exists"
       elseif bad then
-        -- клетка без возможной подложки: в normal — обычный пропуск клетки, в forced/superforced
-        -- из-за неё не ставится весь чертёж (решает M.start), с partial — пропуск
+        -- клетка без возможной подложки: из-за неё не ставится весь чертёж (решает M.start),
+        -- с partial — пропуск
         it.reason = "liquid"
         for _, c in ipairs(bad) do pre.wet(c.key, c.tile) end
       elseif mode == "normal" then
@@ -842,7 +842,7 @@ function M.start(task, ctx)
     if not B.area_charted(h, area) then err.raise("not_charted", "blueprint area is in uncharted chunks") end
     local env = new_env(h)
     local pre = precheck(h, plan, tplan, a.force, env)
-    if pre.on_liquid > 0 and a.force ~= "normal" and not a.partial then
+    if pre.on_liquid > 0 and not a.partial then
       -- клетки без возможной подложки: чертёж не ставится вовсе, ищем сдвиг (ACTIONS.md)
       B.check_free(ctx, area)
       return { liquid = true, summary = summary(h, plan, tplan, pre), src = plain_source(entities, bp_tiles),

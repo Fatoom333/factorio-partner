@@ -39,7 +39,8 @@ def test_modes_records_engine_facts(fake_rcon, monkeypatch):
     assert res["contract"] == {
         "normal_marks_nothing": True,
         "normal_on_obstacle_places_no_ghost": True,
-        "normal_on_lava_skips_cell": True,
+        "normal_on_lava_refuses_whole": True,
+        "normal_on_lava_gives_fit": True,
         "forced_on_lava_puts_tile_ghosts": False,
         "forced_on_lava_refuses_whole": True,
         "forced_on_lava_liquids": {"lava": 1},
@@ -59,7 +60,8 @@ def test_modes_records_engine_facts(fake_rcon, monkeypatch):
     lava = facts["lava"]
     assert lava["forced"]["result"] == "cannot_place" and lava["forced"]["on_liquid"] == 1
     assert lava["forced"]["fit"]["shift"] in ({"dx": 1, "dy": 0}, {"dx": 0, "dy": 1})
-    assert lava["normal"]["result"] == "cannot_place" and lava["normal"]["skipped"] == ["liquid"]
+    assert lava["normal"]["result"] == "cannot_place" and lava["normal"]["on_liquid"] == 1
+    assert lava["normal"]["fit"] is not None
     assert lava["superforced"]["liquids"] == {"lava": 1}
     assert facts["own"]["forced"]["result"] == "cannot_place"
     assert facts["own"]["superforced"]["marked_names"] == ["stone-furnace"]
