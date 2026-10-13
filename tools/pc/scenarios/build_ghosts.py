@@ -40,15 +40,31 @@ GAME_VERSION = (2, 0, 77, 0)
 OFFSETS = ((4, 0), (0, 4), (-4, 0), (0, -4), (5, 5), (-5, 5), (5, -5), (-5, -5), (8, 0), (0, 8), (-8, 0), (0, -8))
 
 
-def blueprint_string(item, count=2):
-    """Строка чертежа: count построек item в ряд, центр рамки — в (0, 0.5)."""
+def encode_blueprint(entities, tiles=None):
+    """Строка чертежа Factorio из списков сущностей [{name, position, direction?}] и плиток
+    [{name, position}] (position плитки — её клетка, целые x и y)."""
     major, minor, patch, dev = GAME_VERSION
     version = (major << 48) | (minor << 32) | (patch << 16) | dev
-    entities = [{"entity_number": i + 1, "name": item, "position": {"x": i - count / 2 + 0.5, "y": 0.5}}
-                for i in range(count)]
-    doc = {"blueprint": {"item": "blueprint", "label": "partner-live", "entities": entities, "version": version}}
-    raw = json.dumps(doc, separators=(",", ":")).encode("utf-8")
+    body = {"item": "blueprint", "label": "partner-live", "version": version}
+    if entities:
+        body["entities"] = [dict(e, entity_number=i + 1) for i, e in enumerate(entities)]
+    if tiles:
+        body["tiles"] = list(tiles)
+    raw = json.dumps({"blueprint": body}, separators=(",", ":")).encode("utf-8")
     return "0" + base64.b64encode(zlib.compress(raw, 9)).decode("ascii")
+
+
+def blueprint_string(item, count=2):
+    """Строка чертежа: count построек item в ряд, центр рамки — в (0, 0.5)."""
+    return encode_blueprint([{"name": item, "position": {"x": i - count / 2 + 0.5, "y": 0.5}} for i in range(count)])
+
+
+def new_blob(client, text, tag="bp"):
+    """Отправить строку чертежа в мод под свежим id. → id blob."""
+    new_blob.n = getattr(new_blob, "n", 0) + 1
+    blob = "%s-%05d-%d" % (tag, int(time.time()) % 100000, new_blob.n)
+    put_blob(client, blob, text)
+    return blob
 
 
 def decode_blueprint(text):
