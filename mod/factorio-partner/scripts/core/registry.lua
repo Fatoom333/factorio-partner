@@ -4,7 +4,10 @@
 -- storage.helpers[id] = {
 --   entity, unit_number, state = "alive"|"dead"|"removed", reg (номер register_on_object_destroyed),
 --   spawned_tick, died_tick, died_pos, corpse_pos, removed_tick,
---   player_index? }  -- тело-игрок (PROTOCOL §7 «Два вида тела»): персонаж второго клиента
+--   player_index?,   -- тело-игрок (PROTOCOL §7 «Два вида тела»): персонаж второго клиента
+--   away?, hold? }   -- только у тела-игрока, пишет scripts/core/attach.lua (поток P): away —
+--                    -- почему тела сейчас нет (state="dead", запись ждёт игрока), hold —
+--                    -- состояния ходьбы и добычи, которые ядро выставляет каждый тик
 --
 -- Лимит (PROTOCOL §4, ревизия 3.2): живых и ждущих возрождения ≤ storage.proto.max_helpers
 -- (по умолчанию 1, задаёт игрок при запуске: операция helper_limit {max:1..16}).
@@ -38,6 +41,8 @@ M.hooks = {
   before_remove = function(id) end, -- helper_remove: до die()
   on_dead = function(id) end,       -- смерть (тело ещё valid)
   on_lost = function(id) end,       -- тело исчезло не по смерти
+  -- тело-игрок исчезло не по смерти: true — запись забрал поток P (ждёт новое тело игрока)
+  on_player_body_gone = function(id) return false end,
 }
 
 function M.get(id)
@@ -239,6 +244,8 @@ function M.op_remove(args, ctx)
     rec.state = "removed"
     rec.removed_tick = nil
     rec.entity = nil
+    rec.away = nil
+    rec.hold = nil
     return { corpse = rec.corpse_pos }
   end
   if rec.player_index ~= nil then
@@ -250,6 +257,8 @@ function M.op_remove(args, ctx)
     rec.died_tick = nil
     rec.entity = nil
     rec.reg = nil
+    rec.away = nil
+    rec.hold = nil
     return {}
   end
   M.hooks.before_remove(id)
@@ -339,6 +348,9 @@ function M.on_object_destroyed(e)
   for id, rec in pairs(storage.helpers) do
     if rec.reg ~= nil and rec.reg == e.registration_number then
       rec.reg = nil
+      if rec.state == "alive" and rec.player_index ~= nil and M.hooks.on_player_body_gone(id) then
+        return
+      end
       if rec.state == "alive" then
         M.hooks.on_lost(id)
         rec.state = "removed"

@@ -188,7 +188,7 @@ S.suite("misc", {
   { "control.lua: необязательные модули волны 3 (plan_mining, attach) — нет файла не ошибка, сбой внутри — ошибка", function()
       S.load_mod()
       local d = require("scripts.core.dispatch")
-      S.eq(d.ops.helper_attach, nil, "файла scripts/core/attach.lua в этой ветке нет")
+      S.ok(d.ops.helper_attach, "файл scripts/core/attach.lua есть (поток P) — операция зарегистрирована")
       -- модуль есть: его операции и действия регистрируются
       local attach = { name = "core.attach", ops = { helper_attach = function(args, ctx) return { helper = ctx.helper_id } end } }
       local mining = { name = "plan_mining", schema = {}, start = function() return { status = "done" } end,
