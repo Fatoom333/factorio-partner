@@ -30,7 +30,7 @@
 | 1 | **A. Ядро мода** | `mod/factorio-partner/{control.lua,info.json,settings.lua}`, `scripts/core/**` (диспетчер `/partner`, конверт, идемпотентность `recent`, `blob_put`, помощники + `helper_*` + хозяин, очередь задач и ctx, буфер событий + `player_said`, `reflexes` op (вызов `M.reflexes`), `say`, `wait`, миграции), `mod/tests/stubs.lua`, `mod/tests/core_*.lua`, `tools/run_lua_tests.py`, `tools/requirements-dev.txt` |
 | 1 | **D. MCP-сервер** | `server/**` кроме `server/factorio_partner/forge.py` и `server/tests/test_forge*.py` |
 | 1 | **E. Стенд на ПК** | `tools/pc/**` (кроме `scenarios/*` других потоков), `mod/partner-test/**` |
-| 1 | **G. Восприятие** | `scripts/perception/{state,map,resources,stock,ghosts,recipes,vision}.lua` (общие помощники — `state.lua` `M.common`), `mod/tests/perception_*.lua`, `mod/tests/stubs_g.lua` |
+| 1 | **G. Восприятие** | `scripts/perception/{find,state,map,resources,stock,ghosts,recipes,vision}.lua` (общие помощники — `state.lua` `M.common`), `mod/tests/perception_*.lua`, `mod/tests/stubs_g.lua` |
 | 1 | **L. Производство** | `scripts/perception/rates.lua`, `mod/tests/rates_*.lua`, `mod/tests/stubs_l.lua` |
 | 1 | **I. Связка с forge** | `server/factorio_partner/forge.py`, `server/tests/test_forge*.py` |
 | 2 | **B. Движение** | `scripts/lib/path.lua`, `scripts/actions/{walk,approach,follow}.lua`, `mod/tests/move_*.lua`, `tools/pc/scenarios/move_*.py` |
@@ -81,6 +81,7 @@
   в сценариях — `{unit_number, pos}`; **плитки** в `build_blueprint`/`build_ghosts` (ACTIONS; проверить
   живьём: Shift и Ctrl+Shift на воде, деревьях, чужих постройках); режимы `force` в `build_blueprint` и
   разбор помеченного к сносу в `build_ghosts`; живьём — постройки 2×2, повороты 8/12, режимы `robots`/`auto`.
+- **G, D:** операция `find` и инструмент `partner_find` (STATE.md), живой сценарий `find_live`.
 - **G, H:** `vis.visible` вместо прямого `is_chunk_visible` (`reflexes/common.lua`, perception).
 - **H:** `flee` пересчитывает кандидатов после `path_failed`. Тесты `core_helpers`/`core_jobs`, которые H
   поправил под смерть и возрождение, остаются за A.

@@ -115,6 +115,21 @@
   `surface` → `no_player`); явный `surface` сильнее. Ошибки: `bad_args`, `limit`, `not_found`
   (нет поверхности), `no_player`, `internal` (сбой `get_flow_count` — не пустой ответ).
 
+## `find` (h?, `item`, `kinds?`, `surface?`, `limit?=20 (≤50)`) — поиск по всей базе
+«Где у нас делают/тратят/хранят X» по всей поверхности, а не в области (образец — мод Factory Search,
+MIT, автор Xorimuth: у него тоже обычный `find_entities_filtered` и разбор рецептов; программного
+входа с данными у мода нет — `remote` только открывает окно игроку, поэтому поиск свой).
+- `item` — имя предмета или жидкости; `kinds` — подмножество `["producers","consumers","storage",
+  "entities"]` (по умолчанию первые три): кто производит (рецепт машины, буры по руде), кто потребляет,
+  где лежит (сундуки, цистерны), сами постройки с таким именем.
+- Только сущности силы помощника в открытых чанках; `storage` — только видимое (PROTOCOL §6.7),
+  остальное `storage` считается как `hidden:int`.
+- Ответ — **группы** (постройки ближе 32 клеток друг к другу — одна группа), ближайшие к помощнику
+  (или хозяину) первыми: `{item, groups:[{kind, pos, dist, count, names:{[name]=n}, recipe?, amount?}],
+  total:{producers,consumers,storage,entities}, truncated?, hidden?}`. `pos` — центр группы, годится
+  как `center` для `map`/`rates`/`ghosts` и как цель `walk`.
+- Поверхность больше 4000 чанков или найдено больше 20000 сущностей → `limit` (сузить `kinds`).
+
 ## `recipes` (h, `filter?`)
 Перебор `force.recipes`: `enabled`, не `hidden`, категория ∈
 `prototypes.entity["character"].crafting_categories`; значение —
