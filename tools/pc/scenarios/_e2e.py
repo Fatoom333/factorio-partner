@@ -590,16 +590,20 @@ def flows_to(belts, start, end, limit=4000):
     return False, cur       # лента кончилась (или пошла по кругу), не дойдя до end
 
 
-def belt_targets(api, area, direction, log, limit=4):
-    """Куда вести ленту от разметки: свободные площадки голой земли в BELT_AHEAD клетках за краем
-    области разметки со стороны direction (ближние к точке напротив середины края — первыми).
-    → [клетка]."""
+def belt_targets(api, area, direction, log, limit=4, resource=""):
+    """Куда вести ленту от разметки: свободные площадки в BELT_AHEAD клетках за краем области разметки
+    со стороны direction (ближние к точке напротив середины края — первыми). Площадка — голая земля
+    или руда resource (разметка обычно стоит посреди большого пятна, а лента по руде идёт): без
+    построек, призраков, жидкости и камней. → [клетка]."""
     vx, vy = VEC[DIR_NUM[direction]]
     c = area_center(area)
     half_w, half_h = area_side(area)[0] / 2, area_side(area)[1] / 2
     ideal = {"x": c["x"] + vx * (half_w + BELT_AHEAD), "y": c["y"] + vy * (half_h + BELT_AHEAD)}
-    data = api.read("map", {"center": ideal, "radius": 16})
-    wins = free_windows(data, "", BELT_SPOT, BELT_SPOT, min_ore=0, limit=limit * 3, near=ideal)
+    read = {"center": ideal, "radius": 16}
+    if resource:
+        read["names"] = [resource]
+    data = api.read("map", read)
+    wins = free_windows(data, resource, BELT_SPOT, BELT_SPOT, min_ore=0, limit=limit * 3, near=ideal)
     cells = []
     for win in wins:
         cell = cell_of(area_center(win["area"]))
