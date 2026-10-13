@@ -8,7 +8,11 @@
    скажет ghosts = 2 без skipped.
 4. `act build_blueprint {blob, anchor, mode:"hand"}` — призраки ставятся и строятся руками.
 5. Сверка: job_done, ghosts = 2, built = 2, left = 0; `ghosts` в области пусто; у помощника
-   стало на 2 предмета меньше; `map` видит 2 сундука.
+   стало на 2 предмета меньше; `map` видит 2 сундука ровно в расчётных клетках (`expected_cells` —
+   та же раскладка, что в моде: центр рамки в anchor, поворот, привязка к сетке).
+6. Поворот: `act deconstruct {area, filter}` убирает оба сундука, затем тот же чертёж с
+   `direction: 4` — сундуки должны встать столбиком в расчётных клетках. Так раскладка и поворот
+   мода сверяются с настоящим движком, а не с заглушкой.
 Общие шаги — из build_place.py (загрузка по пути). Только конверты `/partner <JSON>`.
 """
 from __future__ import annotations
@@ -65,6 +69,61 @@ def anchor_near(base, dx, dy):
     return {"x": int(base["x"] // 1) + dx, "y": int(base["y"] // 1) + dy + 0.5}
 
 
+def _rot(dx, dy, direction):
+    if direction == 4:
+        return -dy, dx
+    if direction == 8:
+        return -dx, -dy
+    if direction == 12:
+        return dy, -dx
+    return dx, dy
+
+
+def expected_cells(anchor, count, direction=0):
+    """Где должны встать постройки 1×1 чертежа blueprint_string: центр рамки в anchor, поворот,
+    сдвиг всего чертежа так, чтобы первая постройка встала в центр клетки. → [(x, y), ...]."""
+    cells = []
+    shift = None
+    for i in range(count):
+        dx, dy = _rot(i - count / 2 + 0.5, 0.0, direction)
+        wx, wy = anchor["x"] + dx, anchor["y"] + dy
+        if shift is None:
+            shift = (wx // 1 + 0.5 - wx, wy // 1 + 0.5 - wy)
+        cells.append((wx + shift[0], wy + shift[1]))
+    return sorted(cells)
+
+
+def built_cells(client, item, anchor):
+    data = client.call_ok("map", {"center": anchor, "radius": 4, "names": [item]}, P.HELPER)
+    return sorted((e["pos"]["x"], e["pos"]["y"]) for e in data.get("entities", [])
+                  if e.get("name") == item and not e.get("ghost"))
+
+
+def same_cells(a, b):
+    return len(a) == len(b) and all(abs(p[0] - q[0]) < 0.01 and abs(p[1] - q[1]) < 0.01 for p, q in zip(a, b))
+
+
+def rotated_pass(client, blob, item, anchor, count, result, reasons):
+    """Шаг 6: разобрать построенное и поставить тот же чертёж с поворотом на 90°."""
+    area = {"left_top": {"x": anchor["x"] - 2, "y": anchor["y"] - 2},
+            "right_bottom": {"x": anchor["x"] + 2, "y": anchor["y"] + 2}}
+    r = P.act(client, "deconstruct", {"area": area, "filter": [item]})
+    result["deconstruct"] = P.brief(r)
+    if r["kind"] != "job_done" or P.detail_of(r).get("removed") != count:
+        reasons.append(f"deconstruct области не убрал {count}: {result['deconstruct']}")
+        return
+    r = P.act(client, "build_blueprint", {"blob": blob, "anchor": anchor, "direction": 4, "mode": "hand"})
+    result["build_rotated"] = P.brief(r)
+    detail = P.detail_of(r)
+    if r["kind"] != "job_done" or detail.get("built") != count or detail.get("skipped_total"):
+        reasons.append(f"build_blueprint с поворотом: {result['build_rotated']}")
+        return
+    want, got = expected_cells(anchor, count, 4), built_cells(client, item, anchor)
+    result["rotated_cells"] = {"expected": want, "built": got}
+    if not same_cells(want, got):
+        reasons.append(f"поворот 4: постройки в {got}, а расчёт мода — {want}")
+
+
 def run(client) -> dict:
     result = {}
     count = 2
@@ -116,12 +175,15 @@ def run(client) -> dict:
     result["inventory"] = {"before": before, "after": after}
     if before - after != count:
         reasons.append(f"у помощника убыло {before - after}, а не {count}")
-    data = client.call_ok("map", {"center": anchor, "radius": 3, "names": [item]}, P.HELPER)
-    built = [e for e in data.get("entities", []) if e.get("name") == item and not e.get("ghost")
-             and abs(e["pos"]["x"] - anchor["x"]) <= count / 2 + 0.6 and abs(e["pos"]["y"] - anchor["y"]) <= 1.6]
+    want, built = expected_cells(anchor, count, 0), built_cells(client, item, anchor)
     result["on_map"] = len(built)
+    result["cells"] = {"expected": want, "built": built}
     if len(built) != count:
         reasons.append(f"на карте построек {item}: {len(built)}, а не {count}")
+    elif not same_cells(want, built):
+        reasons.append(f"постройки в {built}, а расчёт мода — {want}")
+    if not reasons:
+        rotated_pass(client, blob, item, anchor, count, result, reasons)
     result["ok"] = not reasons
     if reasons:
         result["reasons"] = reasons

@@ -18,7 +18,7 @@ class Model:
     """Модель мода: склад хозяина, инвентарь помощника, постройки и призраки на карте."""
 
     def __init__(self, stock=None, blocked=(), mod="factorio-partner 0.1.0", break_place=None,
-                 keep_ghosts=False, lose_item=False, decon_fails=False):
+                 keep_ghosts=False, lose_item=False, decon_fails=False, collect_blind=False):
         self.mod = mod
         self.stock = dict(stock if stock is not None else {"wooden-chest": 5})
         self.inv = {}
@@ -36,6 +36,8 @@ class Model:
         self.keep_ghosts = keep_ghosts
         self.lose_item = lose_item
         self.decon_fails = decon_fails
+        self.collect_blind = collect_blind   # collect ничего не видит (нет обзора), extract работает
+        self.rot_shift = 0
         self.spawned = False
 
     # ---- события
@@ -58,6 +60,19 @@ class Model:
     def _act(self, do, a):
         self.job += 1
         self.acts.append((do, a))
+        if do == "collect" and self.collect_blind:
+            return self._failed(do, "no_items", {"collected": {}, "missing": dict(a["items"]), "from": {}})
+        if do == "extract":
+            if "unit_number" in a["target"]:
+                return self._failed(do, "not_found")   # как на стенде без игроков
+            got = {}
+            for name, n in a["items"].items():
+                k = min(n, self.stock.get(name, 0))
+                if k:
+                    got[name] = k
+                    self.stock[name] -= k
+                    self.inv[name] = self.inv.get(name, 0) + k
+            return self._done(do, {"extracted": got})
         if do == "collect":
             got = {}
             for name, n in a["items"].items():
@@ -68,7 +83,8 @@ class Model:
                     self.inv[name] = self.inv.get(name, 0) + k
             return self._done(do, {"collected": got, "missing": {}, "from": [1]})
         if do == "craft":
-            per = {"iron-chest": ("iron-plate", 8), "wooden-chest": ("wood", 2)}[a["recipe"]]
+            per = {"iron-chest": ("iron-plate", 8), "wooden-chest": ("wood", 2),
+                   "steel-chest": ("steel-plate", 8), "stone-wall": ("stone-brick", 5)}[a["recipe"]]
             self._take(per[0], per[1] * a["count"])
             self.inv[a["recipe"]] = self.inv.get(a["recipe"], 0) + a["count"]
             return self._done(do, {"crafted": {a["recipe"]: a["count"]}})
@@ -85,6 +101,17 @@ class Model:
             self.entities[key] = a["item"]
             self.unit += 1
             return self._done(do, {"unit_number": self.unit, "name": a["item"], "pos": a["pos"]})
+        if do == "deconstruct" and "area" in a:
+            ar, names = a["area"], a.get("filter")
+            hit = [k for k, n in self.entities.items()
+                   if ar["left_top"]["x"] <= k[0] <= ar["right_bottom"]["x"]
+                   and ar["left_top"]["y"] <= k[1] <= ar["right_bottom"]["y"] and (names is None or n in names)]
+            got = {}
+            for k in hit:
+                n = self.entities.pop(k)
+                got[n] = got.get(n, 0) + 1
+                self.inv[n] = self.inv.get(n, 0) + 1
+            return self._done(do, {"removed": len(hit), "got": got})
         if do == "deconstruct":
             t = a["target"]
             key = (t["pos"]["x"], t["pos"]["y"])
@@ -103,6 +130,10 @@ class Model:
             cy = sum(e["position"]["y"] for e in ents) / len(ents)
             cells = [((a["anchor"]["x"] + e["position"]["x"] - cx, a["anchor"]["y"] + e["position"]["y"] - cy), e["name"])
                      for e in ents]
+            if a.get("direction") == 4:
+                # столбик; self.rot_shift — «движок» привязал к сетке иначе, чем считает мод
+                cells = [((a["anchor"]["x"] + 0.5 + self.rot_shift, a["anchor"]["y"] + i), e["name"])
+                         for i, e in enumerate(ents)]
             ok = [(k, n) for k, n in cells if k not in self.blocked and k not in self.entities]
             skipped = [{"name": n, "pos": {"x": k[0], "y": k[1]}, "reason": "cannot_place"}
                        for k, n in cells if (k, n) not in ok]
@@ -150,7 +181,8 @@ class Model:
         if op == "stock":
             names = args.get("items") or list(self.stock)
             total = {n: self.stock[n] for n in names if self.stock.get(n, 0) > 0}
-            return ok({"containers": [], "total": total, "hidden": 0, "truncated": False})
+            boxes = [{"unit": 55, "name": "steel-chest", "pos": {"x": 20.5, "y": 0.5}, "dist": 12.0, "items": total}] if total else []
+            return ok({"containers": boxes, "total": total, "hidden": 0, "truncated": False})
         if op == "state":
             return ok({"helper": env["helper"], "pos": self.pos, "inv": dict(self.inv)})
         if op == "map":
@@ -237,6 +269,18 @@ def test_place_crafts_when_no_chests(fake_rcon, monkeypatch):
     assert res["item"] == "iron-chest"
 
 
+def test_place_extracts_when_collect_is_blind(fake_rcon, monkeypatch):
+    _no_wait(monkeypatch)
+    m = Model(stock={"steel-plate": 100}, collect_blind=True)
+    res = run("build_place", m, fake_rcon)
+    assert res["ok"] is True, res
+    assert [d for d, _ in m.acts] == ["collect", "extract", "extract", "craft", "place"]
+    assert m.acts[1][1] == {"target": {"unit_number": 55}, "items": {"steel-plate": 8}}
+    assert m.acts[2][1]["target"] == {"name": "steel-chest", "pos": {"x": 20.5, "y": 0.5}}
+    assert res["item"] == "steel-chest"
+    assert m.stock["steel-plate"] == 92
+
+
 def test_place_no_stock_is_setup_error(fake_rcon, monkeypatch):
     _no_wait(monkeypatch)
     res = run("build_place", Model(stock={}), fake_rcon)
@@ -320,13 +364,34 @@ def test_ghosts_ok(fake_rcon, monkeypatch):
     res = run("build_ghosts", m, fake_rcon)
     assert res["ok"] is True, res
     dos = [(d, a.get("dry_run", False)) for d, a in m.acts]
-    assert dos == [("collect", False), ("build_blueprint", True), ("build_blueprint", False)]
+    assert dos == [("collect", False), ("build_blueprint", True), ("build_blueprint", False),
+                   ("deconstruct", False), ("build_blueprint", False)]
     assert m.acts[0][1]["items"] == {"wooden-chest": 2}
     assert m.acts[2][1]["mode"] == "hand"
     assert res["anchor"] == {"x": 14, "y": -4.5}
-    assert sorted(m.entities) == [(13.5, -4.5), (14.5, -4.5)]
+    assert res["cells"]["built"] == [[13.5, -4.5], [14.5, -4.5]] or res["cells"]["built"] == [(13.5, -4.5), (14.5, -4.5)]
+    assert m.acts[3][1]["filter"] == ["wooden-chest"]
+    assert m.acts[4][1]["direction"] == 4
+    assert sorted(m.entities) == [(14.5, -4.5), (14.5, -3.5)]
     assert res["inventory"] == {"before": 2, "after": 0}
     assert res["ghosts_left"] == 0 and res["on_map"] == 2
+
+
+def test_ghosts_rotation_mismatch_is_failure(fake_rcon, monkeypatch):
+    _no_wait(monkeypatch)
+    m = Model()
+    m.rot_shift = -1   # «движок» поставил столбик на клетку левее расчёта
+    res = run("build_ghosts", m, fake_rcon)
+    assert res["ok"] is False
+    assert any("поворот 4" in r for r in res["reasons"]), res
+
+
+def test_expected_cells():
+    g = load("build_ghosts")
+    a = {"x": 18, "y": 58.5}
+    assert g.expected_cells(a, 2, 0) == [(17.5, 58.5), (18.5, 58.5)]
+    assert g.expected_cells(a, 2, 4) == [(18.5, 58.5), (18.5, 59.5)]
+    assert g.expected_cells(a, 2, 8) == [(17.5, 58.5), (18.5, 58.5)]
 
 
 def test_ghosts_dry_run_picks_free_place(fake_rcon, monkeypatch):
