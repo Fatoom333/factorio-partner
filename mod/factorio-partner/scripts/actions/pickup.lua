@@ -1,7 +1,9 @@
 -- Действие `pickup` (поток C). Контракт: docs/ACTIONS.md, PROTOCOL.md §6.
 --
--- args: target (труп `character-corpse`) │ area (предметы на земле). Ровно одно.
--- * труп — подходит на reach_distance и забирает всё (normal) из инвентаря трупа; предметы с
+-- args: target (труп: `{name:"character-corpse", pos}`) │ area (предметы на земле). Ровно одно.
+-- * труп — цель в форме {name, pos} (у трупа в игре нет unit_number; pos — `corpse` из события
+--   `died` или `helper_list`): ближайший труп в 3 клетках от pos. Подходит на reach_distance и
+--   забирает всё (normal) из инвентаря трупа; предметы с
 --   данными — целым стаком (transfer_stack);
 -- * area — предметы на земле (`item-entity`, своя сила или neutral, только normal) в области
 --   (сторона ≤ 128); живое (PROTOCOL §6.7): берутся только видимые предметы (видимый чанк или
@@ -20,6 +22,33 @@ M.schema = {
 }
 
 M.MAX_ITEMS = 500
+M.CORPSE_RADIUS = 3   -- труп ищем вокруг pos: место смерти в событии округлено, тело могло упасть рядом
+
+local CORPSE = "character-corpse"   -- тип прототипа (у трупов из модов имя другое, тип тот же)
+
+--- Труп по форме цели {name, pos} (ACTIONS.md «pickup»): ближайший к pos труп в радиусе
+--- CORPSE_RADIUS, своей силы или neutral, в открытом чанке; непустой — раньше пустого (на одном
+--- месте может лежать несколько трупов). Ищем по типу прототипа: имя по умолчанию
+--- ("character-corpse") значит «любой труп персонажа» — у тела из мода имя трупа другое; имя
+--- сравнивается, только когда задано своё. → LuaEntity │ nil.
+local function corpse_near(ctx, t)
+  local h = ctx.entity
+  local p = util.xy(t.pos)
+  local found = h.surface.find_entities_filtered{ type = CORPSE, position = p, radius = M.CORPSE_RADIUS }
+  local best, bd, bfull
+  for _, e in ipairs(found) do
+    if e.valid and (t.name == CORPSE or e.name == t.name) and inv.allowed_force(h, e)
+        and inv.charted(h, e.position) then
+      local src = inv.main_inventory(e)
+      local full = src ~= nil and src.valid and not src.is_empty()
+      local d = util.dist(util.xy(e.position), p)
+      if best == nil or (full and not bfull) or (full == bfull and d < bd) then
+        best, bd, bfull = e, d, full
+      end
+    end
+  end
+  return best
+end
 
 function M.start(task, ctx)
   local a = task.args
@@ -29,11 +58,25 @@ function M.start(task, ctx)
   end
   task.picked = {}
   if a.target then
-    local t = inv.resolve_target(ctx, a.target)
-    if t.type ~= "character-corpse" then
-      return inv.failed("bad_args", "args.target: only a character corpse can be picked up")
+    local t = a.target
+    if t.name ~= nil then
+      -- форма {name:"character-corpse", pos}: у трупа в игре нет unit_number, его находят по месту
+      local proto = prototypes.entity[t.name]
+      if proto ~= nil and proto.type ~= CORPSE then
+        return inv.failed("bad_args", "args.target: only a character corpse can be picked up " ..
+          "({name: \"character-corpse\", pos})")
+      end
+      local c = corpse_near(ctx, t)
+      if c == nil then c = inv.resolve_target(ctx, t) end   -- нет рядом — общий отказ not_found
+      task.corpse = c
+      return nil
     end
-    task.corpse = t
+    local e = inv.resolve_target(ctx, t)
+    if e.type ~= CORPSE then
+      return inv.failed("bad_args", "args.target: only a character corpse can be picked up " ..
+        "({name: \"character-corpse\", pos})")
+    end
+    task.corpse = e
     return nil
   end
   local see = inv.viewer(ctx)

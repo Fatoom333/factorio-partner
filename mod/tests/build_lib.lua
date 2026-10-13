@@ -400,6 +400,121 @@ S.suite("build_lib", {
       S.eq(none, {})
       S.eq({ only[1].pos, only[2].pos }, { { x = 2.5, y = 3.5 }, { x = 3.5, y = 3.5 } })
   end },
+  { "layout с зеркалом: места отражаются по x, направления восток ↔ запад, плитки — по клеткам", function()
+      F.setup()
+      local A = require("scripts.actions.build_blueprint")
+      S.eq({ A.mirror_dir(0), A.mirror_dir(4), A.mirror_dir(8), A.mirror_dir(12), A.mirror_dir(2), A.mirror_dir(nil) },
+        { 0, 12, 8, 4, 14, 0 })
+      local ents = {
+        { name = "iron-chest", position = { x = 0.5, y = 0.5 } },
+        { name = "transport-belt", position = { x = 2.5, y = 0.5 }, direction = 4 },
+      }
+      local tiles = { { name = "stone-path", position = { x = 2, y = 1 } } }
+      -- рамка x 0..3, y 0..2 → центр (1.5, 1); зеркало: x −3..0 → центр (−1.5, 1)
+      local plan, tplan = A.layout(ents, { x = 10.5, y = 20 }, 0, tiles)
+      S.eq({ plan[1].pos, plan[2].pos, plan[2].dir, tplan[1].pos },
+        { { x = 9.5, y = 19.5 }, { x = 11.5, y = 19.5 }, 4, { x = 11.5, y = 20.5 } })
+      local m, mt = A.layout(ents, { x = 10.5, y = 20 }, 0, tiles, true)
+      S.eq({ m[1].pos, m[2].pos, m[2].dir, mt[1].pos },
+        { { x = 11.5, y = 19.5 }, { x = 9.5, y = 19.5 }, 12, { x = 9.5, y = 20.5 } })
+      -- зеркало и поворот: сначала отражение, потом поворот
+      local r = A.layout(ents, { x = 10, y = 20.5 }, 4, nil, true)
+      S.eq({ r[2].dir, r[1].dir }, { 0, 4 })
+      S.eq(ents[2].position, { x = 2.5, y = 0.5 }, "исходный чертёж не тронут")
+      -- кольца поиска: 8r клеток, ближние первыми, без повторов
+      S.eq(A.ring(0), { { dx = 0, dy = 0 } })
+      local ring = A.ring(3)
+      S.eq(#ring, 24)
+      S.eq(ring[1], { dx = 0, dy = -3 })
+      local seen = {}
+      for _, c in ipairs(ring) do
+        S.eq(math.max(math.abs(c.dx), math.abs(c.dy)), 3)
+        S.eq(seen[c.dx .. "," .. c.dy], nil)
+        seen[c.dx .. "," .. c.dy] = true
+      end
+  end },
+  { "свойства плиток из игры: маски, подложка (default_cover_tile), доступность подложки", function()
+      local W = F.setup()
+      local B = lib()
+      local T = prototypes.tile
+      S.eq(B.masks_collide({ layers = { a = true } }, { layers = { a = true, b = true } }), true)
+      S.eq(B.masks_collide({ layers = { a = true } }, { layers = { b = true } }), false)
+      S.eq(B.masks_collide({ a = true }, { layers = { a = true } }), true, "маска и её layers — одно и то же")
+      S.eq(B.masks_collide({ layers = { a = false } }, { layers = { a = true } }), false)
+      S.eq(B.masks_collide(nil, { layers = { a = true } }), false)
+      F.set_tile(5, 5, "water")
+      S.eq(B.tile_proto_at(S.nauvis, 5.7, 5.2), T["water"])
+      S.eq(B.tile_proto_at(S.nauvis, -0.5, 0).name, "grass-1")
+      S.eq(B.cover_tile(T["water"]), T["landfill"])
+      S.eq(B.cover_tile(T["lava"]), nil, "у лавы подложки нет")
+      S.eq(B.cover_tile(nil), nil)
+      T["by-name"] = { name = "by-name", default_cover_tile = "landfill" }
+      S.eq(B.cover_tile(T["by-name"]), T["landfill"])
+      T["sealed"] = { name = "sealed", default_cover_tile = T["landfill"], allows_being_covered = false }
+      S.eq(B.cover_tile(T["sealed"]), nil)
+      T["ghost-cover"] = { name = "ghost-cover", default_cover_tile = "no-such-tile" }
+      S.eq(B.cover_tile(T["ghost-cover"]), nil)
+      -- доступность: рецепт открыт │ предмет у помощника │ предмет на складах силы
+      local recipes = game.forces.player.recipes
+      S.eq(B.cover_available(W.h, T["landfill"]), true)
+      recipes["landfill"].enabled = false
+      S.eq(B.cover_available(W.h, T["landfill"]), false)
+      W.main.insert{ name = "landfill", count = 1 }
+      S.eq(B.cover_available(W.h, T["landfill"]), true)
+      W.main.remove{ name = "landfill", count = 1 }
+      game.forces.player.logistic_networks = { nauvis = { { valid = true, get_item_count = function() return 3 end } },
+        vulcanus = { { valid = true, get_item_count = function() error("другая поверхность не опрашивается") end } } }
+      S.eq(B.cover_available(W.h, T["landfill"]), true)
+      game.forces.player.logistic_networks = { nauvis = { { valid = false } } }
+      S.eq(B.cover_available(W.h, T["landfill"]), false)
+      game.forces.player.logistic_networks = nil
+      -- рецепт с другим именем, который даёт предмет
+      prototypes.get_recipe_filtered = function(f)
+        S.eq(f[1].filter, "has-product-item")
+        S.eq(f[1].elem_filters[1].name, "landfill")
+        return { ["landfill-from-slag"] = {} }
+      end
+      recipes["landfill-from-slag"] = { name = "landfill-from-slag", enabled = false }
+      S.eq(B.cover_available(W.h, T["landfill"]), false)
+      recipes["landfill-from-slag"].enabled = true
+      S.eq(B.cover_available(W.h, T["landfill"]), true)
+      -- кэш одной оценки: второй раз не считается
+      local cache = {}
+      S.eq(B.cover_available(W.h, T["landfill"], cache), true)
+      recipes["landfill-from-slag"].enabled = false
+      S.eq(B.cover_available(W.h, T["landfill"], cache), true)
+      S.eq(cache, { landfill = true })
+      prototypes.get_recipe_filtered = nil
+      -- плитка без предмета — недоступна
+      S.eq(B.cover_available(W.h, T["grass-1"]), false)
+      -- под постройкой
+      local chest, furnace = prototypes.entity["iron-chest"], prototypes.entity["stone-furnace"]
+      S.eq({ B.liquid_under(S.nauvis, chest, { x = 5.5, y = 5.5 }, 0) }, { true, "water" })
+      S.eq({ B.liquid_under(S.nauvis, chest, { x = 6.5, y = 5.5 }, 0) }, { false })
+      S.eq({ B.liquid_under(S.nauvis, furnace, { x = 5, y = 5 }, 0) }, { true, "water" }, "2×2 задевает клетку")
+  end },
+  { "marked_raw и unmark: свои и нейтральные пометки, снимаются только стоящие и ещё помеченные", function()
+      local W = F.setup()
+      local B = lib()
+      local area = { left_top = { x = 10, y = -5 }, right_bottom = { x = 30, y = 5 } }
+      local tree = F.mark(S.nauvis.create_entity{ name = "tree-01", position = { x = 20.5, y = 0.5 }, force = "neutral" })
+      local rock = F.mark(S.nauvis.create_entity{ name = "bedrock", position = { x = 22.5, y = 0.5 }, force = "player" })
+      local enemy = F.mark(C.chest({ x = 24.5, y = 0.5 }, {}, { force = "enemy" }))
+      local plain = C.chest({ x = 26.5, y = 0.5 }, {})
+      local far = F.mark(S.nauvis.create_entity{ name = "tree-01", position = { x = 60.5, y = 0.5 }, force = "neutral" })
+      local raw = B.marked_raw(W.h, area)
+      S.eq(#raw, 2, "некопаемое своё — тоже пометка; чужая сила и далёкое — нет")
+      S.eq(B.mark_key(tree), B.ghost_key("tree-01", { x = 20.5, y = 0.5 }))
+      S.eq(#B.marked(W.h, area), 1, "а разобрать руками можно только дерево")
+      tree.destroy()
+      local list = { tree, rock, plain, enemy }
+      S.eq(B.unmark(list, "player"), 2, "дерева уже нет, сундук не помечен")
+      S.eq({ rawget(rock, "_marked"), rawget(enemy, "_marked"), rawget(far, "_marked") }, { false, false, true })
+      S.eq(B.unmark(list, "player"), 0, "повторно снимать нечего")
+      S.eq(B.unmark(nil, "player"), 0)
+      S.eq(B.unmark({ far }, "no-such-force"), 0)
+      S.eq(rawget(far, "_marked"), true)
+  end },
   { "модуль держит контракт интерфейса действий и не трогает запрещённое", function()
       F.setup()
       for _, name in ipairs({ "place", "build_blueprint", "build_ghosts", "deconstruct" }) do
