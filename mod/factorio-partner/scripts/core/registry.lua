@@ -38,7 +38,9 @@ local schema = require("scripts.core.schema")
 
 local M = {}
 
-M.COOLDOWN = 5 * 60 * 60   -- 5 мин после helper_remove / смерти (PROTOCOL §4)
+M.COOLDOWN = 600           -- 10 с после helper_remove / смерти, как возрождение в игре (PROTOCOL §4)
+M.NEAR_AFTER = 5 * 60 * 60 -- раньше 5 мин после ухода любого тела новое появляется в точке возрождения
+M.RESPAWN_RADIUS = 16      -- поиск свободного места вокруг точки возрождения
 M.SPAWN_RADIUS = 10        -- тело появляется не дальше 10 клеток от хозяина
 M.DEFAULT_MAX_HELPERS = 1  -- storage.proto.max_helpers, пока игрок не задал своё (helper_limit)
 M.MAX_HELPERS_CAP = 16     -- верхняя граница helper_limit
@@ -144,7 +146,11 @@ end
 
 local function purge_old_records()
   for id, rec in pairs(storage.helpers) do
-    if rec.state == "removed" and M.cooldown_left(rec) == 0 then storage.helpers[id] = nil end
+    -- запись живёт всё окно NEAR_AFTER: по ней helper_spawn решает, где появиться телу
+    local since = cooldown_since(rec)
+    if rec.state == "removed" and (since == nil or since + M.NEAR_AFTER <= game.tick) then
+      storage.helpers[id] = nil
+    end
   end
 end
 
@@ -261,26 +267,40 @@ function M.op_spawn(args, ctx)
     err.raise("cooldown", "helper_spawn possible in " .. math.ceil(left / 60) .. " s")
   end
   M.check_slot(id)
-  -- перезарядка общая для всех id (PROTOCOL §4): иначе helper_remove h1 → helper_spawn h2
-  -- переносил бы тело к хозяину без ожидания
+  -- перезарядка и окно общие для всех id (PROTOCOL §4): иначе helper_remove h1 → helper_spawn h2
+  -- переносил бы тело к хозяину. Пока окно NEAR_AFTER не прошло, новое тело появляется в точке
+  -- возрождения силы (как игрок после смерти) и идёт пешком.
+  local recent = false
   for _, other in pairs(storage.helpers) do
     local since = cooldown_since(other)
-    if since ~= nil then left = math.max(left, since + M.COOLDOWN - game.tick) end
+    if since ~= nil then
+      left = math.max(left, since + M.COOLDOWN - game.tick)
+      if since + M.NEAR_AFTER > game.tick then recent = true end
+    end
   end
   if left > 0 then
     err.raise("cooldown", "helper_spawn possible in " .. math.ceil(left / 60) .. " s")
   end
   local p, surface, anchor = owner.spawn_anchor()
   if not p then err.raise("no_player", "owner is not in the save, or is online without a character") end
-  local center = util.xy(anchor)
-  local pos = surface.find_non_colliding_position("character", { x = center.x + 2, y = center.y }, M.SPAWN_RADIUS - 2, 0.5)
-  if pos == nil then err.raise("cannot_place", "no free place near the owner") end
-  pos = util.xy(pos)
-  if util.dist(pos, center) > M.SPAWN_RADIUS then err.raise("cannot_place", "no free place near the owner") end
+  local pos
+  if recent then
+    local spawn = util.xy(p.force.get_spawn_position(surface))
+    pos = surface.find_non_colliding_position("character", spawn, M.RESPAWN_RADIUS, 0.5)
+    if pos == nil then err.raise("cannot_place", "no free place near the respawn point") end
+    pos = util.xy(pos)
+  else
+    local center = util.xy(anchor)
+    pos = surface.find_non_colliding_position("character", { x = center.x + 2, y = center.y }, M.SPAWN_RADIUS - 2, 0.5)
+    if pos == nil then err.raise("cannot_place", "no free place near the owner") end
+    pos = util.xy(pos)
+    if util.dist(pos, center) > M.SPAWN_RADIUS then err.raise("cannot_place", "no free place near the owner") end
+  end
   local e = surface.create_entity{ name = "character", position = pos, force = p.force, quality = "normal" }
   if e == nil then err.raise("cannot_place", "character was not created") end
   M.bind(id, e)
-  return { helper = id, unit_number = e.unit_number, surface = surface.name, pos = util.pos(e.position) }
+  return { helper = id, unit_number = e.unit_number, surface = surface.name, pos = util.pos(e.position),
+           at = recent and "respawn_point" or "owner" }
 end
 
 local function find_corpse(surface, pos, tick)

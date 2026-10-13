@@ -272,7 +272,7 @@ async def prepare_mod(core, ids: list[str], body: str, players: list[str],
                 bodies[hid] = {"helper": hid, "reused": True}
             elif e.code == "cooldown":
                 raise LaunchError(f"{hid}: тело недавно погибло или удалено — новое можно создать "
-                                  "через 5 минут после этого") from None
+                                  "через 10 секунд после этого") from None
             elif e.code == "no_player":
                 raise LaunchError("хозяин должен быть в игре с персонажем: тело помощника появляется "
                                   "рядом с ним") from None

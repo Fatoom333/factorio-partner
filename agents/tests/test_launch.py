@@ -275,7 +275,7 @@ def test_module_errors_reach_the_agent(tmp_path):
 
 
 @pytest.mark.parametrize("errors,n,body,match", [
-    ({"helper_spawn": "cooldown"}, 1, "character", "5 минут"),
+    ({"helper_spawn": "cooldown"}, 1, "character", "10 секунд"),
     ({"helper_spawn": "no_player"}, 1, "character", "хозяин должен быть в игре"),
     ({"helper_spawn": "limit"}, 1, "character", "helper_spawn"),
     ({"helper_attach": "no_player"}, 1, "player", "должен быть в игре"),

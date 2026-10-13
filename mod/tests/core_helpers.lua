@@ -1,7 +1,7 @@
 -- Помощники и хозяин: helper_spawn/remove/list, перезарядка, смерть, потеря тела (PROTOCOL §4, §6.9, §7).
 local S = require("stubs")
 
-local COOLDOWN = 5 * 60 * 60
+local COOLDOWN = 600
 
 S.suite("helpers", {
   { "spawn: рядом с хозяином, его поверхность и сила, пустой инвентарь", function()
@@ -127,10 +127,12 @@ S.suite("helpers", {
       -- удалили мёртвого — место свободно
       S.okr(S.req("helper_remove", {}, "h1"))
       -- перезарядка общая для всех id: новое тело под другим id сразу не появляется
-      S.err(S.req("helper_spawn", {}, "h3"), "cooldown", "remove h1 → spawn h3 не телепорт")
-      storage.helpers.h1.removed_tick = -1e9
-      storage.helpers.h1.died_tick = -1e9
-      S.okr(S.req("helper_spawn", {}, "h3"))
+      S.err(S.req("helper_spawn", {}, "h3"), "cooldown", "10 секунд общие для всех id")
+      S.tick(COOLDOWN)
+      S.eq(S.okr(S.req("helper_spawn", {}, "h3")).at, "respawn_point", "remove h1 → spawn h3 не телепорт")
+      S.okr(S.req("helper_remove", {}, "h3"))
+      S.tick(5 * 60 * 60)
+      S.eq(S.okr(S.req("helper_spawn", {}, "h3")).at, "owner", "через 5 минут — снова у хозяина")
       S.okr(S.req("helper_limit", { max = 2 }))
   end },
   { "registry.bind / тело-игрок: helper_remove только отвязывает, персонаж игрока жив", function()
@@ -235,18 +237,19 @@ S.suite("helpers", {
       storage.helpers.h1.entity.die()
       local corpse = storage.helpers.h1.corpse_pos
       S.ok(corpse ~= nil)
-      S.tick(4 * 60 * 60)
+      S.tick(300)
       local d = S.okr(S.req("helper_remove", {}, "h1"))
       S.eq(d.corpse, corpse)
       S.eq(storage.helpers.h1.state, "removed")
       S.err(S.req("helper_remove", {}, "h1"), "no_helper")
       local list = S.okr(S.req("helper_list")).helpers
-      S.eq(list[1].cooldown_s, 60, "осталась минута, а не 5")
+      S.eq(list[1].cooldown_s, 5, "осталось 5 секунд, а не 10")
       S.err(S.req("helper_spawn", {}, "h1"), "cooldown")
-      S.tick(COOLDOWN - 4 * 60 * 60 - 1)
+      S.tick(COOLDOWN - 300 - 1)
       S.err(S.req("helper_spawn", {}, "h1"), "cooldown")
       S.tick(1)
-      S.okr(S.req("helper_spawn", {}, "h1"))
+      -- окно 5 минут ещё идёт: тело появляется в точке возрождения, а не у хозяина
+      S.eq(S.okr(S.req("helper_spawn", {}, "h1")).at, "respawn_point")
   end },
   { "on_object_destroyed с чужим registration_number ничего не трогает", function()
       S.load_mod()
