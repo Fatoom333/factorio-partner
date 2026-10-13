@@ -43,6 +43,13 @@ def run(client) -> dict:
     t = B.scan(client, origin)
     result["terrain"] = {"maps": t.maps, "cells": len(t.cells), "liquid": t.count(t.liquid), "land": t.count(t.land)}
     found = B.find_island(t, origin)
+    extra = {}
+    if found is None:
+        # Нет острова шире дальности подземного: берём остров с рвом хоть в одну клетку жидкости и
+        # запрещаем подземные (`underground: "never"`) — по суше туда тоже пути нет.
+        found = B.find_island(t, origin, moat=1)
+        extra = {"underground": "never"}
+        result["moat"] = "1 клетка, underground=never"
     if found is None:
         result.update(ok=False, error={"kind": "setup", "text": "в 160 клетках от помощника нет острова, "
                                        "окружённого жидкостью"})
@@ -56,7 +63,7 @@ def run(client) -> dict:
 
     reasons = []
     before = ghost_count(client, home)
-    real = B.act(client, "plan_belt", {"from": B.center(home), "to": B.center(island)})
+    real = B.act(client, "plan_belt", dict({"from": B.center(home), "to": B.center(island)}, **extra))
     result["plan"] = B.brief(real)
     detail = B.detail_of(real)
     if real["kind"] != "job_failed" or B.code_of(real) != "path_failed":

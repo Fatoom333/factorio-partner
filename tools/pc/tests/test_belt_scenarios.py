@@ -307,8 +307,10 @@ def test_under_ok(fake_rcon):
     res = run("belt_under", m, fake_rcon)
     assert res["ok"] is True, res
     assert m.acts[0]["underground"] == "never" and "underground" not in m.acts[1]
-    assert m.acts[2]["underground"] == "prefer" and m.acts[2]["dry_run"] is True
-    assert m.acts[3]["underground"] == "prefer" and "dry_run" not in m.acts[3]
+    assert m.acts[1]["dry_run"] is True and "underground" not in m.acts[1]   # проба: берёт ли auto подземный
+    assert "underground" not in m.acts[2] and "dry_run" not in m.acts[2]
+    assert m.acts[3]["underground"] == "prefer" and m.acts[3]["dry_run"] is True
+    assert m.acts[4]["underground"] == "prefer" and "dry_run" not in m.acts[4]
     assert res["first_chain"]["on_map"] == 41
     assert res["second_chain"]["undergrounds"] == 1
     pair = res["second_chain"]["pairs"][0]
@@ -367,19 +369,23 @@ def test_fail_never_fails_leaves_ghosts(fake_rcon):
 
 def test_fail_no_island_is_setup_error(fake_rcon):
     tiles = {k: v for k, v in default_tiles().items() if k[1] < 80}
-    res = run("belt_fail", Model(tiles=tiles), fake_rcon)
+    m = Model(tiles=tiles)
+    res = run("belt_fail", m, fake_rcon)
     assert res["ok"] is False and res["error"]["kind"] == "setup"
 
 
 def test_fail_narrow_moat_is_not_an_island(fake_rcon):
-    """Ров уже, чем достаёт подземный конвейер, — не остров: туда может найтись путь под землёй."""
+    """Ров уже, чем достаёт подземный конвейер, — не остров с подземным; сценарий берёт его только
+    запретив подземные (`underground: never`) и помечает это в результате."""
     tiles = default_tiles()
     for x in range(47, 78):
         for y in range(87, 118):
             if not (55 <= x <= 69 and 95 <= y <= 109):
                 tiles.pop((x, y), None)
-    res = run("belt_fail", Model(tiles=tiles), fake_rcon)
-    assert res["ok"] is False and res["error"]["kind"] == "setup"
+    m = Model(tiles=tiles)
+    res = run("belt_fail", m, fake_rcon)
+    assert "moat" in res
+    assert any(a.get("underground") == "never" for a in m.acts if a.get("from")), m.acts
 
 
 # ---------- общий модуль ----------
