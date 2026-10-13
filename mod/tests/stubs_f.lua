@@ -10,7 +10,9 @@
 -- * прототипы построек: place_result, items_to_place_this, collision_box, размеры в клетках;
 -- * проверки постановки: F.blocked["x,y"] = true (нельзя ничего) │ { ghost_revive = true, ... };
 --   тело персонажа мешает постройке на своём месте (F.body_blocks); журнал проверок F.checks;
--- * призраки с revive{raise_revive} (F.revive_nil, F.collided), remove_item у тела (F.remove_fails);
+-- * призраки с revive{raise_revive} (F.revive_nil, F.collided, F.proxy — третий результат revive),
+--   remove_item у тела (F.remove_fails), призрак от скрипта create_entity{entity-ghost, inner_name}
+--   (F.ghost_restored); F.bp_return_existing — build_blueprint возвращает уже стоявший призрак;
 -- * личные дроны: F.give_robots(h, n, radius) + «движок» в F.run (F.flight_ticks, F.robots_stalled);
 -- * чертежи: F.blueprints[строка] = {entities, tiles?, kind?, rc?}, фейковый game.create_inventory
 --   со стаком (import_stack, build_blueprint, ...), журнал F.bp_calls, F.bp_created/F.bp_destroyed.
@@ -146,7 +148,7 @@ function F.revive(g, p)
     S.fire(defines.events.script_raised_revive, { entity = e })
   end
   F.revived[#F.revived + 1] = e
-  return F.collided or {}, e, nil
+  return F.collided or {}, e, F.proxy
 end
 
 --- Призрак постройки name: F.ghost("iron-chest", {x=, y=}, {force=, direction=, quality=}).
@@ -266,7 +268,17 @@ local function engine_build(bp, p)
     end
     wx, wy = wx + shift.x, wy + shift.y
     local dir = ((be.direction or 0) + (p.direction or 0)) % 16
-    if allowed("blueprint_ghost", { name = be.name, position = { x = wx, y = wy }, direction = dir, force = p.force }) then
+    local same
+    if F.bp_return_existing then
+      -- наложение на уже стоящий одинаковый призрак: «движок» возвращает его самого
+      for _, g in ipairs(S.nauvis._entities) do
+        if g.valid and g.type == "entity-ghost" and g.ghost_name == be.name
+            and S.dist(g.position, { x = wx, y = wy }) < 0.01 then same = g break end
+      end
+    end
+    if same ~= nil then
+      out[#out + 1] = same
+    elseif allowed("blueprint_ghost", { name = be.name, position = { x = wx, y = wy }, direction = dir, force = p.force }) then
       out[#out + 1] = F.ghost(be.name, { x = wx, y = wy }, { direction = dir, quality = be.quality, force = p.force, surface = p.surface })
     end
   end
@@ -323,6 +335,7 @@ function F.setup(opts)
   F.flights, F.flight_ticks, F.robots_stalled, F.robot_built, F.net = {}, 30, false, 0, nil
   F.blueprints, F.bp_calls, F.imported = {}, {}, {}
   F.bp_created, F.bp_destroyed, F.tile_ghosts, F.bp_shift = 0, 0, 0, nil
+  F.proxy, F.bp_return_existing, F.ghost_restored = nil, false, 0
   CHECK_NAMES = {}
 
   local W = C.setup(opts)
@@ -340,6 +353,13 @@ function F.setup(opts)
   end
   local create = S.nauvis.create_entity
   rawset(S.nauvis, "create_entity", function(params)
+    if params.name == "entity-ghost" and params.inner_name ~= nil then
+      -- призрак, поставленный скриптом (откат постройки руками)
+      F.ghost_restored = F.ghost_restored + 1
+      return F.ghost(params.inner_name, params.position, {
+        direction = params.direction, force = params.force and (params.force.name or params.force),
+      })
+    end
     if F.create_nil and params.raise_built then return nil end
     local e = create(params)
     if e.type == "assembling-machine" then

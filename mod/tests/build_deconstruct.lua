@@ -178,4 +178,45 @@ S.suite("build_deconstruct", {
       S.ok(a.valid)
       S.ok(W.path.cancels > 0)
   end },
+  { "filter с неизвестным именем — bad_args сразу (а не ошибка движка), ничего не тронуто", function()
+      F.setup()
+      local a = C.chest({ x = 20.5, y = 0.5 }, {})
+      for _, args in ipairs({
+        { area = AREA, filter = { "iron-chest", "no-such-entity" } },
+        { target = { unit_number = a.unit_number }, filter = { "no-such-entity" } },
+      }) do
+        local d, kind = F.wait(decon(args))
+        S.eq({ kind, d.code }, { "job_failed", "bad_args" }, S.dump(d))
+        S.ok(d.text:find("no-such-entity", 1, true), d.text)
+      end
+      S.ok(a.valid)
+      S.eq(C.mined, 0)
+      S.eq(storage.reservations.areas.h1, nil)
+  end },
+  { "area: техника с водителем не трогается, без водителя — разбирается", function()
+      local W = F.setup()
+      prototypes.entity["car"].mineable_properties =
+        { minable = true, mining_time = 0.2, products = { { type = "item", name = "car", amount = 1 } } }
+      local busy = S.nauvis.create_entity{ name = "car", position = { x = 20, y = 0 }, force = "player" }
+      rawset(busy, "get_driver", function() return W.player.character end)
+      local free = S.nauvis.create_entity{ name = "car", position = { x = 25, y = 0 }, force = "player" }
+      rawset(free, "get_driver", function() return nil end)
+      local d, kind = F.wait(decon{ area = AREA })
+      S.eq(kind, "job_done", S.dump(d))
+      S.eq(d.detail, { removed = 1, got = { car = 1 } })
+      S.ok(busy.valid and not free.valid)
+  end },
+  { "цель разобрал кто-то другой, пока мы копали — не засчитывается (removed не завышен)", function()
+      local W = F.setup()
+      local a = C.chest({ x = 6.5, y = 0.5 }, {})
+      prototypes.entity["iron-chest"].mineable_properties.mining_time = 30
+      local job = decon{ target = { unit_number = a.unit_number } }
+      F.run(60)
+      S.eq(W.h.mining_state.mining, true)
+      a.destroy()   -- игрок или дрон
+      local d, kind = F.wait(job)
+      S.eq(kind, "job_done", S.dump(d))
+      S.eq(d.detail, { removed = 0, got = {} })
+      S.eq(W.h.mining_state.mining, false)
+  end },
 })
