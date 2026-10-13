@@ -198,13 +198,21 @@ end
 
 -- ------------------------------------------------------------------ зеркало
 
---- Чертёж можно отразить? Рельсы и станции зеркалом не ставим: их формы и направления движок
---- отражает по своим правилам, которых здесь нет (оценка мест разошлась бы с постановкой).
+--- Типы прототипов, которые ручное зеркало отражать не умеет: у них отражение по x — это не
+--- (16 − d) % 16 и не флаг mirror. Бак (storage-tank) имеет два положения, 0 и 4, и зеркало
+--- переводит одно в другое — входы встали бы не туда. Это типы прототипов, а не имена
+--- (PROTOCOL §6.12): баки и станции из модов подпадают сами.
+local NO_MIRROR = { ["train-stop"] = true, ["storage-tank"] = true }
+
+--- Чертёж можно отразить? Рельсы, станции и баки зеркалом не ставим: их формы и направления
+--- движок отражает по своим правилам, которых здесь нет (оценка мест разошлась бы с постановкой,
+--- а у баков — жидкостные входы). У build_blueprint движка (2.0.77) параметра mirror нет.
+--- Один и тот же ответ — и для args.mirror, и для перебора положений в поиске сдвига.
 local function can_mirror(entities)
   for _, be in ipairs(entities) do
     local proto = prototypes.entity[be.name]
     local t = proto and proto.type or ""
-    if string.find(t, "rail", 1, true) or t == "train-stop" then return false end
+    if string.find(t, "rail", 1, true) or NO_MIRROR[t] then return false end
   end
   return true
 end
@@ -619,6 +627,10 @@ end
 local function fit_tick(task, ctx)
   local a, f = task.args, task.fit
   local env = new_env(ctx.entity)
+  -- кэш «подложка доступна» — один на весь поиск (простые данные в task.fit): иначе при закрытом
+  -- рецепте каждый тик заново перебирались бы все рецепты игры
+  f.cover = f.cover or {}
+  env.cover = f.cover
   local list = orientations(a, f.src)
   local budget = M.FIT_OPS_TICK
   local cells = ring(f.r)
@@ -815,7 +827,7 @@ function M.start(task, ctx)
     local entities = count > 0 and st.get_blueprint_entities() or {}
     if type(entities) ~= "table" then entities = {} end
     if a.mirror and not can_mirror(entities) then
-      err.raise("bad_args", "args.mirror: a blueprint with rails or train stops is not mirrored")
+      err.raise("bad_args", "args.mirror: a blueprint with rails, train stops or storage tanks is not mirrored")
     end
     local plan, tplan = M.layout(entities, a.anchor, a.direction, bp_tiles, a.mirror)
     if #plan == 0 and #tplan == 0 then err.raise("bad_args", "args.blob: blueprint has no entities and no tiles") end
@@ -824,11 +836,13 @@ function M.start(task, ctx)
       err.raise("limit", "blueprint is larger than " .. M.MAX_SIDE .. " tiles")
     end
     if not B.area_charted(h, area) then err.raise("not_charted", "blueprint area is in uncharted chunks") end
-    local pre = precheck(h, plan, tplan, a.force, new_env(h))
+    local env = new_env(h)
+    local pre = precheck(h, plan, tplan, a.force, env)
     if pre.on_liquid > 0 and a.force ~= "normal" and not a.partial then
       -- клетки без возможной подложки: чертёж не ставится вовсе, ищем сдвиг (ACTIONS.md)
       B.check_free(ctx, area)
-      return { liquid = true, summary = summary(h, plan, tplan, pre), src = plain_source(entities, bp_tiles) }
+      return { liquid = true, summary = summary(h, plan, tplan, pre), src = plain_source(entities, bp_tiles),
+        cover = env.cover }
     end
     if a.dry_run then
       B.check_free(ctx, area)
@@ -844,7 +858,7 @@ function M.start(task, ctx)
   task.bp = s
   if out.liquid then
     if a.search > 0 then
-      task.fit = { src = out.src, r = 0, i = 1, o = 1, ops = 0, checked = 0 }
+      task.fit = { src = out.src, r = 0, i = 1, o = 1, ops = 0, checked = 0, cover = out.cover }
       task.progress = { done = 0, total = a.search }
       return nil
     end
