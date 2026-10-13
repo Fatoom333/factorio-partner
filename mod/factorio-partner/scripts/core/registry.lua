@@ -4,6 +4,9 @@
 -- storage.helpers[id] = {
 --   entity, unit_number, state = "alive"|"dead"|"away"|"removed", reg (номер register_on_object_destroyed),
 --   spawned_tick, died_tick, died_pos, corpse_pos, removed_tick,
+--   char_gone_tick?, -- тик, с которого идёт перезарядка helper_spawn после прежнего тела-персонажа
+--                    -- этого id; переживает привязку и отвязку тела-игрока (PROTOCOL §4: пара
+--                    -- remove→spawn не телепорт, в том числе через helper_attach между ними)
 --   player_index?,   -- тело-игрок (PROTOCOL §7 «Два вида тела»): персонаж второго клиента
 --   away?, away_pos?, away_surface?, hold? }
 --                    -- только у тела-игрока, пишет scripts/core/attach.lua: state="away" — тела
@@ -114,13 +117,27 @@ function M.occupied(except)
   return n, alive
 end
 
+--- Тик, с которого идёт перезарядка helper_spawn для записи (nil — перезарядки нет).
+--- Своё тело-игрок перезарядки не даёт (PROTOCOL §7: отвязка без перезарядки), но перезарядка
+--- прежнего тела-персонажа того же id (char_gone_tick) остаётся: иначе цепочка
+--- remove → attach → remove → spawn переносила бы тело к хозяину без ожидания (§4).
+local function cooldown_since(rec)
+  local since
+  if rec.player_index == nil then
+    if rec.state == "removed" then since = rec.removed_tick or rec.died_tick
+    elseif rec.state == "dead" then since = rec.died_tick end
+  end
+  local prev = rec.char_gone_tick
+  if type(prev) == "number" and (since == nil or prev > since) then since = prev end
+  return since
+end
+
 --- Сколько тиков ещё ждать до helper_spawn (0 — можно).
 function M.cooldown_left(rec)
   if rec == nil then return 0 end
-  if rec.player_index ~= nil then return 0 end -- тело-игрок: перезарядки нет (PROTOCOL §7)
-  local since
-  if rec.state == "removed" then since = rec.removed_tick or rec.died_tick
-  elseif rec.state == "dead" then since = rec.died_tick end
+  -- тело-игрок, пока привязано (живое, мёртвое, away): helper_spawn и так ответит helper_exists
+  if rec.player_index ~= nil and rec.state ~= "removed" then return 0 end
+  local since = cooldown_since(rec)
   if since == nil then return 0 end
   return math.max(0, since + M.COOLDOWN - game.tick)
 end
@@ -152,7 +169,7 @@ function M.check_slot(id)
 end
 
 --- Новая запись помощника с живым телом (заменяет прежнюю запись id; отметки перезарядки
---- переносятся). fields — простые поля записи (player_index у тела-игрока).
+--- переносятся: у тела-игрока — одним полем char_gone_tick, которое helper_remove не стирает). fields — простые поля записи (player_index у тела-игрока).
 --- Проверки (лимит, перезарядка, чьё тело) делает вызывающий: helper_spawn здесь, helper_attach — поток P.
 function M.bind(id, entity, fields)
   if not (entity and entity.valid and entity.type == "character") then error("registry.bind: not a character", 2) end
@@ -164,6 +181,13 @@ function M.bind(id, entity, fields)
   }
   for k, v in pairs(fields or {}) do
     if type(v) == "number" or type(v) == "string" or type(v) == "boolean" then new[k] = v end
+  end
+  -- после fields: вызывающий это поле задать не может
+  new.char_gone_tick = old and cooldown_since(old) or nil
+  if new.player_index ~= nil then
+    -- отметки тела-персонажа в записи тела-игрока не живут (died_tick здесь — смерть игрока)
+    new.removed_tick = nil
+    new.died_tick = nil
   end
   attach(new, entity)
   storage.helpers[id] = new
@@ -270,7 +294,8 @@ function M.op_remove(args, ctx)
   if rec.player_index ~= nil then
     -- тело-игрок в любом состоянии (живое, мёртвое, away): только отвязать, персонажа игрока не
     -- убивать (PROTOCOL §7); трупа в ответе и перезарядки нет — тело не создаётся и не
-    -- переносится, телепортом пара detach/attach служить не может
+    -- переносится, телепортом пара detach/attach служить не может. char_gone_tick (перезарядка
+    -- прежнего тела-персонажа этого id) не трогаем: helper_spawn её дождётся
     M.hooks.before_remove(id)
     rec.state = "removed"
     rec.removed_tick = nil
