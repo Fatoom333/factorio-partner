@@ -57,7 +57,7 @@ S.suite("move_path", {
       S.eq(res.kind, "job_failed")
       S.eq(res.data.code, "path_failed")
       local all = B.all_requests()
-      S.eq(#all, 11, "1 запрос + 10 повторов")
+      S.eq(#all, 12, "1 запрос парой (широкий и тонкий) + 10 повторов")
       S.eq(B.count(storage.path_requests), 0, "запросы забыты")
       S.eq(walking(h), false)
   end },
@@ -113,7 +113,7 @@ S.suite("move_path", {
       local res = B.run(job, 2000)
       S.eq(res.data.code, "stuck")
       S.ok(game.tick - t0 >= P_ESCAPE(), "сдался не раньше, чем пытался выбраться: " .. (game.tick - t0))
-      S.eq(#B.all_requests(), 1, "выбирание — ходьба, без новых запросов пути")
+      S.eq(#B.all_requests(), 2, "первый запрос парой; выбирание — ходьба, без новых запросов пути")
       -- шумное stuck — при перепланировании; финал — громкое job_failed{stuck} (EVENTS.md)
       local st = B.events("stuck")
       S.eq(#st, 1)
@@ -314,7 +314,7 @@ S.suite("move_path", {
       S.eq(B.run(job, 2000).kind, "job_done")
   end },
 
-  { "только узкий проход: широкий не находится нигде — отход, затем тонким до конца, дошёл", function()
+  { "только узкий проход: широкий не находится нигде — пара сразу даёт тонкий до конца, дошёл", function()
       local _, h = B.setup()
       local function wide(params)
         local bb = params.bounding_box
@@ -330,7 +330,7 @@ S.suite("move_path", {
       S.eq(res.kind, "job_done", S.dump(res.data))
       local kinds = {}
       for _, r in ipairs(B.all_requests()) do kinds[#kinds + 1] = wide(r.params) and "w" or "t" end
-      S.eq(table.concat(kinds, ""), "wtwt", "широкий, тонкий-отход, широкий, тонкий до конца")
+      S.eq(table.concat(kinds, ""), "wt", "первый запрос парой: широкого нет, тонкий есть — тонкий до конца")
       S.ok(h.position.x >= 29, "дошёл: " .. h.position.x)
   end },
   { "широкий не находится и тонкий тоже — честный отказ без бесконечных повторов", function()
@@ -376,6 +376,32 @@ S.suite("move_path", {
       local res = B.run(job, 6000)
       S.eq(res.kind, "job_failed")
       S.eq(res.data.code, "stuck")
+  end },
+
+  { "пара маршрутов: тонкий заметно короче (сквозь машины) — берётся тонкий; почти равный — широкий", function()
+      for _, case in ipairs({ { thin_y = 0, want = true }, { thin_y = 9, want = false } }) do
+        local _, h = B.setup()
+        local o = { x = h.position.x, y = h.position.y }
+        local function wide(params)
+          local lt = params.bounding_box.left_top or params.bounding_box[1]
+          return math.abs(lt.x or lt[1]) > 0.3
+        end
+        -- широкий обходит по y = 10 (длинно), тонкий идёт прямо (y = 0) или почти так же длинно (y = 9)
+        B.pathfinder = function(params)
+          local s, g = S.norm_pos(params.start), S.norm_pos(params.goal)
+          local y = wide(params) and 10 or case.thin_y
+          return { path = {
+            { position = { x = s.x, y = s.y + y } }, { position = { x = g.x, y = s.y + y } },
+            { position = { x = g.x, y = g.y } },
+          } }
+        end
+        local job = B.act("walk", { to = { x = o.x + 20, y = o.y } }).job
+        B.tick(3)
+        local st = storage.jobs and nil
+        local task = require("scripts.core.jobs").active("h1")
+        S.eq(task and task.approach and task.approach.thin == true, case.want, "thin_y=" .. case.thin_y)
+        B.run(job, 3000)
+      end
   end },
 })
 

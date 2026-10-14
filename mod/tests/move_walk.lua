@@ -96,7 +96,7 @@ S.suite("move_walk", {
       B.pathfinder = nil
       local job = B.act("walk", { to = { x = 30, y = 0 } }).job
       B.tick(3)
-      S.eq(B.count(storage.path_requests), 1)
+      S.eq(B.count(storage.path_requests), 2, "первый запрос — парой")
       S.fire(defines.events.on_entity_died, { entity = h })
       local res = B.result(job)
       S.eq(res.data.code, "no_helper")

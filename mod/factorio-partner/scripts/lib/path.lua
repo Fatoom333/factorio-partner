@@ -60,6 +60,14 @@ M.BOX = { left_top = { x = -0.35, y = -0.35 }, right_bottom = { x = 0.35, y = 0.
 -- углами машин): тогда идём «тонким» маршрутом до конца (st.thin), застряли на нём — обычное
 -- перепланирование тем же тонким. Не нашёлся и тонкий — отказ.
 M.UNSTICK_DIST = 1.5
+-- Два маршрута сразу (живой прогон 14.10, Squeak Through 2): широкая коробка в щели между машинами не
+-- лезет, и движок находит ей длинный обход — до «тонкого» маршрута дело не доходило. Поэтому первый
+-- запрос задачи идёт парой: широкий и тонкий; тонкий берётся, если он короче широкого хотя бы на
+-- THIN_GAIN и на THIN_SLACK клеток (или широкого нет). Дальше задача пересчитывает путь выбранным
+-- способом, без пары. Застрять на тонком — обычное выбирание из зоны.
+M.THIN_GAIN = 0.8
+M.THIN_SLACK = 2
+M.ALT_WAIT = 120 -- столько тиков ждём ответа на тонкий запрос после ответа на широкий
 -- Выбирание из застревания (решение автора 14.10). Тело не сдвинулось за STUCK_TICKS — маршрут не
 -- пересчитывается сразу (он чаще всего снова ведёт в тот же угол): тело ищет выход из «зоны» —
 -- круга ESCAPE_RADIUS вокруг места застревания. Идёт в одну сторону, пока не упрётся (не сдвинулось
@@ -152,6 +160,10 @@ local function forget_request(st)
     reqs()[st.path_id] = nil
     st.path_id = nil
   end
+  if st and st.alt_id ~= nil then
+    reqs()[st.alt_id] = nil
+    st.alt_id = nil
+  end
 end
 
 --- Запросить путь. req_goal — куда строить (с обходным смещением), goal — настоящая цель.
@@ -173,6 +185,23 @@ local function request(task, ctx, st, goal, req_goal, keep_walking)
   }
   reqs()[id] = { helper = task.helper, job = task.job, tick = ctx.tick }
   st.path_id = id
+  if not st.tight and not st.paired and st.unstick == nil then
+    -- первый запрос задачи — парой с тонким (см. THIN_GAIN)
+    st.paired = true
+    local alt = e.surface.request_path{
+      bounding_box = proto.collision_box or M.BOX,
+      collision_mask = proto.collision_mask,
+      start = util.xy(e.position),
+      goal = { x = req_goal.x, y = req_goal.y },
+      force = e.force,
+      radius = max(1, st.distance - 0.3),
+      entity_to_ignore = e,
+      can_open_gates = false,
+      pathfind_flags = { cache = false, prefer_straight_paths = true, low_priority = false },
+    }
+    reqs()[alt] = { helper = task.helper, job = task.job, tick = ctx.tick }
+    st.alt_id = alt
+  end
   st.plan_tick = ctx.tick
   st.goal = { x = goal.x, y = goal.y }
   st.goal_moved = false
@@ -294,9 +323,50 @@ local function detour_goal(goal, pos, n)
 end
 
 -- Забрать итог запроса, если он пришёл. Возвращает result при провале, иначе nil.
+local function path_length(from, wps)
+  local len, prev = 0, from
+  for _, w in ipairs(wps) do
+    len = len + util.dist(prev, w)
+    prev = w
+  end
+  return len
+end
+
+local function good(r)
+  return r ~= nil and r.finished and not r.try_again and not r.failed
+    and type(r.waypoints) == "table" and r.waypoints[1] ~= nil
+end
+
 local function poll_request(task, ctx, st, pos)
   local r = reqs()[st.path_id]
   local tick = ctx.tick
+  if st.alt_id ~= nil and r ~= nil and r.finished and not r.try_again then
+    local ra = reqs()[st.alt_id]
+    if ra ~= nil and not ra.finished and tick - st.plan_tick < M.ALT_WAIT then
+      return nil -- ждём тонкий, чтобы сравнить
+    end
+    local take_thin = false
+    if good(ra) then
+      if not good(r) then
+        take_thin = true
+      else
+        local wl, tl = path_length(pos, r.waypoints), path_length(pos, ra.waypoints)
+        take_thin = tl < wl * M.THIN_GAIN and tl + M.THIN_SLACK < wl
+      end
+    end
+    reqs()[st.alt_id] = nil
+    st.alt_id = nil
+    if take_thin then
+      reqs()[st.path_id] = ra -- дальше разбирается как обычный ответ
+      st.thin = true
+      st.tight = true
+      r = ra
+    elseif not good(r) and ra ~= nil and ra.finished then
+      -- ни широкого, ни тонкого: отход и прочие попытки ничего не дадут
+      forget_request(st)
+      return give_up(task, ctx, "path_failed", "no path to the goal", pos)
+    end
+  end
   if r == nil or (not r.finished and tick - st.plan_tick >= M.PLAN_TIMEOUT) then
     -- запрос потерян (сохранение/загрузка) или завис — повторить
     st.retries = st.retries + 1
