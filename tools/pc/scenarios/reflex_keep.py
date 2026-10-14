@@ -47,7 +47,8 @@ LIMITATION = ("перезагрузка сейва, возрождение и в
               "запрещены), второго клиента нет; прочитать набор обратно контракт не позволяет. Покрыто "
               "юнит-тестами mod/tests/reflex_keep.lua")
 
-FLEE = {"type": "flee", "radius": 20, "distance": 30, "health": 1, "on_attack": True, "to": "away"}
+FLEE = {"type": "flee", "radius": 20, "distance": 30, "health": 1, "on_attack": True, "to": "away",
+        "resume": True, "resume_health": 0.8}
 WATCH = {"type": "watch", "radius": 32, "every_s": 5}
 SET = [{"type": "flee"}, {"type": "watch", "every_s": 5}]
 

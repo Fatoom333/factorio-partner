@@ -9,7 +9,7 @@ import pytest
 import live_client as lc
 from conftest import PASSWORD, PC_DIR
 
-FLEE = {"radius": 20, "distance": 30, "health": 1, "on_attack": True, "to": "away"}
+FLEE = {"radius": 20, "distance": 30, "health": 1, "on_attack": True, "to": "away", "resume": True, "resume_health": 0.8}
 WATCH = {"radius": 32, "every_s": 10}
 LIMITS = {"radius": 32, "distance": 64, "health": 1, "every_s": 600}
 
