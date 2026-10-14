@@ -18,6 +18,7 @@ local err = require("scripts.core.err")
 local util = require("scripts.core.util")
 local target = require("scripts.core.target")
 local vis = require("scripts.core.vis")
+local RC = require("scripts.reflexes.common")
 
 local M = {}
 
@@ -346,13 +347,69 @@ function M.in_reach(h, e, kind)
 end
 
 local MAX_NEAR_TRIES = 3
+-- Дальняя от врага сторона (ревизия 3.11): враг ближе FAR_SIDE_ENEMY к цели — к постройке
+-- (сундук, турель) подходим с противоположной от него стороны, на той же дистанции, и «дошёл»
+-- засчитывается, только если тело за целью, если смотреть от врага (иначе подход кончился бы на
+-- ближней стороне или сбоку, едва цель оказалась в досягаемости). Точка считается один раз на цель и попытку
+-- (враг бежит — маршрут не пересчитывается каждый тик); свободного места там нет или пути туда нет
+-- — обычный подход (task._far_off).
+M.FAR_SIDE_ENEMY = 40
+M.FAR_SIDE_FREE = 2
+M.FAR_BEHIND = 1
+M.FAR_CONE = 0.7 -- cos 45°: тело в секторе за целью, а не сбоку
+
+local function far_side(h, pos, dist)
+  local foe = RC.enemies(h, M.FAR_SIDE_ENEMY, nil, pos)[1]
+  if foe == nil then return nil end
+  local dx, dy = pos.x - foe.pos.x, pos.y - foe.pos.y
+  local len = math.sqrt(dx * dx + dy * dy)
+  if len < 1e-6 then return nil end
+  local p = { x = pos.x + dx / len * dist, y = pos.y + dy / len * dist }
+  local ok, spot = pcall(function()
+    return h.surface.find_non_colliding_position("character", p, M.FAR_SIDE_FREE, 0.5)
+  end)
+  if not ok or spot == nil then return nil end
+  return util.xy(spot), { x = foe.pos.x, y = foe.pos.y }
+end
+
+--- Дальняя сторона для цели и попытки (кэш task._far = {key, pos?, foe?}) или nil.
+local function far_info(task, h, tpos, tries, dist)
+  if task._far_off then return nil end
+  local fk = string.format("%.2f:%.2f:%d", tpos.x, tpos.y, tries)
+  local fs = task._far
+  if fs == nil or fs.key ~= fk then
+    local spot, foe = far_side(h, tpos, dist)
+    fs = { key = fk, pos = spot, foe = foe }
+    task._far = fs
+  end
+  if fs.pos == nil then return nil end
+  return fs
+end
 
 --- Подойти к сущности e на дистанцию kind (ACTIONS.md «Подход»).
 --- → true (в досягаемости) │ nil (иду) │ result (ошибка пути).
---- Своё состояние: task._goal (ключ текущей цели), task._near_tries.
+--- Своё состояние: task._goal (ключ текущей цели), task._near_tries, task._far, task._far_off.
 function M.approach(task, ctx, e, kind)
   local h = ctx.entity
-  if M.in_reach(h, e, kind) then
+  local tpos = util.xy(e.position)
+  local tries = task._near_tries or 0
+  local reach = M.reach(h, kind)
+  local fs
+  if (kind == "reach" or kind == nil) and e.surface.index == h.surface.index then
+    fs = far_info(task, h, tpos, tries, math.max(1, reach - 1.5 - tries))
+  end
+  local function arrived()
+    if not M.in_reach(h, e, kind) then return false end
+    if fs == nil then return true end
+    -- тело за целью, если смотреть от врага: в секторе ±45° от направления враг→цель, дальше FAR_BEHIND
+    local bx, by = util.xy(h.position).x - tpos.x, util.xy(h.position).y - tpos.y
+    local nx, ny = tpos.x - fs.foe.x, tpos.y - fs.foe.y
+    local len = math.sqrt(nx * nx + ny * ny)
+    if len < 1e-6 then return true end
+    local along = (bx * nx + by * ny) / len
+    return along >= M.FAR_BEHIND and along >= M.FAR_CONE * math.sqrt(bx * bx + by * by)
+  end
+  if arrived() then
     if task._goal ~= nil then
       ctx.cancel_approach(task)
       task._goal = nil
@@ -363,10 +420,8 @@ function M.approach(task, ctx, e, kind)
   if e.surface.index ~= h.surface.index then
     return { status = "failed", code = "not_reachable", text = "target is on another surface" }
   end
-  local pos = util.xy(e.position)
-  local tries = task._near_tries or 0
+  local pos = tpos
   -- подходим чуть ближе предела; после ложного «на месте» — ещё ближе
-  local reach = M.reach(h, kind)
   local dist
   if kind == "resource" then
     dist = reach - 0.5 - tries * 0.5
@@ -381,6 +436,7 @@ function M.approach(task, ctx, e, kind)
     dist = math.max(1, reach - 1.5 - tries)
   end
   if dist < 0.3 then dist = 0.3 end
+  if fs ~= nil then pos, dist = { x = fs.pos.x, y = fs.pos.y }, 0.5 end
   local key = string.format("%.2f:%.2f:%.2f", pos.x, pos.y, dist)
   if task._goal ~= key then
     if task._goal ~= nil then ctx.cancel_approach(task) end
@@ -390,7 +446,7 @@ function M.approach(task, ctx, e, kind)
   local r = ctx.approach(task, pos, dist)
   if r == true then
     task._goal = nil
-    if M.in_reach(h, e, kind) then
+    if arrived() then
       task._near_tries = nil
       return true
     end
@@ -402,6 +458,14 @@ function M.approach(task, ctx, e, kind)
     task.approach = nil
     return nil
   end
+  if r ~= nil and fs ~= nil then
+    -- к дальней стороне не пройти — обычный подход
+    ctx.cancel_approach(task)
+    task._far_off = true
+    task._goal = nil
+    task.approach = nil
+    return nil
+  end
   return r
 end
 
@@ -410,6 +474,8 @@ function M.stop_approach(task, ctx)
   ctx.cancel_approach(task)
   task._goal = nil
   task._near_tries = nil
+  task._far = nil
+  task._far_off = nil
 end
 
 -- ------------------------------------------------------------------ события

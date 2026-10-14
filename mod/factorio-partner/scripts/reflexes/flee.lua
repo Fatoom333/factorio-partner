@@ -21,6 +21,13 @@
 --     reflex_done{type, outcome, detail:{pos, legs, reason?}} в конце.
 --     reason: no_safe_point │ cancelled (задачу сняли — агент решил иначе) │ still_threatened │
 --     no_helper │ код ошибки ходьбы (path_failed, stuck, …).
+--     Ревизия 3.11 — возврат к делу: resume?=true, resume_health?=0.8 (0..1). Перед отступлением
+--     мод запоминает задачи, которые оно снимет (активную и очередь, без задач рефлексов, не больше
+--     RESUME_MAX; у mine — остаток count). Отступление удалось (outcome ok), врага ближе radius нет,
+--     здоровье ≥ resume_health, а агент за это время ничего не поставил — мод ставит их снова и шлёт
+--     громкое reflex_resumed{type:"flee", jobs:[{job, do}]}. Не дождался за RESUME_WAIT или вернулся
+--     уже RESUME_LIMIT раз за RESUME_WINDOW — reflex_resumed{jobs:[], reason:"timeout"│"too_often"}.
+--     Агент сам что-то поставил — возврат молча отменяется (решил агент).
 --   watch { radius?=32 (4..32), every_s?=10 (1..600) }
 --     Шумное saw_enemy{name, pos, dist} о ближайшем враге (включая гнёзда), не чаще раза в every_s.
 local util = require("scripts.core.util")
@@ -51,6 +58,11 @@ M.BLOCK_FAILED = 600       -- пауза после неудачи (не спо�
 M.FAIL_REPEAT = 3600       -- одинаковую неудачу «даже не начал» повторять не чаще
 M.REQ = "reflex:flee"      -- req задачи ходьбы (виден в `jobs`)
 M.ANGLES = { 0, 45, -45, 90, -90, 135, -135 } -- отклонения от направления «прочь от врага»
+M.RESUME_MAX = 4           -- задач, которые отступление вернёт
+M.RESUME_WAIT = 120 * 60   -- столько ждём здоровья и тишины для возврата
+M.RESUME_LIMIT = 3         -- возвратов за RESUME_WINDOW — дальше решает агент
+M.RESUME_WINDOW = 5 * 60 * 60
+M.RESUME_REQ = "resume:flee"
 
 local cos, sin, rad, sqrt = math.cos, math.sin, math.rad, math.sqrt
 
@@ -180,7 +192,31 @@ end
 --- Поставить задачу ходьбы к первой годной точке. Кандидаты всегда считаются от нынешнего
 --- места тела и от threat; tried — точки этого перехода, к которым дойти уже не вышло
 --- (пропускаются). → true | false, причина.
-local function start_leg(id, entity, st, p, threat, tick, legs, tried)
+--- Задачи помощника, которые снимет отступление: {{do, args}, ...} (без задач рефлексов).
+local function snapshot(id)
+  local out = {}
+  local list = {}
+  local active = jobs.active(id)
+  if active ~= nil then list[1] = active end
+  local q = jobs.queue_of(id, false)
+  for _, t in ipairs(q and q.queue or {}) do list[#list + 1] = t end
+  for _, t in ipairs(list) do
+    if #out >= M.RESUME_MAX then break end
+    local req = t.req
+    if not (type(req) == "string" and req:sub(1, 7) == "reflex:") and type(t.args) == "table" then
+      local args = util.copy(t.args)
+      local done = t.progress and t.progress.done
+      if t["do"] == "mine" and type(args.count) == "number" and (args.resource or args.item)
+          and type(done) == "number" and done > 0 then
+        args.count = math.max(1, args.count - done) -- вернуться — докопать остаток
+      end
+      out[#out + 1] = { ["do"] = t["do"], args = args }
+    end
+  end
+  return out
+end
+
+local function start_leg(id, entity, st, p, threat, tick, legs, tried, resume)
   tried = tried or {}
   local cands = candidates(entity, p, threat)
   for i = 1, #cands do
@@ -199,6 +235,7 @@ local function start_leg(id, entity, st, p, threat, tick, legs, tried)
         job = res.job, goal = spot, legs = legs, cand = i, tried = tried, since_seq = since, started = tick,
         threat = { name = threat.name, pos = { x = threat.pos.x, y = threat.pos.y } },
         p = { radius = p.radius, distance = p.distance, to = p.to },
+        resume = resume,
       }
       return true
     end
@@ -231,7 +268,8 @@ function M.consider(id, entity, params, tick, st, health)
   if C.health(entity, health) > params.health then return false end
   local threat = find_threat(entity, params, st, tick)
   if threat == nil then return false end
-  local ok, reason = start_leg(id, entity, st, params, threat, tick, 1)
+  local saved = snapshot(id) -- до замены очереди задачей отступления
+  local ok, reason = start_leg(id, entity, st, params, threat, tick, 1, nil, saved)
   if ok then
     local f = st.flee
     events.emit(id, "reflex_fired", { type = "flee", detail = {
@@ -267,6 +305,12 @@ local function job_result(id, f)
   return nil
 end
 
+local function job_idle(id)
+  if jobs.active(id) ~= nil then return false end
+  local q = jobs.queue_of(id, false)
+  return q == nil or q.queue == nil or q.queue[1] == nil
+end
+
 local function job_pending(id, job)
   local active = jobs.active(id)
   if active ~= nil and active.job == job then return true end
@@ -297,12 +341,16 @@ local function progress(id, entity, st, tick)
     local near = C.enemies(entity, f.p.radius)[1]
     if near == nil then
       st.flee_fail = nil
-      return finish(id, entity, st, tick, "ok", { legs = f.legs })
+      finish(id, entity, st, tick, "ok", { legs = f.legs })
+      if f.resume ~= nil and f.resume[1] ~= nil then
+        st.resume = { tasks = f.resume, until_tick = tick + M.RESUME_WAIT }
+      end
+      return
     end
     if f.legs >= M.MAX_LEGS then
       return finish(id, entity, st, tick, "failed", { reason = "still_threatened", legs = f.legs })
     end
-    local ok, reason = start_leg(id, entity, st, f.p, near, tick, f.legs + 1)
+    local ok, reason = start_leg(id, entity, st, f.p, near, tick, f.legs + 1, nil, f.resume)
     if not ok then finish(id, entity, st, tick, "failed", { reason = reason, legs = f.legs }) end
     return
   end
@@ -319,9 +367,45 @@ local function progress(id, entity, st, tick)
   if #tried < M.MAX_TRIES then
     local near = C.enemies(entity, f.p.radius)[1]
     local threat = near ~= nil and { name = near.name, pos = near.pos } or f.threat
-    ok = start_leg(id, entity, st, f.p, threat, tick, f.legs, tried)
+    ok = start_leg(id, entity, st, f.p, threat, tick, f.legs, tried, f.resume)
   end
   if not ok then finish(id, entity, st, tick, "failed", { reason = code or "unknown", legs = f.legs }) end
+end
+
+-- ------------------------------------------------------------------ возврат к делу
+
+local function resumed(id, made, reason)
+  events.emit(id, "reflex_resumed", { type = "flee", jobs = made, reason = reason }, { loud = true })
+end
+
+--- После удачного отступления: здоровье и тишина — поставить снятые задачи снова.
+local function resume_check(id, entity, st, tick)
+  local r = st.resume
+  if r == nil or st.flee ~= nil then return end
+  if not job_idle(id) then st.resume = nil return end -- агент уже решил сам
+  local p = flee_params(id)
+  if p == nil or p.resume == false then st.resume = nil return end
+  if tick > r.until_tick then
+    st.resume = nil
+    return resumed(id, {}, "timeout")
+  end
+  if C.health(entity) < (p.resume_health or 0.8) then return end
+  if C.enemies(entity, p.radius)[1] ~= nil then return end
+  local recent = {}
+  for _, t in ipairs(st.resumes or {}) do
+    if tick - t < M.RESUME_WINDOW then recent[#recent + 1] = t end
+  end
+  st.resumes = recent
+  st.resume = nil
+  if #recent >= M.RESUME_LIMIT then return resumed(id, {}, "too_often") end
+  recent[#recent + 1] = tick
+  local made = {}
+  for _, t in ipairs(r.tasks) do
+    local ok, res = pcall(jobs.op_act, { ["do"] = t["do"], args = t.args, replace = false },
+      { helper_id = id, request_id = M.RESUME_REQ, entity = entity, tick = tick })
+    if ok then made[#made + 1] = { job = res.job, ["do"] = t["do"] } end
+  end
+  resumed(id, made, made[1] == nil and "rejected" or nil)
 end
 
 -- ------------------------------------------------------------------ раз в 10 тиков
@@ -334,6 +418,7 @@ function M.sweep(tick)
       if a ~= nil and tick - a.last_tick >= M.EPISODE then st.attack = nil end
       check_health(id, entity, st)
       progress(id, entity, st, tick)
+      resume_check(id, entity, st, tick)
     elseif st.flee ~= nil then
       -- тело пропало посреди отступления: смерть — итог no_helper; удаление (решение агента) — молча
       local r = registry.get(id)
@@ -357,6 +442,8 @@ M.reflexes = {
       health = { type = "number", min = 0, max = 1, default = 1 },
       on_attack = { type = "bool", default = true },
       to = { type = "enum", values = { "away", "spawn", "player" }, default = "away" },
+      resume = { type = "bool", default = true },
+      resume_health = { type = "number", min = 0, max = 1, default = 0.8 },
     },
     check = function(id, entity, params, tick)
       M.consider(id, entity, params, tick)
