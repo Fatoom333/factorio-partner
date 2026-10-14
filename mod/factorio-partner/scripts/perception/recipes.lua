@@ -32,6 +32,9 @@ local function recipes_op(args, ctx)
   return { craftable = out }
 end
 
+-- Категории ручного крафта тела — нужны и операции `supply`.
+M.categories = categories
+
 M.ops = {
   recipes = recipes_op,
 }
