@@ -350,7 +350,7 @@ end
 --- хотя шагнуть можно). Не помогло — честный path_failed.
 local function no_path(task, ctx, st, pos)
   -- рефлекс бегства (req "reflex:…") сам переберёт другие точки отхода: гулять рядом с врагом незачем
-  if st.start_escaped or (type(task.req) == "string" and task.req:sub(1, 7) == "reflex:") then
+  if st.start_escaped or task.req == "reflex:flee" then
     return give_up(task, ctx, "path_failed", "no path to the goal", pos)
   end
   st.start_escaped = true

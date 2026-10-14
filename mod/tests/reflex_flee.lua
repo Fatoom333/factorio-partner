@@ -18,7 +18,7 @@ S.suite("reflex_flee", {
   { "схема flee и watch: значения по умолчанию, границы, лишние поля", function()
       H.setup()
       S.eq(H.set{ { type = "flee" }, { type = "watch" } }, {
-        { type = "flee", radius = 20, distance = 30, health = 1, on_attack = true, to = "away" },
+        { type = "flee", radius = 20, distance = 30, health = 1, on_attack = true, to = "away", resume = true, resume_health = 0.8 },
         { type = "watch", radius = 32, every_s = 10 },
       })
       S.eq(H.set{ { type = "flee", radius = 8, distance = 64, health = 0.3, on_attack = false, to = "spawn" } }[1].to, "spawn")
@@ -443,7 +443,7 @@ S.suite("reflex_flee", {
       H.enemy({ x = -8, y = 0 })
       B.tick(50)
       S.eq(storage.reflexes.h1, {
-        { type = "flee", radius = 20, distance = 30, health = 1, on_attack = true, to = "away" },
+        { type = "flee", radius = 20, distance = 30, health = 1, on_attack = true, to = "away", resume = true, resume_health = 0.8 },
         { type = "watch", radius = 32, every_s = 10 },
       })
       S.ok(storage.reflex_state.h1.flee.job, "идёт отступление")
@@ -516,5 +516,55 @@ S.suite("reflex_flee", {
       S.eq(calls[1].surface, S.nauvis)
       S.eq(calls[1].force, h.force)
       vis.visible = orig
+  end },
+
+  { "возврат к делу (3.11): отступление сняло walk — враг ушёл, здоровье есть — мод ставит его снова", function()
+      local _, h = H.setup()
+      H.set{ { type = "flee" } }
+      local o = { x = h.position.x, y = h.position.y }
+      B.act("walk", { to = { x = o.x + 40, y = o.y } })
+      B.tick(5)
+      local foe = H.enemy({ x = h.position.x + 10, y = h.position.y })
+      H.wait("reflex_fired")
+      foe.destroy()
+      local done = H.wait("reflex_done")
+      S.eq(done.data.outcome, "ok", S.dump(done.data))
+      local r = H.wait("reflex_resumed")
+      S.eq(r.loud, true, "будит агента")
+      S.eq(#r.data.jobs, 1, S.dump(r.data))
+      S.eq(r.data.jobs[1]["do"], "walk")
+      local res = B.run(r.data.jobs[1].job, 3000)
+      S.eq(res.kind, "job_done", S.dump(res.data))
+      S.ok(h.position.x - o.x >= 39, "дошёл до прежней цели: " .. S.dump(h.position))
+  end },
+  { "возврат к делу ждёт здоровья; агент за это время поставил своё — мод ничего не возвращает", function()
+      local _, h = H.setup()
+      h.max_health, h.health = 250, 100 -- 40 %: возврат ждёт resume_health 0.8
+      H.set{ { type = "flee" } }
+      local o = { x = h.position.x, y = h.position.y }
+      B.act("walk", { to = { x = o.x + 40, y = o.y } })
+      B.tick(5)
+      local foe = H.enemy({ x = h.position.x + 10, y = h.position.y })
+      H.wait("reflex_fired")
+      foe.destroy()
+      H.wait("reflex_done")
+      B.tick(30)
+      S.eq(#B.events("reflex_resumed"), 0, "здоровья мало — ждёт")
+      B.act("walk", { to = { x = o.x, y = o.y + 5 } })
+      h.health = 250
+      B.tick(600)
+      S.eq(#B.events("reflex_resumed"), 0)
+  end },
+  { "возврат к делу выключен (resume=false) — как раньше, решает агент", function()
+      local _, h = H.setup()
+      H.set{ { type = "flee", resume = false } }
+      B.act("walk", { to = { x = h.position.x + 40, y = h.position.y } })
+      B.tick(5)
+      local foe = H.enemy({ x = h.position.x + 10, y = h.position.y })
+      H.wait("reflex_fired")
+      foe.destroy()
+      H.wait("reflex_done")
+      B.tick(600)
+      S.eq(#B.events("reflex_resumed"), 0)
   end },
 })
