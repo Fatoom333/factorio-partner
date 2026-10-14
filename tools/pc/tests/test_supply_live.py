@@ -323,6 +323,14 @@ def test_check_supply_shapes():
     bad(lambda d: at(d, 0, 0)["recipe"]["makers"].update(out=3))  # out — только у producers
     bad(lambda d: at(d, 0, 0, 0)["resource"].update(drills=-1))
     bad(lambda d: None, depth=1)                                  # раскрыто глубже, чем просили
+    # обрезка по числу узлов: узел выше предела глубины помечен depth, в ответе truncated:true
+    def cut(d):
+        n = at(d, 0)
+        n.pop("recipe")
+        n["note"] = "depth"
+    bad(cut)                                                      # обрезан, а truncated нет
+    bad(lambda d: at(d, 0, 0).update(note="truncated"))           # такого note в контракте нет
+    bad(lambda d: d.update(warnings=["limit:resources"]))         # и такого предупреждения
     # жидкость: в карманах её нет, руками с ней нельзя
     resin = model.supply({"item": "resin"}, "h")
     m.check_supply(json.loads(json.dumps(resin)), "resin")
@@ -338,3 +346,4 @@ def test_charted_at():
     assert m.charted_at(ans, {"x": 12.5, "y": 22.5}) is True
     assert m.charted_at(ans, {"x": 10.5, "y": 22.5}) is False
     assert m.charted_at({"rows": {}}, {"x": 0, "y": 0}) is False
+    assert m.charted_at(ans, {"x": 40.5, "y": 22.5}) is False, "pos вне карты — провал, а не «открыто»"

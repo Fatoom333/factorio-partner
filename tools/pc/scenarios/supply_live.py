@@ -35,8 +35,8 @@ MAX_ITEMS = 3
 MAX_CANDIDATES = 12
 MAX_POSITIONS = 8
 STOCK_RADIUS = 128
-NOTES = ("enough", "depth", "no_recipe", "not_researched", "cycle", "truncated")
-WARNING = re.compile(r"^(other_surface|limit:resources|(not_researched|no_source):[A-Za-z0-9_.\-]+)$")
+NOTES = ("enough", "depth", "no_recipe", "not_researched", "cycle")
+WARNING = re.compile(r"^(other_surface|(not_researched|no_source):[A-Za-z0-9_.\-]+)$")
 LOG_MUST_NOT_MATCH = r"\[factorio-partner\] op supply failed"
 # если рядом с хозяином пусто (ни складов, ни карманов, ни рецептов) — то, что в игре есть всегда
 FALLBACK_ITEMS = ("iron-gear-wheel", "transport-belt", "electronic-circuit", "iron-plate")
@@ -171,14 +171,21 @@ def check_supply(d, item, count=1, depth=3):
     need(root["name"] == item and root["need"] == count, f"корень: {root['name']} × {root['need']}")
     need(is_int(d.get("nodes")) and d["nodes"] == len(nodes), f"nodes={d.get('nodes')!r}, в дереве {len(nodes)}")
     need(len(nodes) <= MAX_NODES, f"узлов {len(nodes)} больше {MAX_NODES}")
-    cut = any(n.get("note") == "truncated" for n in nodes)
+    # Обрезанный по числу узлов помечен `depth` (список note в контракте закрытый), но стоит выше
+    # предела глубины — по этому его и видно.
+    def cut_in(n, level):
+        if n.get("note") == "depth" and level < depth:
+            return True
+        return any(cut_in(ch, level + 1) for ch in as_list((n.get("recipe") or {}).get("ingredients") or []))
+
+    cut = cut_in(d["tree"], 0)
     need(cut == bool(d.get("truncated")), f"truncated={d.get('truncated')!r}, а обрезанных узлов: {cut}")
 
     summary = d.get("summary")
     need(isinstance(summary, dict), "summary: объект")
     want = {}
     for n in nodes:
-        if n["short"] > 0:
+        if n["short"] > 0 and n.get("note") != "cycle":   # «круг» уже посчитан выше по ветке
             want[n["name"]] = want.get(n["name"], 0) + n["short"]
     lists = {}
     for part in ("short", "raw"):
@@ -216,7 +223,7 @@ def charted_at(m, pos):
     x = int(math.floor(pos["x"])) - int(bbox.get("x0", 0))
     if 0 <= y < len(rows) and 0 <= x < len(rows[y]):
         return rows[y][x] != "?"
-    return any(ch != "?" for row in rows for ch in row)
+    return False  # pos вне карты, которую просили вокруг неё же, — провал, а не «открыто»
 
 
 def run(client) -> dict:
