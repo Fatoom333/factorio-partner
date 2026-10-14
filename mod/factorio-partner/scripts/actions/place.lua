@@ -46,6 +46,7 @@ local function why_bad_recipe(h, proto, name)
   end
   return nil
 end
+M.why_bad_recipe = why_bad_recipe
 
 function M.start(task, ctx)
   local a, h = task.args, ctx.entity

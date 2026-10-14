@@ -93,6 +93,7 @@ return M                          --   и снять своё: mining_state, cra
 | `insert` | `target, items` | `{inserted: items}` | C |
 | `extract` | `target, items?` (нет → всё), `equip?:bool` | `{extracted: items}` | C |
 | `rotate` | `target, direction:0│4│8│12` | `{name, pos, direction, was}` | C |
+| `set_recipe` | `target, recipe?` | `{name, pos, recipe, was, returned: items, spilled?}` | C |
 | `collect` | `items, center?│near?:"player", radius?=64` | `{collected: items, missing: items, from:[unit]}` | C |
 | `pickup` | `target?` (труп: `{name:"character-corpse", pos}`) │ `area?` (предметы на земле) | `{picked: items}` | C |
 | `place` | `item, pos, direction?:0..15, recipe?` | `{unit_number, name, pos}` | F |
@@ -360,3 +361,10 @@ P.U.M.P., чертёж, или `build_blueprint`). Перед стартом: с
   к цели подхода вида `reach` (`insert`, `extract`, `collect`, разбор своей постройки) — помощник идёт к
   точке за целью, если смотреть от врага, на той же дистанции, и «на месте» засчитывается, только когда
   тело в секторе ±45° за целью. Свободного места там нет или пути туда нет — обычный подход.
+
+## Уточнения ревизии 3.13
+- **`set_recipe`** — сменить рецепт стоящей сборочной машины своей силы, как в окне машины: помощник
+  подходит на `reach_distance`; `recipe` — открытый рецепт силы подходящей категории (как у `place`),
+  без `recipe` — снять рецепт. Печь (рецепт выбирает сама), машина с жёстким рецептом, чужая сила —
+  `bad_args`. Что машина вернула при смене (ингредиенты, готовое) — в инвентарь помощника (`returned`),
+  не влезло — на землю у ног (`spilled`). Уже стоит этот рецепт — `done` с тем же `was`.
