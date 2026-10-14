@@ -161,6 +161,22 @@ S.suite("events", {
       S.eq(#t, 1000, "500 символов по 2 байта")
       S.eq(r.events[2].data.text, "a?b")
   end },
+  { "player_said: метки карты [gps=...] разобраны в gps (пинг хозяина)", function()
+      S.load_mod()
+      S.add_player{ name = "Tartaluga" }
+      local E = require("scripts.core.events")
+      S.eq(E.gps_tags("иди сюда [gps=-120.5,45,vulcanus]"), { { pos = { x = -120.5, y = 45 }, surface = "vulcanus" } })
+      S.eq(E.gps_tags("[gps=1,2] и [gps=3,-4,nauvis]"),
+        { { pos = { x = 1, y = 2 } }, { pos = { x = 3, y = -4 }, surface = "nauvis" } })
+      S.eq(E.gps_tags("без меток"), nil)
+      S.eq(E.gps_tags("[gps=abc,1] [gps=1] [gps=9e99,1]"), nil)
+      S.eq(#E.gps_tags(string.rep("[gps=1,1]", 9)), E.MAX_GPS)
+      S.chat(1, "руда тут [gps=10,-20,vulcanus]")
+      local ev = S.okr(S.req("events", { since = 0 })).events
+      local last = ev[#ev]
+      S.eq(last.kind, "player_said")
+      S.eq(last.data.gps, { { pos = { x = 10, y = -20 }, surface = "vulcanus" } })
+  end },
   { "say не порождает player_said", function()
       S.load_mod()
       S.add_player{ name = "Tartaluga" }
