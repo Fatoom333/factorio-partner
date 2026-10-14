@@ -344,6 +344,23 @@ local function good(r)
     and type(r.waypoints) == "table" and r.waypoints[1] ~= nil
 end
 
+--- Пути нет ни широкого, ни тонкого. Если ещё не выбирались в этой задаче — сначала выбраться пешком
+--- из зоны (как при застревании), потом искать заново (живая игра 14.10: follow напрямую завёл тело в
+--- щель между ножками литейной — Squeak Through 2; оттуда движок не строит путь ни с какой коробкой,
+--- хотя шагнуть можно). Не помогло — честный path_failed.
+local function no_path(task, ctx, st, pos)
+  -- рефлекс бегства (req "reflex:…") сам переберёт другие точки отхода: гулять рядом с врагом незачем
+  if st.start_escaped or (type(task.req) == "string" and task.req:sub(1, 7) == "reflex:") then
+    return give_up(task, ctx, "path_failed", "no path to the goal", pos)
+  end
+  st.start_escaped = true
+  st.tight, st.thin, st.unstick = nil, nil, nil
+  st.state = "escape"
+  escape_start(task, ctx, st, ctx.entity, pos, st.goal, ctx.tick)
+  st.last_move_tick = ctx.tick
+  return nil
+end
+
 local function poll_request(task, ctx, st, pos)
   local r = reqs()[st.path_id]
   local tick = ctx.tick
@@ -369,9 +386,9 @@ local function poll_request(task, ctx, st, pos)
       st.tight = true
       r = ra
     elseif not good(r) and ra ~= nil and ra.finished then
-      -- ни широкого, ни тонкого: отход и прочие попытки ничего не дадут
+      -- ни широкого, ни тонкого: отход тонким ничего не даст — выбраться пешком или отказ
       forget_request(st)
-      return give_up(task, ctx, "path_failed", "no path to the goal", pos)
+      return no_path(task, ctx, st, pos)
     end
   end
   if r == nil or (not r.finished and tick - st.plan_tick >= M.PLAN_TIMEOUT) then
@@ -419,7 +436,7 @@ local function poll_request(task, ctx, st, pos)
       st.last_move_tick = tick
       return nil
     end
-    return give_up(task, ctx, "path_failed", "no path to the goal", pos)
+    return no_path(task, ctx, st, pos)
   end
   if st.thin then
     st.unstick = nil -- тонкий маршрут до конца: перепланирования этой задачи — тоже тонкие
