@@ -214,4 +214,59 @@ S.suite("hands_mine", {
       S.eq(pr[1].loud, false)
       S.eq(C.counts(W.main), { ["iron-ore"] = 10 })
   end },
+
+  { "item: сначала выгодный камень, а не ближний; подряд без остановок; руда, которую рукой не взять, не в счёт", function()
+      local W = C.setup()
+      local E = prototypes.entity
+      E["small-rock-t"] = { name = "small-rock-t", type = "simple-entity", mineable_properties = { minable = true,
+        mining_time = 0.5, products = { { type = "item", name = "tungsten-ore", amount = 2 } } } }
+      E["huge-rock-t"] = { name = "huge-rock-t", type = "simple-entity", mineable_properties = { minable = true,
+        mining_time = 1, products = { { type = "item", name = "tungsten-ore", amount_min = 20, amount_max = 30 },
+          { type = "item", name = "stone", amount_min = 10, amount_max = 10 } } } }
+      E["plain-rock"] = { name = "plain-rock", type = "simple-entity", mineable_properties = { minable = true,
+        mining_time = 0.5, products = { { type = "item", name = "stone", amount = 5 } } } }
+      local small = S.nauvis.create_entity{ name = "small-rock-t", position = { x = 4.5, y = 0.5 }, force = "neutral" }
+      local huge = S.nauvis.create_entity{ name = "huge-rock-t", position = { x = 12.5, y = 0.5 }, force = "neutral" }
+      local plain = S.nauvis.create_entity{ name = "plain-rock", position = { x = 2.5, y = 0.5 }, force = "neutral" }
+      local ore = C.resource("tungsten-ore", { x = 1.5, y = 1.5 }, 100) -- hard-solid: рукой нельзя
+      local job = mine{ item = "tungsten-ore", count = 32 }
+      C.run(2)
+      S.ok(#W.path.calls > 0 and W.path.calls[1].x > 10, "первым пошёл к огромному камню: " .. S.dump(W.path.calls[1]))
+      local d, kind = C.wait(job)
+      S.eq(kind, "job_done", S.dump(d))
+      S.eq({ huge.valid, small.valid, plain.valid, ore.amount }, { false, false, true, 100 })
+      S.eq(d.detail.mined, { ["tungsten-ore"] = 32, stone = 10 }, "mined — весь прирост, с попутным камнем")
+  end },
+  { "item: источники кончились — not_found с накопанным; аргументы и что рукой не даётся", function()
+      local W = C.setup()
+      prototypes.entity["small-rock-t"] = { name = "small-rock-t", type = "simple-entity", mineable_properties = {
+        minable = true, mining_time = 0.5, products = { { type = "item", name = "tungsten-ore", amount = 2 } } } }
+      S.nauvis.create_entity{ name = "small-rock-t", position = { x = 4.5, y = 0.5 }, force = "neutral" }
+      local d = C.wait(mine{ item = "tungsten-ore", count = 10 })
+      S.eq({ d.code, d.detail.mined }, { "not_found", { ["tungsten-ore"] = 2 } })
+      local ch = C.chest({ x = 3.5, y = 3.5 }, {})
+      S.eq(C.wait(mine{ item = "iron-chest", count = 1 }).code, "bad_args", "свои постройки item не разбирает")
+      S.eq(ch.valid, true)
+      S.eq(C.wait(mine{ item = "nope", count = 1 }).code, "bad_args")
+      S.eq(C.wait(mine{ item = "tungsten-ore", resource = "iron-ore", count = 1 }).code, "bad_args")
+      S.eq(W.h.mining_state.mining, false)
+  end },
+  { "огромный камень: «вплотную» — от края рамки, а не от центра (живая игра 14.10)", function()
+      local W = C.setup()
+      prototypes.entity["huge-rock"] = { name = "huge-rock", type = "simple-entity",
+        collision_box = { left_top = { x = -2.5, y = -2.5 }, right_bottom = { x = 2.5, y = 2.5 } },
+        mineable_properties = { minable = true, mining_time = 0.5, products = { { type = "item", name = "stone", amount = 24 } } } }
+      local rock = S.nauvis.create_entity{ name = "huge-rock", position = { x = 12.5, y = 0.5 }, force = "neutral" }
+      -- путь не пускает тело в камень: ближе 2.7 к центру не подойти
+      local step = W.path.step
+      W.path.step = function(task, ctx, goal, dist)
+        if dist < 2.7 then return { status = "failed", code = "path_failed", text = "goal inside the rock" } end
+        return step(task, ctx, goal, dist)
+      end
+      local d, kind = C.wait(mine{ target = { unit_number = rock.unit_number }, count = 1 })
+      S.eq(kind, "job_done", S.dump(d))
+      S.eq({ rock.valid, d.detail.mined }, { false, { stone = 24 } })
+      S.ok(S.dist(W.h.position, { x = 12.5, y = 0.5 }) > 2.7, "копал с края: " .. S.dump(W.h.position))
+  end },
 })
+

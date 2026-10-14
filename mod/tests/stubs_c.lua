@@ -462,7 +462,7 @@ function C.equip(h, opts)
   local can_reach = h.can_reach_entity
   rawset(h, "can_reach_entity", function(e)
     if C.near_only and C.NEAR[e.type] then
-      return S.dist(h.position, e.position) <= h.resource_reach_distance
+      return C.edge(h, e) <= h.resource_reach_distance
     end
     return can_reach(e)
   end)
@@ -487,6 +487,18 @@ local function engine_craft(h)
   rawset(h, "crafting_queue_progress", h._craft_progress)
 end
 
+--- Расстояние от тела до рамки сущности (collision_box прототипа вокруг позиции; нет — до центра).
+function C.edge(h, t)
+  local p, q = S.norm_pos(h.position), S.norm_pos(t.position)
+  local cb = t.prototype and t.prototype.collision_box
+  if cb == nil then return S.dist(p, q) end
+  local x0, y0 = q.x + cb.left_top.x, q.y + cb.left_top.y
+  local x1, y1 = q.x + cb.right_bottom.x, q.y + cb.right_bottom.y
+  local dx = math.max(x0 - p.x, 0, p.x - x1)
+  local dy = math.max(y0 - p.y, 0, p.y - y1)
+  return math.sqrt(dx * dx + dy * dy)
+end
+
 local function engine_mine(h)
   local ms = h.mining_state
   local t = h.selected
@@ -494,7 +506,8 @@ local function engine_mine(h)
   if not (ms and ms.mining and t and t.valid) then h._mine_progress = 0 return end
   local near = t.type == "resource" or (C.near_only and C.NEAR[t.type])
   local reach = near and h.resource_reach_distance or h.reach_distance
-  if S.dist(h.position, t.position) > reach then h._mine_progress = 0 return end
+  local d = (near and t.type ~= "resource") and C.edge(h, t) or S.dist(h.position, t.position)
+  if d > reach then h._mine_progress = 0 return end
   local mp = t.prototype.mineable_properties
   local inv = h.inventories[defines.inventory.character_main]
   local prods = mp.products
@@ -502,7 +515,7 @@ local function engine_mine(h)
   h._mine_progress = h._mine_progress + 0.5 / 60
   if h._mine_progress < mp.mining_time then return end
   h._mine_progress = 0
-  for _, p in ipairs(prods) do inv.insert{ name = p.name, count = p.amount } end
+  for _, p in ipairs(prods) do inv.insert{ name = p.name, count = p.amount or p.amount_max or 1 } end
   C.mined = (C.mined or 0) + 1
   if t.type == "resource" then
     t.amount = (t.amount or 1) - 1

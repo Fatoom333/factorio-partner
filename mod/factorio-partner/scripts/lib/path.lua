@@ -82,6 +82,13 @@ M.ESCAPE_TICKS = 900
 M.ESCAPE_SPOT = 0.5
 M.ESCAPE_REPEATS = 3
 M.ESCAPE_ORDER = { 2, -2, 4, -4, 6, -6, 8, 0 } -- сдвиг от нужного направления, в шагах defines.direction
+-- Ёрзание (живая игра 14.10, вулканическая труба на Вулканусе): тело скользит вдоль круглого
+-- препятствия туда-сюда — сдвиг есть, и STUCK_TICKS не срабатывает, а к цели оно не идёт. Поэтому
+-- застреванием считается и отсутствие продвижения: за NO_PROGRESS_TICKS тело не приблизилось к
+-- текущей точке маршрута (или к цели на последнем отрезке) хотя бы на PROGRESS_MOVE и не перешло к
+-- следующей точке. Пока цель движется (follow), отсчёт сбрасывается.
+M.NO_PROGRESS_TICKS = 180
+M.PROGRESS_MOVE = 0.3
 
 local floor, abs, max, sqrt = math.floor, math.abs, math.max, math.sqrt
 local TAN_22_5 = 0.41421356237
@@ -488,6 +495,7 @@ function M.step(task, ctx, goal_pos, distance)
   if util.dist(goal, st.goal) > 1e-6 then
     if not charted(e, goal) then return give_up(task, ctx, "not_charted", "goal is in uncharted chunks", pos) end
     if util.dist(goal, st.goal) > M.GOAL_TOL then st.goal_moved = true end
+    st.prog_tick = tick -- цель движется: продвижение к ней не мерим
   end
 
   if util.dist(pos, st.last_pos) >= M.STUCK_MOVE then
@@ -503,10 +511,12 @@ function M.step(task, ctx, goal_pos, distance)
 
   if st.state == "planning" then
     st.last_move_tick = tick -- стоим, пока считается путь: это не застревание
+    st.prog_tick = nil
     return nil
   end
   if st.state == "retry_wait" then
     st.last_move_tick = tick
+    st.prog_tick = nil
     if tick >= st.retry_tick then
       st.req_goal = nil
       request(task, ctx, st, goal, goal, false)
@@ -539,6 +549,20 @@ function M.step(task, ctx, goal_pos, distance)
   if st.goal_moved and st.path_id == nil and tick - (st.plan_tick or 0) >= M.REPLAN_MIN_TICKS then
     st.req_goal = nil
     request(task, ctx, st, goal, goal, true)
+  end
+
+  -- продвижение к точке маршрута (см. NO_PROGRESS_TICKS): нет — то же, что «не сдвинулось»
+  if st.state == "walking" or st.state == "final" then
+    local wp = st.state == "walking" and st.waypoints and st.waypoints[st.i] or goal
+    local wd = util.dist(pos, wp)
+    if st.prog_w ~= st.waypoints or st.prog_i ~= st.i or st.prog_tick == nil
+        or st.prog_d == nil or wd < st.prog_d - M.PROGRESS_MOVE then
+      st.prog_w, st.prog_i, st.prog_d = st.waypoints, st.i, wd
+      st.prog_tick = tick
+    elseif tick - st.prog_tick >= M.NO_PROGRESS_TICKS then
+      st.prog_tick, st.prog_d = tick, wd
+      st.last_move_tick = tick - M.STUCK_TICKS
+    end
   end
 
   if tick - st.last_move_tick >= M.STUCK_TICKS then

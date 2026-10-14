@@ -216,8 +216,10 @@ ACTIONS: dict[str, tuple[dict[str, Validator], tuple[str, ...], tuple[tuple[tupl
     "approach": ({"target": target, "to": pos_or_player, "distance": REACH}, (),
                  ((("target", "to"), True),)),
     "follow": ({"distance": number(1, 32), "duration_s": integer(1, 3600)}, (), ()),
-    "mine": ({"target": target, "resource": name, "near": pos, "count": integer(1, ITEM_COUNT_MAX)},
-             ("count",), ((("target", "resource"), True),)),
+    # revision 3.9: `item` — gather this item from rocks, trees and hand-minable ore
+    "mine": ({"target": target, "resource": name, "item": name, "near": pos,
+              "count": integer(1, ITEM_COUNT_MAX)},
+             ("count",), ((("target", "resource", "item"), True),)),
     "craft": ({"recipe": name, "count": integer(1, 10_000)}, ("recipe", "count"), ()),
     "insert": ({"target": target, "items": items}, ("target", "items"), ()),
     "extract": ({"target": target, "items": items, "equip": boolean}, ("target",), ()),
