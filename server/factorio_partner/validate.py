@@ -32,6 +32,8 @@ FIT_SEARCH_MAX = 32                # ACTIONS.md build_blueprint: search?=16, 0..
 BELT_LANES_MAX = 4                 # ACTIONS.md plan_belt: lanes?=1 (1..4)
 SUPPLY_COUNT_MAX = 10_000          # STATE.md «supply»: count?=1 (1..10000)
 SUPPLY_DEPTH_MAX = 5               # STATE.md «supply»: depth?=3 (1..5)
+LOOKUP_LIMIT_MAX = 50              # STATE.md «lookup»: limit?=20 (1..50)
+LOOKUP_KINDS = ("item", "fluid", "recipe", "technology", "entity")
 
 Validator = Callable[[str, Any], Any]
 

@@ -159,7 +159,7 @@ class Model:
                                "error": {"code": code, "text": text}})
 
         if op == "hello":
-            return ok({"proto": 1, "mod": "0.4.2", "owner": "Tartaluga", "module_errors": self.module_errors,
+            return ok({"proto": 1, "mod": "0.4.3", "owner": "Tartaluga", "module_errors": self.module_errors,
                        "players_online": 0})
         if op == "helper_spawn":
             self.alive = True
