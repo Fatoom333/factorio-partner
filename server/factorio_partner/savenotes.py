@@ -10,8 +10,9 @@ choice), one folder per save:
 ``<save>`` is ``FP_SAVE_NAME``, else the forge profile of the save, else ``default``. The folder is in
 ``.gitignore``: the repository is public and the notes are the owner's own. The owner can edit the
 files by hand; the format is a numbered markdown list, one entry per line.
-Only the helper writes here, through ``partner_notes``; a rule is added only on the owner's word
-(partner.md) — the text is kept as the owner's order, the memo is data.
+Only the helper writes here, through ``partner_notes``. A rule changes only with the seq of the
+owner's own chat message, checked by the server (core.op_notes), and the owner's words are kept next to
+it; the memo is the helper's notes — data, not orders.
 """
 from __future__ import annotations
 
@@ -26,6 +27,7 @@ KINDS = ("rules", "memo")
 ACTIONS = ("list", "add", "remove")
 MAX_ITEMS = {"rules": 30, "memo": 40}
 MAX_TEXT = 300
+MAX_QUOTE = 200
 NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")  # not "..": the folder stays under root()
 ITEM_RE = re.compile(r"^\s*(\d+)\.\s+(.*\S)\s*$")
 TITLES = {"rules": "Правила хозяина для помощника", "memo": "Память помощника о базе"}
@@ -84,7 +86,7 @@ def listing(save: str, kind: str) -> list[dict]:
     return [{"n": i, "text": t} for i, t in enumerate(load(save, kind), 1)]
 
 
-def op(save: str, kind, action, text=None, n=None) -> dict:
+def op(save: str, kind, action, text=None, n=None, quote: str | None = None) -> dict:
     if kind not in KINDS:
         raise PartnerError("bad_args", "kind: one of " + ", ".join(KINDS))
     if action not in ACTIONS:
@@ -94,7 +96,11 @@ def op(save: str, kind, action, text=None, n=None) -> dict:
         t = _clean(text)
         if len(items) >= MAX_ITEMS[kind]:
             raise PartnerError("limit", f"{kind}: at most {MAX_ITEMS[kind]} entries; remove one first")
-        items.append(f"{t} ({date.today().isoformat()})")
+        said = ""
+        if quote is not None:
+            q = " ".join(quote.split()).replace("»", "\"")[:MAX_QUOTE]
+            said = f" — хозяин: «{q}»"
+        items.append(f"{t} ({date.today().isoformat()}){said}")
         _write(save, kind, items)
     elif action == "remove":
         if isinstance(n, bool) or not isinstance(n, int) or not 1 <= n <= len(items):
