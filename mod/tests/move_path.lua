@@ -310,4 +310,34 @@ S.suite("move_path", {
       B.pathfinder = B.straight_path
       S.eq(B.run(job, 2000).kind, "job_done")
   end },
+
+  { "только узкий проход: широкий не находится нигде — отход, затем тонким до конца, дошёл", function()
+      local _, h = B.setup()
+      local function wide(params)
+        local bb = params.bounding_box
+        local lt = bb.left_top or bb[1]
+        return math.abs(lt.x or lt[1]) > 0.3
+      end
+      B.pathfinder = function(params)
+        if wide(params) then return {} end -- широкой коробке пути нет нигде
+        return B.straight_path(params)
+      end
+      local job = B.act("walk", { to = { x = 30, y = 0 } }).job
+      local res = B.run(job, 3000)
+      S.eq(res.kind, "job_done", S.dump(res.data))
+      local kinds = {}
+      for _, r in ipairs(B.all_requests()) do kinds[#kinds + 1] = wide(r.params) and "w" or "t" end
+      S.eq(table.concat(kinds, ""), "wtwt", "широкий, тонкий-отход, широкий, тонкий до конца")
+      S.ok(h.position.x >= 29, "дошёл: " .. h.position.x)
+  end },
+  { "широкий не находится и тонкий тоже — честный отказ без бесконечных повторов", function()
+      B.setup()
+      B.pathfinder = function() return {} end
+      local job = B.act("walk", { to = { x = 30, y = 0 } }).job
+      local res = B.run(job, 3000)
+      S.eq(res.kind, "job_failed")
+      S.eq(res.data.code, "path_failed")
+      S.eq(#B.all_requests(), 2, "широкий и один тонкий")
+  end },
 })
+

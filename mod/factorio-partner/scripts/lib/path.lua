@@ -52,7 +52,9 @@ M.BOX = { left_top = { x = -0.35, y = -0.35 }, right_bottom = { x = 0.35, y = 0.
 -- коробка в точке старта уже «в стене», и движок не находит пути никуда. Тогда один повтор с
 -- настоящей коробкой тела (collision_box прототипа) — но только чтобы отойти: такой маршрут жмётся
 -- к стенам и жидкости, поэтому через UNSTICK_DIST клеток от старта путь считается заново широкой
--- коробкой. Широкий не нашёлся и там — цель недостижима, отказ.
+-- коробкой. Широкий не нашёлся и там — к цели ведёт только узкий проход (плотная база: щель между
+-- углами машин): тогда идём «тонким» маршрутом до конца (st.thin), застряли на нём — обычное
+-- перепланирование тем же тонким. Не нашёлся и тонкий — отказ.
 M.UNSTICK_DIST = 1.5
 
 local floor, abs, max, sqrt = math.floor, math.abs, math.max, math.sqrt
@@ -238,7 +240,17 @@ local function poll_request(task, ctx, st, pos)
     return nil
   end
   if r.failed or type(r.waypoints) ~= "table" or r.waypoints[1] == nil then
-    if not st.tight and st.unstick == nil then
+    if not st.tight and st.unstick == nil and not st.thin then
+      -- широкий не нашёлся: тонким — сначала только отойти от препятствия
+      st.tight = true
+      request(task, ctx, st, st.goal, st.req_goal or st.goal, false)
+      st.last_move_tick = tick
+      return nil
+    end
+    if st.unstick ~= nil and not st.tight then
+      -- отошли, а широкий так и не нашёлся: к цели ведёт только узкий проход — тонким до конца
+      st.unstick = nil
+      st.thin = true
       st.tight = true
       request(task, ctx, st, st.goal, st.req_goal or st.goal, false)
       st.last_move_tick = tick
@@ -246,7 +258,9 @@ local function poll_request(task, ctx, st, pos)
     end
     return give_up(task, ctx, "path_failed", "no path to the goal", pos)
   end
-  if st.tight then
+  if st.thin then
+    st.unstick = nil -- тонкий маршрут до конца: перепланирования этой задачи — тоже тонкие
+  elseif st.tight then
     st.tight = nil
     st.unstick = { x = pos.x, y = pos.y } -- отойти от старта и пересчитать широкой коробкой
   else
