@@ -340,7 +340,7 @@ S.suite("move_path", {
       local res = B.run(job, 3000)
       S.eq(res.kind, "job_failed")
       S.eq(res.data.code, "path_failed")
-      S.eq(#B.all_requests(), 2, "широкий и один тонкий")
+      S.eq(#B.all_requests(), 4, "пара; выбрался из зоны пешком; широкий и тонкий — и отказ")
   end },
 
   { "П-образный тупик: шаг вниз упирается глубже, выход — наверх; выбрался из зоны и дошёл", function()
@@ -420,6 +420,21 @@ S.suite("move_path", {
       end
       S.ok(at ~= nil, "выбирание не включилось")
       S.ok(at < 300, "выбирание поздно: " .. tostring(at))
+  end },
+
+  { "из щели путь не строится (Squeak Through: тело между ножками машины) — выбрался пешком, потом дошёл", function()
+      local _, h = B.setup()
+      local o = { x = h.position.x, y = h.position.y }
+      B.pathfinder = function(params)
+        local st = S.norm_pos(params.start)
+        if math.abs(st.x - o.x) < 1 and math.abs(st.y - o.y) < 1 then return {} end -- из щели — «пути нет»
+        local g = S.norm_pos(params.goal)
+        return { path = { { position = { x = g.x, y = g.y } } } }
+      end
+      local job = B.act("walk", { to = { x = o.x + 20, y = o.y } }).job
+      local res = B.run(job, 3000)
+      S.eq(res.kind, "job_done", S.dump(res.data))
+      S.ok(h.position.x - o.x >= 19, "дошёл: " .. S.dump(h.position))
   end },
 })
 
