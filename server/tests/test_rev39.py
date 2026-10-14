@@ -22,3 +22,10 @@ def test_mine_item_bad_args(args):
     with pytest.raises(PartnerError) as e:
         V.check_act("mine", args)
     assert e.value.code == "bad_args"
+
+
+def test_craft_wait_flag_rev310():
+    out = V.check_act("craft", {"recipe": "iron-gear-wheel", "count": 5, "wait": False})
+    assert out["wait"] is False
+    with pytest.raises(PartnerError):
+        V.check_act("craft", {"recipe": "iron-gear-wheel", "count": 5, "wait": "no"})

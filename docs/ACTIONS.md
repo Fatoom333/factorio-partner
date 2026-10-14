@@ -89,7 +89,7 @@ return M                          --   и снять своё: mining_state, cra
 | `approach` | `target│to:pos│"player", distance?` (по умолчанию reach; к постройке — не меньше половины её `bounding_box` + 0.6) | `{pos}` | B |
 | `follow` | `distance?=3, duration_s?=600` (за хозяином, та же поверхность) | `{}` | B |
 | `mine` | `target│resource:string│item:string, near?:pos, count:int` | `{mined: items}` | C |
-| `craft` | `recipe, count:int` | `{crafted: items}` (опрос очереди: событий крафта нет) | C |
+| `craft` | `recipe, count:int, wait?=true` | `{crafted: items}` (опрос очереди: событий крафта нет); `wait:false` — `{queued: items, crafts}` сразу | C |
 | `insert` | `target, items` | `{inserted: items}` | C |
 | `extract` | `target, items?` (нет → всё), `equip?:bool` | `{extracted: items}` | C |
 | `rotate` | `target, direction:0│4│8│12` | `{name, pos, direction, was}` | C |
@@ -348,3 +348,9 @@ P.U.M.P., чертёж, или `build_blueprint`). Перед стартом: с
   кончились — `failed{not_found}` с `detail.mined`. `mined` — весь прирост инвентаря (камень даёт и
   попутное). Неизвестный предмет или ничего рукой его не даёт — `bad_args`. Свои постройки `item` не
   разбирает. Ровно одно из `target`, `resource`, `item`.
+
+## Уточнения ревизии 3.10
+- **`craft{wait:false}`** — как у игрока: крафт брошен в очередь крафта персонажа, задача сразу
+  `done{queued, crafts}`, и очередь задач идёт дальше (ходьба, добыча, стройка — параллельно с крафтом).
+  Готовность — громкое событие `craft_done` (EVENTS.md). Отмена задач (`cancel`, `replace`) фоновый
+  крафт не снимает: он уже в очереди крафта персонажа. По умолчанию `wait:true` — задача ждёт продукта.
