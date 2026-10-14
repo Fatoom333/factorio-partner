@@ -460,11 +460,11 @@ S.suite("reflex_flee", {
       local x1 = h.position.x
       S.ok(x1 > 8, S.dump(h.position))
       -- упёрся: ходьба кончится stuck; тем временем прежний враг пропал, а новый пришёл с севера
-      local until_tick = game.tick + 200
+      local until_tick = game.tick + 1300 -- дольше выбирания из зоны (ESCAPE_TICKS)
       B.blocked = function() return game.tick < until_tick end
       biter.destroy()
       H.enemy({ x = h.position.x, y = -10 })
-      B.until_(function() return #walk_jobs() >= 1 end, 400)
+      B.until_(function() return #walk_jobs() >= 1 end, 1500)
       S.eq(walk_jobs()[1].data.code, "stuck")
       B.tick(12)
       local f = storage.reflex_state.h1.flee

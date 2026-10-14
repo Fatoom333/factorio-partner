@@ -5,6 +5,7 @@ local B = require("stubs_b")
 local function path_mod() return require("scripts.lib.path") end
 
 local function walking(h) return h.walking_state and h.walking_state.walking end
+local function P_ESCAPE() return require("scripts.lib.path").ESCAPE_TICKS end
 
 S.suite("move_path", {
   { "direction: 8 направлений из вектора (север 0, восток 4, юг 8, запад 12)", function()
@@ -103,14 +104,16 @@ S.suite("move_path", {
       S.eq(walking(h), false)
   end },
 
-  { "застрял: 60 тиков без сдвига -> перепланирование 1 раз -> stuck + событие stuck", function()
+  { "застрял: 60 тиков без сдвига -> выбирание из зоны до 15 с -> stuck + событие stuck", function()
       local _, h = B.setup()
       local job = B.act("walk", { to = { x = 30, y = 0 } }).job
       B.tick(10)
       B.blocked = function() return true end
-      local res = B.run(job, 1000)
+      local t0 = game.tick
+      local res = B.run(job, 2000)
       S.eq(res.data.code, "stuck")
-      S.eq(#B.all_requests(), 2, "первый путь + одно перепланирование")
+      S.ok(game.tick - t0 >= P_ESCAPE(), "сдался не раньше, чем пытался выбраться: " .. (game.tick - t0))
+      S.eq(#B.all_requests(), 1, "выбирание — ходьба, без новых запросов пути")
       -- шумное stuck — при перепланировании; финал — громкое job_failed{stuck} (EVENTS.md)
       local st = B.events("stuck")
       S.eq(#st, 1)
@@ -273,11 +276,11 @@ S.suite("move_path", {
         if r ~= nil then break end
       end
       S.eq(#emitted, 1, "повторного шумного stuck на то же перепланирование нет")
-      S.eq(task.approach.replans, 1)
+      S.ok(task.approach.escape ~= nil, "вместо второго пересчёта — выбирание из зоны")
       -- маршрут пришёл — перепланирование закончено, следующее застревание снова видно агенту
       B.blocked = nil
       B.pathfinder = B.straight_path
-      for _ = 1, 20 do
+      for _ = 1, 60 do
         B.tick(1)
         S.eq(P.step(task, ctx(), goal, 1), nil)
       end
@@ -338,6 +341,41 @@ S.suite("move_path", {
       S.eq(res.kind, "job_failed")
       S.eq(res.data.code, "path_failed")
       S.eq(#B.all_requests(), 2, "широкий и один тонкий")
+  end },
+
+  { "П-образный тупик: шаг вниз упирается глубже, выход — наверх; выбрался из зоны и дошёл", function()
+      local _, h = B.setup()
+      -- тело в (0,0) идёт на восток к (30,0). Восточная стена до y > -2.2, южная — с y > 1, западная —
+      -- с x < -0.6: из кармана выход только на север, а первым делом выбирание пробует юг (тупик)
+      local o = { x = h.position.x, y = h.position.y } -- стены — относительно места, где стоит тело
+      B.blocked = function(_, p)
+        local x, y = p.x - o.x, p.y - o.y
+        return (x > 0.5 and x < 2.5 and y > -2.2) or (y > 1.0 and x < 2.5) or x < -0.6
+      end
+      local job = B.act("walk", { to = { x = o.x + 30, y = o.y } }).job
+      local deepest = 0
+      local res
+      for _ = 1, 3000 do
+        B.tick(1)
+        if h.position.y - o.y > deepest then deepest = h.position.y - o.y end
+        res = B.result(job)
+        if res then break end
+      end
+      S.ok(res, "задача не кончилась")
+      S.eq(res.kind, "job_done", S.dump(res.data))
+      S.ok(deepest > 0.5, "сначала ушёл вниз, в тупик: " .. deepest)
+      S.ok(h.position.x - o.x >= 29, "дошёл: " .. S.dump(h.position))
+      S.eq(#B.events("stuck"), 1, "одно шумное stuck на одно выбирание")
+  end },
+  { "застревает в одной и той же зоне трижды — честный stuck, без бесконечных попыток", function()
+      local _, h = B.setup()
+      -- стена на востоке; выбирание уводит из зоны, но маршрут снова ведёт в ту же стену
+      local o = { x = h.position.x, y = h.position.y }
+      B.blocked = function(_, p) return p.x - o.x > 0.5 and math.abs(p.y - o.y) < 6 end
+      local job = B.act("walk", { to = { x = o.x + 30, y = o.y } }).job
+      local res = B.run(job, 6000)
+      S.eq(res.kind, "job_failed")
+      S.eq(res.data.code, "stuck")
   end },
 })
 

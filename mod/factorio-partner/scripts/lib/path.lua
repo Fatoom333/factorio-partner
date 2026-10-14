@@ -56,6 +56,20 @@ M.BOX = { left_top = { x = -0.35, y = -0.35 }, right_bottom = { x = 0.35, y = 0.
 -- углами машин): тогда идём «тонким» маршрутом до конца (st.thin), застряли на нём — обычное
 -- перепланирование тем же тонким. Не нашёлся и тонкий — отказ.
 M.UNSTICK_DIST = 1.5
+-- Выбирание из застревания (решение автора 14.10). Тело не сдвинулось за STUCK_TICKS — маршрут не
+-- пересчитывается сразу (он чаще всего снова ведёт в тот же угол): тело ищет выход из «зоны» —
+-- круга ESCAPE_RADIUS вокруг места застревания. Идёт в одну сторону, пока не упрётся (не сдвинулось
+-- за ESCAPE_STEP_TICKS) или не выйдет из круга; упёрлось — следующая сторона с того места, где стоит
+-- (не возвращаясь к началу: так выходит и из П-образного тупика). Порядок сторон — от ближних к
+-- нужному направлению: ±45°, ±90°, ±135°, назад, вперёд. Упёршиеся стороны помнятся, пока тело не
+-- сдвинулось на ESCAPE_SPOT. Вышло из круга — путь считается заново от нового места. Не вышло за
+-- ESCAPE_TICKS, или застряло в той же зоне ESCAPE_REPEATS раз — честный stuck. Только ходьба.
+M.ESCAPE_RADIUS = 2.5
+M.ESCAPE_STEP_TICKS = 15
+M.ESCAPE_TICKS = 900
+M.ESCAPE_SPOT = 0.5
+M.ESCAPE_REPEATS = 3
+M.ESCAPE_ORDER = { 2, -2, 4, -4, 6, -6, 8, 0 } -- сдвиг от нужного направления, в шагах defines.direction
 
 local floor, abs, max, sqrt = math.floor, math.abs, math.max, math.sqrt
 local TAN_22_5 = 0.41421356237
@@ -188,6 +202,63 @@ end
 local function give_up(task, ctx, code, text, pos)
   M.cancel(task, ctx)
   return fail(code, text, pos)
+end
+
+--- Начать выбирание: нужное направление — куда тело шло (или к цели).
+local function escape_start(task, ctx, st, e, pos, goal, tick)
+  forget_request(st)
+  local ws = e.walking_state
+  local want = (ws and ws.walking and ws.direction) or M.direction(goal.x - pos.x, goal.y - pos.y) or 0
+  local order = {}
+  for i, off in ipairs(M.ESCAPE_ORDER) do order[i] = (want + off) % 16 end
+  st.escape = {
+    center = { x = pos.x, y = pos.y }, start = tick, order = order, k = 1,
+    spot = { x = pos.x, y = pos.y }, dead = {}, moved_pos = { x = pos.x, y = pos.y }, moved_tick = tick,
+  }
+  noisy_stuck(task, ctx, st, pos, "no_progress")
+end
+
+--- Ещё раз застрять в этой же зоне? Учёт зон — st.zones = {{x, y, n}}.
+local function zone_hit(st, pos)
+  st.zones = st.zones or {}
+  for _, z in ipairs(st.zones) do
+    if util.dist(z, pos) <= M.ESCAPE_RADIUS then
+      z.n = z.n + 1
+      return z.n
+    end
+  end
+  st.zones[#st.zones + 1] = { x = pos.x, y = pos.y, n = 1 }
+  return 1
+end
+
+--- Шаг выбирания. → nil (ещё выбирается), true (вышло из зоны), false (не вышло за отведённое время).
+local function escape_step(st, e, pos, tick)
+  local esc = st.escape
+  if util.dist(pos, esc.center) >= M.ESCAPE_RADIUS then return true end
+  if tick - esc.start >= M.ESCAPE_TICKS then return false end
+  if util.dist(pos, esc.spot) >= M.ESCAPE_SPOT then
+    esc.spot = { x = pos.x, y = pos.y } -- тело сдвинулось: с нового места все стороны снова пробуются
+    esc.dead = {}
+  end
+  if util.dist(pos, esc.moved_pos) >= M.STUCK_MOVE then
+    esc.moved_pos = { x = pos.x, y = pos.y }
+    esc.moved_tick = tick
+  elseif tick - esc.moved_tick >= M.ESCAPE_STEP_TICKS then
+    -- эта сторона упёрлась: следующая, ещё не упёршаяся с этого места
+    esc.dead[esc.order[esc.k]] = true
+    local found = false
+    for _ = 1, #esc.order do
+      esc.k = esc.k % #esc.order + 1
+      if not esc.dead[esc.order[esc.k]] then found = true break end
+    end
+    if not found then
+      esc.dead = {} -- все стороны упёрлись с этого места: пробовать по кругу заново, пока есть время
+      esc.k = 1
+    end
+    esc.moved_tick = tick
+  end
+  e.walking_state = { walking = true, direction = esc.order[esc.k] }
+  return nil
 end
 
 -- Другой персонаж (игрок, помощник) вплотную — «шагаю на месте» из-за него.
@@ -358,6 +429,21 @@ function M.step(task, ctx, goal_pos, distance)
     return nil
   end
 
+  -- выбирание из застревания
+  if st.escape ~= nil then
+    local r = escape_step(st, e, pos, tick)
+    if r == nil then return nil end
+    st.escape = nil
+    if r == false then return give_up(task, ctx, "stuck", "cannot get out of a tight spot", pos) end
+    -- вышло из зоны: путь заново от нового места
+    stop_walking(e)
+    st.req_goal = nil
+    st.last_pos = pos
+    st.last_move_tick = tick
+    request(task, ctx, st, goal, goal, false)
+    return nil
+  end
+
   -- walking / final
   if st.unstick ~= nil and st.path_id == nil and util.dist(pos, st.unstick) >= M.UNSTICK_DIST then
     -- отошли от препятствия по «тонкому» маршруту — дальше только с запасом (стоим, пока считается)
@@ -379,15 +465,12 @@ function M.step(task, ctx, goal_pos, distance)
       st.last_move_tick = tick
       return nil
     end
-    if st.replans < M.MAX_REPLANS then
-      st.replans = st.replans + 1
-      noisy_stuck(task, ctx, st, pos, "no_progress")
-      st.req_goal = nil
-      request(task, ctx, st, goal, goal, false)
-      st.last_move_tick = tick
-      return nil
+    if zone_hit(st, pos) >= M.ESCAPE_REPEATS then
+      return give_up(task, ctx, "stuck", "stuck in the same place again and again", pos)
     end
-    return give_up(task, ctx, "stuck", "cannot move towards the goal", pos)
+    escape_start(task, ctx, st, e, pos, goal, tick)
+    st.last_move_tick = tick
+    return nil
   end
 
   local target
