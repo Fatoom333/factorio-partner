@@ -5,6 +5,7 @@ local schema = require("scripts.core.schema")
 local owner = require("scripts.core.owner")
 local events = require("scripts.core.events")
 local registry = require("scripts.core.registry")
+local nameplate = require("scripts.core.nameplate")
 
 local M = {}
 
@@ -51,8 +52,7 @@ function M.say(args, ctx)
   local text = util.chat_text(a.text, M.SAY_MAX)
   if text == "" then err.raise("bad_args", "args.text: empty after cleanup") end
   -- префикс без квадратных скобок (PROTOCOL §4): имя помощника не должно сложиться в rich-text тег
-  local np = require("scripts.core.nameplate")
-  game.print(np.display_name(ctx.helper_id) .. ": " .. text, { color = np.COLOR })
+  game.print(nameplate.display_name(ctx.helper_id) .. ": " .. text, { color = nameplate.COLOR })
   return {}
 end
 
