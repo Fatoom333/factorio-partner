@@ -8,13 +8,19 @@
 -- count (get_craftable_count, с промежуточными) — no_items с detail {craftable}. Крафт стоит
 -- 10 с при полном инвентаре — inventory_full и failed{stuck}. stop снимает поставленный крафт
 -- (ингредиенты возвращает движок).
+-- wait=false (ревизия 3.10, живая игра 14.10) — как у игрока: крафт брошен в очередь, задача сразу
+-- done{queued, crafts}, очередь задач идёт дальше (ходьба, добыча, стройка — параллельно с крафтом);
+-- о готовности скажет громкое `craft_done` (scripts/core/bgcraft.lua). Отмена задач фоновый крафт
+-- не снимает — он уже в очереди крафта персонажа, как у игрока.
 local inv = require("scripts.lib.inventory")
+local bgcraft = require("scripts.core.bgcraft")
 
 local M = {}
 M.name = "craft"
 M.schema = {
   recipe = { type = "string", required = true, max = 100 },
   count = { type = "int", required = true, min = 1, max = 10000 },
+  wait = { type = "bool", default = true },
 }
 
 M.CHECK_EVERY = 10
@@ -73,6 +79,10 @@ function M.start(task, ctx)
   local started = h.begin_crafting{ recipe = a.recipe, count = a.count, silent = true }
   if not started or started <= 0 then
     return inv.failed("no_items", "crafting did not start", { craftable = craftable })
+  end
+  if a.wait == false then
+    bgcraft.add(task.helper, { recipe = a.recipe, product = product, base = task.base, expected = started * amount })
+    return inv.done({ queued = { [product] = started * amount }, crafts = started })
   end
   task.started = started
   task.expected = started * amount

@@ -32,6 +32,7 @@
 | `reflex_done` | `{type, outcome:"ok"│"failed", reason?, detail}` — итог рефлекса, не каждое срабатывание; возрождение не удалось: `{type:"respawn", outcome:"failed", reason:"no_place"│"surface_gone"│"force_gone"}` | H |
 | `inventory_full` | `{job?}` — задача, если не может продолжать, завершается `job_failed{code:"no_space"}` | C |
 | `player_said` (хозяин) | `{player, owner:true, text, pos, selected?:{name, pos, unit_number?}, gps?:[{pos, surface?}]}` | A |
+| `craft_done` | `{recipe, crafted: items, queued:int}` — фоновый крафт (`craft{wait:false}`) готов: продукт вырос на `queued` или очередь крафта опустела (тогда `crafted` — фактический прирост, может быть меньше) | C |
 | `helper_lost` | `{reason}` — тело исчезло не по смерти: `destroyed`; у тела-игрока — `player_left`, `no_character`, `body_changed`, `player_removed` | A |
 | `game_reloaded` | `{tick}` — шлёт сервер, не мод | D |
 

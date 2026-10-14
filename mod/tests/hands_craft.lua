@@ -73,4 +73,31 @@ S.suite("hands_craft", {
       S.eq(kind, "job_done", S.dump(d))
       S.eq(C.counts(W.main), { ["stone-furnace"] = 1 })
   end },
+
+  { "wait=false: крафт в очереди, задача сразу done, следующая идёт параллельно; craft_done по готовности", function()
+      local W = C.setup{ items = { ["iron-plate"] = 20 } }
+      local job = craft{ recipe = "iron-gear-wheel", count = 10, wait = false }
+      local d, kind = C.wait(job, 5)
+      S.eq(kind, "job_done", S.dump(d))
+      S.eq(d.detail, { queued = { ["iron-gear-wheel"] = 10 }, crafts = 10 })
+      S.ok(W.h.crafting_queue_size > 0, "крафт ещё идёт")
+      local p = S.norm_pos(W.h.position)
+      local walk = S.okr(C.act("walk", { to = { x = p.x + 8, y = p.y } })).job
+      local dw, kw = C.wait(walk)
+      S.eq(kw, "job_done", S.dump(dw))
+      S.ok(W.h.crafting_queue_size > 0, "дошёл, пока крафт ещё шёл: ходьба не ждала крафта")
+      S.eq(#C.events("craft_done"), 0)
+      for _ = 1, 3000 do
+        C.run(1)
+        if #C.events("craft_done") > 0 then break end
+      end
+      local ev = C.events("craft_done")
+      S.eq(#ev, 1)
+      S.eq(ev[1].data, { recipe = "iron-gear-wheel", crafted = { ["iron-gear-wheel"] = 10 }, queued = 10 })
+      S.eq(ev[1].loud, true, "будит агента")
+      S.eq(C.counts(W.main)["iron-gear-wheel"], 10)
+      C.run(100)
+      S.eq(#C.events("craft_done"), 1, "одно событие на крафт")
+  end },
 })
+

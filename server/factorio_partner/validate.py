@@ -220,7 +220,8 @@ ACTIONS: dict[str, tuple[dict[str, Validator], tuple[str, ...], tuple[tuple[tupl
     "mine": ({"target": target, "resource": name, "item": name, "near": pos,
               "count": integer(1, ITEM_COUNT_MAX)},
              ("count",), ((("target", "resource", "item"), True),)),
-    "craft": ({"recipe": name, "count": integer(1, 10_000)}, ("recipe", "count"), ()),
+    # revision 3.10: wait=false — queue the craft and go on (craft_done comes when it is ready)
+    "craft": ({"recipe": name, "count": integer(1, 10_000), "wait": boolean}, ("recipe", "count"), ()),
     "insert": ({"target": target, "items": items}, ("target", "items"), ()),
     "extract": ({"target": target, "items": items, "equip": boolean}, ("target",), ()),
     "collect": ({"items": items, "center": pos, "near": enum("player"), "radius": number(1, 128)},
