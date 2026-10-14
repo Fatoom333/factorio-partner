@@ -11,7 +11,12 @@ S.suite("misc", {
       S.load_mod()
       spawn()
       S.okr(S.req("say", { text = "привет\nмир [gps=1,2] [img=item/iron-plate]ок" }, "h1"))
-      S.eq(game.printed[#game.printed], "Claude: привет мир  ок")
+      S.eq(game.printed[#game.printed], "Claude: привет мир [gps=1,2,nauvis] ок", "gps остаётся, прочий rich-text — нет")
+      S.okr(S.req("say", { text = "сундук (-34, 15) и [gps=10.4,-3,vulcanus] [gps=1,2,no-such] [gps=1,2,a]b]" }, "h1"))
+      S.eq(game.printed[#game.printed], "Claude: сундук [gps=-34,15,nauvis] и [gps=10,-3] [gps=1,2] [gps=1,2]b",
+        "(x,y) — метка на поверхности помощника; чужое имя поверхности отброшено")
+      S.okr(S.req("say", { text = string.rep("я", 195) .. " (1,2)" }, "h1"))
+      S.ok(not string.find(game.printed[#game.printed], "\238\128", 1, true), "разрезанная заглушка не утекла")
       S.okr(S.req("say", { text = string.rep("ё", 300) }, "h1"))
       S.eq(game.printed[#game.printed], "Claude: " .. string.rep("ё", 200))
       S.okr(S.req("say", { text = "[color=red" }, "h1"))
