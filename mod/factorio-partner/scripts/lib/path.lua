@@ -50,7 +50,10 @@ M.ARRIVE = 0.3              -- минимальная дистанция «на 
 M.BOX = { left_top = { x = -0.35, y = -0.35 }, right_bottom = { x = 0.35, y = 0.35 } }
 -- Тело стоит вплотную к постройке (так бывает у тела-игрока, которого подвёл человек): широкая
 -- коробка в точке старта уже «в стене», и движок не находит пути никуда. Тогда один повтор с
--- настоящей коробкой тела (collision_box прототипа).
+-- настоящей коробкой тела (collision_box прототипа) — но только чтобы отойти: такой маршрут жмётся
+-- к стенам и жидкости, поэтому через UNSTICK_DIST клеток от старта путь считается заново широкой
+-- коробкой. Широкий не нашёлся и там — цель недостижима, отказ.
+M.UNSTICK_DIST = 1.5
 
 local floor, abs, max, sqrt = math.floor, math.abs, math.max, math.sqrt
 local TAN_22_5 = 0.41421356237
@@ -235,7 +238,7 @@ local function poll_request(task, ctx, st, pos)
     return nil
   end
   if r.failed or type(r.waypoints) ~= "table" or r.waypoints[1] == nil then
-    if not st.tight then
+    if not st.tight and st.unstick == nil then
       st.tight = true
       request(task, ctx, st, st.goal, st.req_goal or st.goal, false)
       st.last_move_tick = tick
@@ -243,7 +246,12 @@ local function poll_request(task, ctx, st, pos)
     end
     return give_up(task, ctx, "path_failed", "no path to the goal", pos)
   end
-  st.tight = nil -- следующий запрос этой задачи снова с широкой коробкой
+  if st.tight then
+    st.tight = nil
+    st.unstick = { x = pos.x, y = pos.y } -- отойти от старта и пересчитать широкой коробкой
+  else
+    st.unstick = nil
+  end
   -- путь — только по открытым чанкам (PROTOCOL §6.7)
   local seen = {}
   for _, wp in ipairs(r.waypoints) do
@@ -337,6 +345,12 @@ function M.step(task, ctx, goal_pos, distance)
   end
 
   -- walking / final
+  if st.unstick ~= nil and st.path_id == nil and util.dist(pos, st.unstick) >= M.UNSTICK_DIST then
+    -- отошли от препятствия по «тонкому» маршруту — дальше только с запасом (стоим, пока считается)
+    st.req_goal = nil
+    request(task, ctx, st, goal, goal, false)
+    return nil
+  end
   if st.goal_moved and st.path_id == nil and tick - (st.plan_tick or 0) >= M.REPLAN_MIN_TICKS then
     st.req_goal = nil
     request(task, ctx, st, goal, goal, true)

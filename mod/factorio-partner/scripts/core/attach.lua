@@ -228,6 +228,15 @@ local function prepare(id, rec)
     h = nil
   end
   if rec.state ~= "alive" or e == nil or not e.valid or not busy then
+    -- задача кончилась между тиками (cancel, replace, отказ вне тика действия), а ходьбу включал
+    -- мод: выключить её один раз, иначе тело идёт дальше само (замечено живьём 14.10)
+    if rec.walk_owned and rec.state == "alive" and e ~= nil and e.valid then
+      local ws = e.walking_state
+      if ws ~= nil and ws.walking == true then
+        e.walking_state = { walking = false, direction = ws.direction }
+      end
+    end
+    rec.walk_owned = nil
     rec.hold = nil
     return -- без задачи мод телом не управляет вовсе
   end
@@ -236,9 +245,11 @@ local function prepare(id, rec)
   if h ~= nil and h.walking then
     e.walking_state = { walking = true, direction = h.direction }
   else
+    -- пока есть задача, ходьбой управляет только мод: включённую не им ходьбу он выключает и
+    -- НЕ возвращает после действия. Отличить клавишу человека от собственного старого движения
+    -- нельзя, а возврат «чужой» ходьбы делал её вечной (дрейф и дребезг, живой прогон 14.10).
     local ws = e.walking_state
     if ws ~= nil and ws.walking == true then
-      s.walk = { walking = true, direction = ws.direction }
       e.walking_state = { walking = false, direction = ws.direction }
     end
   end
@@ -273,6 +284,7 @@ local function settle(id, rec, s)
       rec.hold = h
     end
     h.job = task.job
+    if keep_walk then rec.walk_owned = true end
     h.walking = keep_walk
     h.direction = keep_walk and ws.direction or nil
     h.mining = keep_mine
