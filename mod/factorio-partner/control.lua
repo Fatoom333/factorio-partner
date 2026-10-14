@@ -23,7 +23,7 @@ local MODULES = {
   "perception.access",
   "perception.supply", "perception.lookup",
   "reflexes.flee", "reflexes.death", "reflexes.ammo",
-  "core.nameplate", "core.bgcraft",
+  "core.nameplate", "core.bgcraft", "core.tidy",
 }
 for _, name in ipairs(MODULES) do
   core.register_module(require("scripts." .. name))
