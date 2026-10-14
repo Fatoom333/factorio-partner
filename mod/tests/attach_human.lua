@@ -1,7 +1,8 @@
 -- Тело-игрок (поток V1, волна 4): ввод человека за вторым клиентом и удержание состояний.
--- PROTOCOL §7 «Удержание и ввод человека»: мод держит только то, что в этом тике выставило
--- АКТИВНОЕ ДЕЙСТВИЕ. Действие ходьбой не управляет (wait, mine, craft…) — нажатие клавиши
--- человеком не запоминается и тело не уводит. Главная находка ревью волны 3.
+-- PROTOCOL §7 «Удержание и ввод человека» (ревизия 3.6): мод держит только то, что в этом тике
+-- выставило АКТИВНОЕ ДЕЙСТВИЕ. Пока у помощника есть задача, ходьбой управляет только мод: ходьбу,
+-- включённую не действием, он выключает и после тика НЕ возвращает (возврат делал её вечной — дрейф
+-- и дребезг в живом прогоне 14.10). Задачи нет — мод тело не трогает, человек ходит сам.
 -- «Клиент» — stubs_p.lua: перед on_tick сбрасывает состояния и применяет P.client_input.
 local S = require("stubs")
 local P = require("stubs_p")
@@ -26,7 +27,7 @@ local function all_seen(A, field, want, from)
 end
 
 S.suite("attach_human", {
-  { "W во время wait: тело шагает, пока клавиша нажата, и встаёт само; hold не заводится", function()
+  { "W во время wait: пока идёт задача, клавиша ходьбы человека не действует; hold не заводится", function()
       local _, friend = P.setup()
       local h = friend.character
       local job = P.act("wait", { seconds = 10 }).job
@@ -35,12 +36,11 @@ S.suite("attach_human", {
       human(keys)
       P.tick(10)
       S.eq(P.rec().hold, nil, "wait ходьбой не управляет — запоминать нечего")
-      S.near(h.position.y, STEP * 10, 0.001, "человек прошёл сам 10 тиков: " .. h.position.y)
-      S.eq(h.walking_state.walking, true, "ввод человека мод не тронул")
-      S.eq(h.walking_state.direction, SOUTH)
+      S.eq(h.position.y, 0, "во время задачи тело от клавиши человека не идёт: " .. h.position.y)
+      S.eq(h.walking_state.walking, false, "чужая ходьба выключена и не возвращена")
       keys.walk = nil
       P.tick(200)
-      S.near(h.position.y, STEP * 10, 0.001, "клавишу отпустили — тело встало, мод его не увёл: " .. h.position.y)
+      S.eq(h.position.y, 0, "клавишу отпустили — тело стоит, где стояло: " .. h.position.y)
       S.eq(h.position.x, 20)
       S.eq(h.walking_state.walking, false)
       S.eq(P.rec().hold, nil)
@@ -51,7 +51,7 @@ S.suite("attach_human", {
       S.eq(#S.logs, 0, table.concat(S.logs, "\n"))
   end },
 
-  { "одно короткое нажатие W во время wait — ровно один шаг", function()
+  { "одно короткое нажатие W во время wait — ни шага", function()
       local _, friend = P.setup()
       local h = friend.character
       P.act("wait", { seconds = 5 })
@@ -61,11 +61,11 @@ S.suite("attach_human", {
       P.tick(1)
       keys.walk = nil
       P.tick(120)
-      S.near(h.position.x, 20 + STEP, 0.001, "один шаг: " .. h.position.x)
+      S.eq(h.position.x, 20, "ни шага: " .. h.position.x)
       S.eq(P.rec().hold, nil)
   end },
 
-  { "W во время mine: добыча держится, ходьба человека в hold не попадает", function()
+  { "W во время mine: добыча держится, ходьба человека не действует и в hold не попадает", function()
       local _, friend = P.setup()
       local A = P.action()
       local h = friend.character
@@ -77,7 +77,7 @@ S.suite("attach_human", {
       local keys = { walk = SOUTH }
       human(keys)
       P.tick(8)
-      S.near(h.position.y, STEP * 8, 0.001, "человек шагает сам")
+      S.eq(h.position.y, 0, "во время задачи человек тело не ведёт")
       local hold = P.rec().hold
       S.eq(hold.walking, false, "ходьбу выставило не действие — мод её не запомнил")
       S.eq(hold.direction, nil)
@@ -85,7 +85,7 @@ S.suite("attach_human", {
       keys.walk = nil
       local at = #A.seen
       P.tick(100)
-      S.near(h.position.y, STEP * 8, 0.001, "отпустил — стоит: " .. h.position.y)
+      S.eq(h.position.y, 0, "отпустил — стоит: " .. h.position.y)
       S.eq(h.position.x, 20)
       S.ok(all_seen(A, "mining", true), "добыча включена каждый тик, и до, и после нажатия")
       S.ok(all_seen(A, "selected", P.target))
@@ -94,7 +94,7 @@ S.suite("attach_human", {
       S.eq(S.okr(S.req("hello")).module_errors, 0)
   end },
 
-  { "действие, которое ходьбу не трогает, ввода человека не видит, а после тика он на месте", function()
+  { "действие, которое ходьбу не трогает, ввода человека не видит; ходьба не возвращается, добыча — да", function()
       local _, friend = P.setup()
       local A = P.action()
       local h = friend.character
@@ -104,11 +104,11 @@ S.suite("attach_human", {
       S.ok(#A.seen >= 18)
       S.ok(all_seen(A, "walking", false), "действие видит тело таким, каким оставило его само")
       S.ok(all_seen(A, "mining", false))
-      S.eq(h.walking_state, { walking = true, direction = SOUTH }, "ходьба человека возвращена нетронутой")
+      S.eq(h.walking_state, { walking = false, direction = SOUTH }, "ходьба человека во время задачи не возвращается")
       S.eq(h.mining_state.mining, true, "добыча человека возвращена")
       S.eq(h.mining_state.position, { x = 25.5, y = 0.5 })
       S.eq(P.rec().hold, nil)
-      S.near(h.position.y, STEP * 20, 0.001, "и тело идёт, куда ведёт человек")
+      S.eq(h.position.y, 0, "тело во время задачи человек не ведёт")
   end },
 
   { "человек и действие жмут одно и то же направление: ходьбу действия мод всё равно держит", function()
@@ -148,10 +148,10 @@ S.suite("attach_human", {
       local x = h.position.x
       P.tick(20)
       S.near(h.position.x, x, 0.001, "ходьба задачи кончилась")
-      S.ok(h.position.y >= STEP * 19, "человек идёт на юг сам: " .. h.position.y)
+      S.ok(h.position.y >= STEP * 18, "человек идёт на юг сам: " .. h.position.y)
   end },
 
-  { "действие выключило ходьбу — удержание снято, нажатие человека его не возвращает", function()
+  { "действие выключило ходьбу — удержание снято, нажатие человека во время задачи тело не ведёт", function()
       local _, friend = P.setup()
       local A = P.action()
       local h = friend.character
@@ -176,7 +176,7 @@ S.suite("attach_human", {
       P.tick(3)
       keys.walk = nil
       P.tick(60)
-      S.near(h.position.x, x + STEP * 3, 0.001, "три шага человека — и всё: " .. (h.position.x - x))
+      S.near(h.position.x, x, 0.001, "нажатия человека во время задачи не действуют: " .. (h.position.x - x))
       S.eq(P.rec().hold, nil)
   end },
 
@@ -263,5 +263,24 @@ S.suite("attach_human", {
       P.tick(10)
       S.eq(storage.helpers.h1.hold, nil)
       S.ok(all_seen(A, "walking", true), "у тела без игрока мод состояния не трогает")
+  end },
+
+  { "ходьба осталась включённой после конца задачи между тиками — мод выключает её один раз", function()
+      local _, friend = P.setup()
+      P.action()
+      local h = friend.character
+      P.client = false -- как у движка без сброса: состояние держится само
+      local job = P.act("p_once", {}).job
+      P.tick(10)
+      S.eq(P.rec().hold.walking, true)
+      S.eq(P.rec().walk_owned, true)
+      -- задачу сняли между тиками, а тело осталось с включённой ходьбой
+      S.okr(S.req("cancel", { job = job }, "p1"))
+      h.walking_state = { walking = true, direction = EAST }
+      local x = h.position.x
+      P.tick(30)
+      S.eq(h.walking_state.walking, false, "мод отпустил ходьбу, которую включал сам")
+      S.ok(h.position.x <= x + STEP, "тело не уехало: " .. (h.position.x - x))
+      S.eq(P.rec().walk_owned, nil)
   end },
 })
