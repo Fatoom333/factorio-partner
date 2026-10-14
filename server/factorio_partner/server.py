@@ -53,14 +53,15 @@ def build_server(core: Core, admin: bool = False) -> FastMCP:
     async def partner_notes(helper: Helper, key: Key,
                             kind: Annotated[Literal["rules", "memo"], Field(
                                 description="rules — постоянные правила хозяина; memo — твоя память о базе")],
-                            action: Annotated[Literal["list", "add", "remove"], Field(
-                                description="list — показать; add — добавить text; remove — убрать запись n")] = "list",
+                            action: Annotated[Literal["list", "add", "remove", "confirm"], Field(
+                                description="list — показать; add — добавить text (правило — после «да» хозяина: confirm); remove — убрать запись n")] = "list",
                             text: str | None = None, n: int | None = None,
                             said_seq: Annotated[int | None, Field(
                                 description="для rules add/remove: seq сообщения хозяина (player_said, owner:true), где он это велел")] = None) -> dict:
         """Заметки этого сейва, которые переживают смену (файлы в папке проекта, по сейву):
-        rules — постоянные правила хозяина (только по его слову: said_seq — seq его сообщения не
-        старше 10 мин, сервер проверит и сохранит его слова рядом; его смыслом, ≤ 300 символов),
+        rules — постоянные правила хозяина: add с said_seq его сообщения (не старше 10 мин) — сервер
+        сам спросит его в чате точным текстом; его «да» после вопроса — confirm с said_seq ответа;
+        remove — тоже с said_seq; правило ≤ 160 символов, его слова приходят полем owner_said;
         memo — что ты запомнил о базе (где мусорный бак, какой сундук для чего). Обе приходят в
         partner_brief (owner_rules, memo)."""
         return await _run(core.op_notes(helper, key, kind, action, text, n, said_seq))

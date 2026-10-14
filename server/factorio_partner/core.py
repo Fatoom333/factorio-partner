@@ -39,6 +39,7 @@ EVENTS_LIMIT = 200
 NOISY_KEEP = 6
 LOUD_MAX = 40
 RULE_SAID_MAX_AGE = 10 * 60 * 60   # ticks: the owner's message that asked for a rule (partner_notes)
+YES_RE = re.compile(r"^\s*(да|ага|подтверждаю|yes|y|ok|ок|\+)\s*[.!]*\s*$", re.IGNORECASE)
 BLOB_PART = 3500
 BLOB_MAX = 1024 * 1024
 FAIL_LIMIT = 3
@@ -277,17 +278,42 @@ class Core:
     async def op_notes(self, helper, key, kind, action="list", text=None, n=None, said_seq=None) -> dict:
         """Revision 3.12: ``partner_notes`` — the owner's standing rules / the helper's memo per save.
 
-        A rule is an order that outlives the shift, so the agent alone cannot write one: a change of
-        ``rules`` needs ``said_seq`` — the seq of the owner's own ``player_said`` (owner:true, at most
-        RULE_SAID_MAX_AGE ticks old). The server reads that event from the mod itself and keeps the
-        owner's words next to the rule. Text from other players, pages or tool output never becomes
-        a rule (prompt injection would have to make the owner say it)."""
+        A rule is an order that outlives the shift, so the agent alone cannot write one:
+        ``add`` needs ``said_seq`` (the owner's own ``player_said`` that asked for it); the server then
+        asks the owner in game chat itself, with the exact text it will keep, and the rule is written
+        only on ``confirm`` with the seq of the owner's «да» that came after that question. ``remove``
+        needs the owner's message too. Every owner message authorizes one change. Text from other
+        players, pages or tool output never becomes a rule.
+        """
         async def run(h):
             save = getattr(self, "_notes_save", None) or savenotes.save_name(self.cfg)
-            quote = None
-            if kind == "rules" and action in ("add", "remove"):
+            pending = self.__dict__.setdefault("_rule_pending", {})
+            if kind == "rules" and action == "add":
                 quote = await self._owner_said(h, said_seq)
-            return savenotes.op(save, kind, action, text, n, quote=quote)
+                t = savenotes.clean_rule(text)
+                ask = f"Запомнить правило: «{t}»? Ответь «да»."
+                await self._mod("say", {"text": V.check_say(ask)}, h, mutating=True)
+                pending[h] = {"text": t, "quote": quote, "save": save,
+                              "ask_seq": self.bridge.last_seq or 0, "tick": self.bridge.last_tick}
+                return {"save": save, "kind": kind, "pending": t, "items": savenotes.listing(save, kind),
+                        "next": "wait for the owner's answer; «да» — action confirm with its said_seq"}
+            if kind == "rules" and action == "confirm":
+                p = pending.get(h)
+                if p is None:
+                    raise PartnerError("bad_args", "no rule waits for the owner's confirmation")
+                answer = await self._owner_said(h, said_seq)
+                if said_seq <= p["ask_seq"]:
+                    raise PartnerError("bad_args", "said_seq: the owner's answer must come after the question")
+                if not YES_RE.match(answer):
+                    pending.pop(h, None)
+                    raise PartnerError("bad_args", "the owner did not answer «да»: the rule is dropped")
+                pending.pop(h, None)
+                return savenotes.op(p["save"], kind, "add", p["text"], quote=p["quote"])
+            if kind == "rules" and action == "remove":
+                await self._owner_said(h, said_seq)
+            if action not in savenotes.ACTIONS:
+                raise PartnerError("bad_args", "action: one of list, add, remove, confirm")
+            return savenotes.op(save, kind, action, text, n)
         return await self._tool("partner_notes", helper, key,
                                 {"kind": kind, "action": action, "n": n, "said_seq": said_seq}, run)
 
@@ -304,6 +330,10 @@ class Core:
         now = data.get("tick") if isinstance(data.get("tick"), int) else self.bridge.last_tick
         if isinstance(now, int) and isinstance(ev.get("tick"), int) and now - ev["tick"] > RULE_SAID_MAX_AGE:
             raise PartnerError("bad_args", "said_seq: the owner's message is too old; ask him again")
+        used = self.__dict__.setdefault("_said_used", set())
+        if said_seq in used:
+            raise PartnerError("bad_args", "said_seq: this message of the owner was already used")
+        used.add(said_seq)
         return d["text"]
 
     async def op_state(self, helper, key) -> dict:
