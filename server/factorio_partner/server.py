@@ -123,6 +123,20 @@ def build_server(core: Core, admin: bool = False) -> FastMCP:
         return await _run(core.op_find(helper, key, item, kinds, surface, limit))
 
     @mcp.tool()
+    async def partner_supply(helper: Helper, key: Key, item: str,
+                             count: int | None = None,
+                             depth: int | None = None) -> dict:
+        """Что из чего делается и где это взять на базе — первый шаг большого поручения.
+        item — предмет или жидкость, count — сколько нужно (1..10000, по умолчанию 1), depth —
+        на сколько уровней рецептов раскрывать (1..5, по умолчанию 3). Ответ: {tree, summary:
+        {short, raw}, nodes, warnings, truncated?, hidden?}; узел дерева — {name, kind, need, have,
+        short, stored?, producers?, recipe?, resource?, note?}. summary.short — чего не хватает в
+        карманах; у узла: stored — где лежит (забрать), producers — машины с этим рецептом и out в
+        их выходах, recipe.makers — машины, способные это делать, recipe.hand — можно ли руками,
+        resource — ближайшее пятно сырья. Ответ не влез (response too large) — уменьши depth."""
+        return await _run(core.op_supply(helper, key, item, count, depth))
+
+    @mcp.tool()
     async def partner_access(helper: Helper, key: Key,
                              area: Area | None = None,
                              radius: int | None = None,

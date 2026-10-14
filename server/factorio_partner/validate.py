@@ -30,6 +30,8 @@ MAX_OPTIONS = 32                   # plan_mining.options: MPP flags
 ACCESS_RADIUS_MAX = 64             # STATE.md «access»: radius?=32 (≤ 64)
 FIT_SEARCH_MAX = 32                # ACTIONS.md build_blueprint: search?=16, 0..32
 BELT_LANES_MAX = 4                 # ACTIONS.md plan_belt: lanes?=1 (1..4)
+SUPPLY_COUNT_MAX = 10_000          # STATE.md «supply»: count?=1 (1..10000)
+SUPPLY_DEPTH_MAX = 5               # STATE.md «supply»: depth?=3 (1..5)
 
 Validator = Callable[[str, Any], Any]
 

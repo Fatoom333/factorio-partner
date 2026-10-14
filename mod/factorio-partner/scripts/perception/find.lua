@@ -224,7 +224,8 @@ local function search(surface, filter, budget)
   local n = surface.count_entities_filtered(filter)
   budget.n = budget.n + n
   if budget.n > M.MAX_ENTITIES then
-    err.raise("limit", "more than " .. M.MAX_ENTITIES .. " entities to look through: narrow kinds")
+    err.raise("limit", "more than " .. M.MAX_ENTITIES .. " entities to look through: "
+      .. (budget.hint or "narrow kinds"))
   end
   if n == 0 then return {} end
   return surface.find_entities_filtered(filter)
@@ -450,6 +451,14 @@ end
 
 M.ops = {
   find = find_op,
+}
+
+-- Общие части поиска по базе для соседних операций восприятия (`supply`): чтение свойств,
+-- рецепт машины, счёт с лимитом, группы по 32 клетки. Правятся здесь, а не копируются.
+M.lib = {
+  prop = prop, call0 = call0, name_of = name_of, is_normal = is_normal,
+  machine_recipe = machine_recipe, search = search, cluster = cluster, top_counts = top_counts,
+  CRAFTER = CRAFTER, STORAGE_ITEM = STORAGE_ITEM, STORAGE_FLUID = STORAGE_FLUID,
 }
 
 -- Для тестов.

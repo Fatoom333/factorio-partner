@@ -43,6 +43,7 @@ TOOLS: dict[str, tuple[str, tuple[str, ...]]] = {
     "partner_ghosts": ("op_ghosts", ("radius", "area", "center", "near")),
     "partner_rates": ("op_rates", ("scope", "period", "area", "items", "top", "surface")),
     "partner_recipes": ("op_recipes", ("filter",)),
+    "partner_supply": ("op_supply", ("item", "count", "depth")),
     "partner_act": ("op_act", ("do", "args", "replace")),
     "partner_cancel": ("op_cancel", ("job", "all")),
     "partner_wait": ("op_wait", ("timeout", "quiet", "since")),

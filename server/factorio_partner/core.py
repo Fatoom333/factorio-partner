@@ -59,6 +59,7 @@ HINTS = {
     "partner_rates": "pass items or a smaller top",
     "partner_recipes": "pass filter",
     "partner_find": "pass a smaller limit or fewer kinds",
+    "partner_supply": "pass a smaller depth",
     "partner_state": "",
     "partner_wait": "",     # never too large: _fit_wait cuts the page and sets more=true
 }
@@ -404,6 +405,23 @@ class Core:
                 args["limit"] = V.integer(1, V.FIND_LIMIT_MAX)("limit", limit)
             return await self._mod("find", args, h)
         return await self._tool("partner_find", helper, key, a, run)
+
+    async def op_supply(self, helper, key, item=None, count=None, depth=None) -> dict:
+        """op ``supply`` (STATE.md): what an item is made of and where the base has it — the
+        tree of needs with the sources of every node. The mod's answer is passed as is; one
+        that does not fit the response limit is refused with a hint to lower ``depth``."""
+        a = {"item": item, "count": count, "depth": depth}
+
+        async def run(h):
+            if item is None:
+                raise V.bad("item", "required")
+            args: dict = {"item": V.name("item", item)}
+            if count is not None:
+                args["count"] = V.integer(1, V.SUPPLY_COUNT_MAX)("count", count)
+            if depth is not None:
+                args["depth"] = V.integer(1, V.SUPPLY_DEPTH_MAX)("depth", depth)
+            return await self._mod("supply", args, h)
+        return await self._tool("partner_supply", helper, key, a, run)
 
     async def op_access(self, helper, key, area=None, radius=None, center=None, near=None) -> dict:
         """op ``access`` (STATE.md): land, liquid and the exits of a site — either ``area``, or a

@@ -50,9 +50,16 @@ REQUIRED = (
     "areas", "need", "chosen", "forge_too_old", "только как факты", "без подтверждения хозяина",
     # ревизия 3.5: стройка ленты встала — осмотреться, переложить остаток, не больше трёх раз подряд
     '"from":"resume"', "resumed", "unseen", "blocked_total", "трёх перекладок подряд",
+    # ревизия 3.7: большое поручение начинается с partner_supply; как читать его ответ
+    "partner_supply", "summary.short", "stored", "producers", "makers", "recipe.hand", "resource",
+    "not_researched", "no_source", "руками не подменяй",
 )
 # порядок шагов поручения «добыча с лентой» в примере (PLAN «Волна 4»)
 MINING_ORDER = ("partner_access", "plan_mining", "plan_belt", "collect", "build_ghosts")
+# пример «поставь ещё литейных» (ревизия 3.7): сначала спросить игру, потом идти и брать
+SUPPLY_ORDER = ("partner_supply", "partner_say", "collect", "extract", "craft", "insert", "place")
+# чем разведку источников в таком примере начинать нельзя — это делает partner_supply одним вызовом
+SCOUT_TOOLS = ("partner_find", "partner_stock", "partner_recipes", "partner_resources")
 _U = "U" + "sers"
 PRIVATE_RE = re.compile(
     r"(?<![\w)\]*])[A-Za-z]:[\\/](?![\\/])\w"  # путь с буквой диска
@@ -288,6 +295,28 @@ def check_mining_order(text: str, name: str) -> list[str]:
     return []
 
 
+def check_supply_order(text: str, name: str) -> list[str]:
+    """В примере большого поручения первый шаг разведки — partner_supply, а потом идут план хозяину
+    и работа: collect → extract → craft → insert → place."""
+    steps = call_order(text)
+    problems: list[str] = []
+    if "partner_supply" not in steps:
+        return [f"{name}: в примере большого поручения нет вызова partner_supply"]
+    first = steps.index("partner_supply")
+    early = [s for s in steps[:first] if s in SCOUT_TOOLS]
+    if early:
+        problems.append(f"{name}: разведка источников начата с {early[0]} — первым должен быть partner_supply")
+    at = -1
+    for step in SUPPLY_ORDER:
+        try:
+            at = steps.index(step, at + 1)
+        except ValueError:
+            problems.append(f"{name}: порядок большого поручения нарушен — нет шага {step} после предыдущих "
+                            f"({' → '.join(SUPPLY_ORDER)})")
+            break
+    return problems
+
+
 def lint_agent(agent_file: Path = AGENT_FILE, server_file: Path = SERVER_FILE, docs: Path = DOCS,
                extra_md: list[Path] | None = None) -> list[str]:
     problems: list[str] = []
@@ -395,6 +424,11 @@ def lint_all() -> list[str]:
     mining = AGENTS_DIR / "examples" / "mining-order.md"
     if mining.is_file():
         order = check_mining_order(mining.read_text(encoding="utf-8").replace("\r\n", "\n"), mining.name)
+    supply = AGENTS_DIR / "examples" / "supply-order.md"
+    if supply.is_file():
+        order += check_supply_order(supply.read_text(encoding="utf-8").replace("\r\n", "\n"), supply.name)
+    else:
+        order.append("examples/supply-order.md: нет примера большого поручения (ревизия 3.7)")
     return lint_agent(extra_md=examples) + order + lint_files(repo_files())
 
 

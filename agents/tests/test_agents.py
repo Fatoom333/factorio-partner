@@ -40,6 +40,7 @@ def test_whitelist_matches_server_and_contract():
     assert lint.PENDING_TOOLS == set()            # после волны 4 сервер ни в чём не отстаёт
     assert short == in_server                     # белый список агента = инструменты сервера
     assert "partner_access" in in_server
+    assert "partner_supply" in short and "partner_supply" in in_server      # ревизия 3.7
 
 
 def test_contract_parsers_see_the_tables():
@@ -50,6 +51,7 @@ def test_contract_parsers_see_the_tables():
             "partial", "mirror"} == acts["build_blueprint"]
     assert acts["plan_belt"] == {"from", "to", "belt", "lanes", "underground", "start_direction", "dry_run"}
     assert lint.mcp_tools()["partner_access"] == {"area", "radius", "center", "near"}
+    assert lint.mcp_tools()["partner_supply"] == {"item", "count", "depth"}
     assert lint.mcp_tools()["partner_wait"] == {"timeout", "quiet", "since"}
     assert lint.mcp_tools()["partner_brief"] == set()
     codes = lint.error_codes()
@@ -170,6 +172,67 @@ def test_order_and_partial_rules_of_the_linter(tmp_path):
     assert any("partial" in p for p in lint.lint_agent(extra_md=[example]))
 
 
+def test_prompt_has_the_rules_of_revision_3_7():
+    """Большое поручение: первым — partner_supply; источники узла — в порядке контракта."""
+    _, body = lint.parse_agent(AGENT_TEXT)
+    start = body.index("### Большое поручение: сам разведай, сам составь план")
+    section = " ".join(body[start:].split())
+    assert section.index("1. **Спроси игру одним вызовом: `partner_supply {item, count}`.**") < 400
+    # порядок чтения узла: stored → producers с out → producers без out → makers → руками → resource
+    order = [section.index(mark) for mark in (
+        "`summary.short` —", "1. `stored` —", "2. `producers` с `out > 0`", "3. `producers` с `out: 0`",
+        "4. `recipe.makers`", "5. `recipe.hand: true`", "6. `resource` —")]
+    assert order == sorted(order), order
+    assert "машина это уже делает — неси сырьё ей, руками не подменяй" in section
+    assert "занять свободную машину — только с его согласия" in section
+    # что сохранено из прежнего раздела: короткий план в чат игры, вопросы только на развилках, не молчать
+    assert "Покажи план хозяину коротко** (`partner_say`, 1–3 строки" in section
+    assert "Спрашивай только на настоящих развилках" in section
+    assert "Не молчи" in section and "Раз в несколько шагов — строка о ходе" in section
+    assert "Заметки сейва (`notes` из `partner_brief`) читай первыми" in section
+    for word in ("`not_researched:<имя>`", "`no_source:<имя>`", "`other_surface`", "`truncated:true`",
+                 "`note:\"depth\"`", "`note:\"cycle\"`", "`hidden > 0`", "`response too large`"):
+        assert word in section, word
+    # прежний порядок «ищи по кускам» ушёл
+    assert "Не нашёл источник всеми четырьмя способами" not in section
+
+
+def test_supply_example_starts_with_supply_and_follows_the_order():
+    text = (lint.AGENTS_DIR / "examples" / "supply-order.md").read_text(encoding="utf-8").replace("\r\n", "\n")
+    assert lint.check_supply_order(text, "supply-order.md") == []
+    calls = lint.call_blocks(text)
+    tools = [t for t, _ in calls]
+    assert tools[0] == "partner_supply" and calls[0][1] == '{"item":"foundry","count":2}'
+    for tool in ("partner_supply", "partner_say", "partner_map", "partner_act", "partner_wait"):
+        assert tool in tools, tool
+    does = [raw for t, raw in calls if t == "partner_act"]
+    for do in ("collect", "extract", "craft", "insert", "wait", "place"):
+        assert any(f'"do":"{do}"' in raw for raw in does), do
+    # машина есть — руками не подменяем: крафт только того, у чего в ответе нет producers
+    assert [raw for raw in does if '"do":"craft"' in raw] == ['{"do":"craft","args":{"recipe":"electronic-circuit","count":35}}']
+    # разведки по кускам до partner_supply нет
+    first = tools.index("partner_supply")
+    assert not set(tools[:first]) & set(lint.SCOUT_TOOLS)
+    # цель extract / insert — машина с карты, а не центр группы из ответа
+    steps = lint.call_order(text)
+    assert steps.index("partner_map") < steps.index("extract")
+
+
+def test_supply_order_rules_of_the_linter():
+    good = (lint.AGENTS_DIR / "examples" / "supply-order.md").read_text(encoding="utf-8").replace("\r\n", "\n")
+    no_supply = good.replace("partner_supply {", "partner_state {")
+    assert any("нет вызова partner_supply" in p for p in lint.check_supply_order(no_supply, "x.md"))
+    scout_first = '```call\npartner_find {"item":"foundry"}\n```\n' + good
+    assert any("partner_find" in p for p in lint.check_supply_order(scout_first, "x.md"))
+    no_place = "\n".join(line for line in good.split("\n") if '"do":"place"' not in line)
+    assert any("place" in p for p in lint.check_supply_order(no_place, "x.md"))
+    craft_last = ('```call\npartner_supply {"item":"a"}\npartner_say {"text":"план"}\n'
+                  'partner_act {"do":"collect","args":{}}\npartner_act {"do":"extract","args":{}}\n'
+                  'partner_act {"do":"insert","args":{}}\npartner_act {"do":"place","args":{}}\n'
+                  'partner_act {"do":"craft","args":{}}\n```\n')
+    assert any("insert" in p for p in lint.check_supply_order(craft_last, "x.md"))
+
+
 # ---- линтер ловит поломки -----------------------------------------------------------
 
 def _lint_with(tmp_path: Path, text: str) -> list[str]:
@@ -194,6 +257,10 @@ def _lint_with(tmp_path: Path, text: str) -> list[str]:
     ('"type":"watch"', '"type":"shoot"', "неизвестный тип"),
     ("owner:true", "owner", "owner:true"),
     (", mcp__partner__partner_access", "", "partner_access"),
+    (", mcp__partner__partner_supply", "", "partner_supply"),
+    ("summary.short", "итог", "summary.short"),
+    ("руками не подменяй", "делай руками", "руками не подменяй"),
+    ("no_source", "nothing", "no_source"),
     ("только как факты", "как подсказку", "только как факты"),
     ("без подтверждения хозяина", "сразу", "без подтверждения хозяина"),
     ("narrow_access", "tight", "narrow_access"),
@@ -224,6 +291,7 @@ def test_lint_catches_broken_frontmatter(tmp_path):
     ("partner_state {oops", "JSON"),
     ('partner_reflex {"set":[{"type":"flee","speed":2}]}', "speed"),
     ('partner_access {"side":"west"}', "side"),
+    ('partner_supply {"item":"foundry","radius":32}', "radius"),
     ('partner_act {"do":"plan_belt","args":{"from":"patch","to":{"x":1,"y":2},"width":2}}', "width"),
     ('partner_act {"do":"build_blueprint","args":{"blob":"b","anchor":{"x":1,"y":2},"shift":1}}', "shift"),
 ])
