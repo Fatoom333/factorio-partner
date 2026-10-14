@@ -154,6 +154,24 @@ end
 
 -- ------------------------------------------------------------------ player_said
 
+M.MAX_GPS = 4
+
+--- Метки карты из текста чата: `[gps=x,y]` или `[gps=x,y,поверхность]` (пинг и Shift+клик по
+--- карте). → список {pos, surface?} (≤ MAX_GPS) или nil.
+function M.gps_tags(text)
+  local out
+  for x, y, rest in string.gmatch(text or "", "%[gps=(%-?[%d%.]+),(%-?[%d%.]+)([^%]]*)%]") do
+    local nx, ny = tonumber(x), tonumber(y)
+    if nx ~= nil and ny ~= nil and nx == nx and ny == ny and math.abs(nx) <= 2e6 and math.abs(ny) <= 2e6 then
+      out = out or {}
+      local surface = string.match(rest, "^,([%w%-_ ]+)$")
+      out[#out + 1] = { pos = util.pos({ x = nx, y = ny }), surface = surface }
+      if #out >= M.MAX_GPS then break end
+    end
+  end
+  return out
+end
+
 function M.on_console_chat(e)
   if e.player_index == nil then return end -- сервер/RCON
   local p = game.get_player(e.player_index)
@@ -162,6 +180,7 @@ function M.on_console_chat(e)
   local text = util.utf8_head(util.one_line(e.message or ""), M.MAX_CHAT)
   local ok, pos = pcall(function() return util.pos(p.physical_position) end)
   local data = { player = p.name, owner = is_owner, text = text, pos = ok and pos or nil }
+  data.gps = M.gps_tags(text)
   if is_owner then
     local sel = p.selected
     if sel and sel.valid then

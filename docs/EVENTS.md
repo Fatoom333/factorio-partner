@@ -31,7 +31,7 @@
 | `respawned` | `{pos, reason?}` — у тела-игрока шлёт ядро: `reason` `"player_joined"` (игрок вернулся) │ `"body_restored"`; после возрождения движком — без `reason` | H, A |
 | `reflex_done` | `{type, outcome:"ok"│"failed", reason?, detail}` — итог рефлекса, не каждое срабатывание; возрождение не удалось: `{type:"respawn", outcome:"failed", reason:"no_place"│"surface_gone"│"force_gone"}` | H |
 | `inventory_full` | `{job?}` — задача, если не может продолжать, завершается `job_failed{code:"no_space"}` | C |
-| `player_said` (хозяин) | `{player, owner:true, text, pos, selected?:{name, pos, unit_number?}}` | A |
+| `player_said` (хозяин) | `{player, owner:true, text, pos, selected?:{name, pos, unit_number?}, gps?:[{pos, surface?}]}` | A |
 | `helper_lost` | `{reason}` — тело исчезло не по смерти: `destroyed`; у тела-игрока — `player_left`, `no_character`, `body_changed`, `player_removed` | A |
 | `game_reloaded` | `{tick}` — шлёт сервер, не мод | D |
 
@@ -87,3 +87,9 @@
   уточнения 3.4).
 - Рефлексы: набор остаётся после `helper_lost{destroyed}` и наследуется новым `helper_spawn` с тем же
   id; сбрасывает его только `helper_remove`. `reflexes{}` без `set` возвращает текущий набор.
+
+## Уточнения ревизии 3.6
+- `player_said.gps` — метки карты из текста (`[gps=x,y]`, `[gps=x,y,поверхность]`: пинг на карте и
+  Shift+клик по карте), не больше 4; поле есть у сообщений любого игрока, приказом остаётся только
+  сообщение хозяина. Сам тег остаётся и в `text`. Агент может отвечать таким же тегом в `partner_say`:
+  игра делает его кликабельным.
