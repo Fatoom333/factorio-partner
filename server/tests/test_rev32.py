@@ -186,7 +186,7 @@ async def test_act_bounds_v1_accepts_the_edges(core, fake, do, args):
 
 def test_actions_whitelist_is_the_list_of_actions_md():
     assert set(V.ACTIONS) == {"walk", "approach", "follow", "mine", "craft", "insert", "extract", "collect",
-                              "pickup", "place", "rotate", "build_blueprint", "build_ghosts", "deconstruct", "plan_mining",
+                              "pickup", "place", "rotate", "set_recipe", "build_blueprint", "build_ghosts", "deconstruct", "plan_mining",
                               "plan_belt", "wait"}
 
 

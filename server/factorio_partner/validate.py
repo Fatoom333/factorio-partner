@@ -230,6 +230,8 @@ ACTIONS: dict[str, tuple[dict[str, Validator], tuple[str, ...], tuple[tuple[tupl
     "place": ({"item": name, "pos": pos, "direction": DIRECTION, "recipe": name}, ("item", "pos"), ()),
     # revision 3.5: turn an own building like the R key (the last built belt of a re-planned belt)
     "rotate": ({"target": target, "direction": blueprint_direction}, ("target", "direction"), ()),
+    # revision 3.13: change the recipe of a standing assembling machine, like the machine window
+    "set_recipe": ({"target": target, "recipe": name}, ("target",), ()),
     "build_blueprint": ({"blob": ident, "plan": ident, "anchor": pos, "direction": blueprint_direction,
                         "mode": MODE, "force": BUILD_FORCE, "dry_run": boolean,
                         # revision 3.3: the search for a shift where the blueprint fits (`fit`), its
