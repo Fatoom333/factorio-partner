@@ -34,6 +34,7 @@ M.DEFAULT_MODULE_REQ = "h?"
 M.READ_ONLY = {
   hello = true, helper_list = true, jobs = true, events = true, state = true, map = true,
   resources = true, stock = true, ghosts = true, recipes = true, rates = true, find = true, access = true,
+  supply = true, lookup = true,
 }
 
 M.ops = {} -- op -> function(args, ctx) -> data
