@@ -26,3 +26,4 @@ CLAUDE.local.md
 .claude/scheduled_tasks.lock
 .claude/workflows/
 *.local.ps1
+.mcp.json
