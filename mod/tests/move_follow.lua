@@ -29,7 +29,27 @@ S.suite("move_follow", {
       local d = S.dist(h.position, p.character.position)
       S.ok(d <= 4.05, "держится рядом: " .. d)
       S.eq(B.result(job), nil, "ещё следует")
-      S.ok(#B.all_requests() >= 1)
+      S.eq(#B.all_requests(), 0, "хозяин рядом — шёл напрямую, путь не искал")
+  end },
+
+  { "хозяин рядом, но прямо не пройти — переключается на поиск пути", function()
+      local p, h = B.setup()
+      local o = { x = h.position.x, y = h.position.y }
+      local job = B.act("follow", { distance = 2, duration_s = 60 }).job
+      B.tick(3)
+      S.move(p.character, { x = o.x + 6, y = o.y })
+      -- прямо на восток — стена; маршрут из заглушки ведёт в обход (по y), а стена его пропускает
+      B.blocked = function(_, np) return math.abs(np.y - o.y) < 0.5 and np.x > o.x + 1 end
+      B.pathfinder = function(params)
+        local s, g = S.norm_pos(params.start), S.norm_pos(params.goal)
+        return { path = {
+          { position = { x = s.x, y = s.y + 2 } }, { position = { x = g.x - 1, y = s.y + 2 } },
+          { position = { x = g.x - 1, y = g.y } },
+        } }
+      end
+      B.tick(200)
+      S.ok(#B.all_requests() >= 1, "прямо упёрся — запросил маршрут")
+      S.eq(B.result(job), nil, "ещё следует")
   end },
 
   { "хозяин вышел из игры -> no_player; ходьба снята", function()
