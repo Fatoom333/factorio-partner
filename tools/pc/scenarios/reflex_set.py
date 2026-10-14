@@ -29,7 +29,8 @@ MIN_TICKS = 600         # за время наблюдения игра долж
 JOB_TIMEOUT_S = 20.0
 LOG_MUST_NOT_MATCH = r"\[factorio-partner\] (reflex|on_nth|event) .* failed"
 
-FLEE_DEFAULT = {"type": "flee", "radius": 20, "distance": 30, "health": 1, "on_attack": True, "to": "away"}
+FLEE_DEFAULT = {"type": "flee", "radius": 20, "distance": 30, "health": 1, "on_attack": True, "to": "away",
+                "resume": True, "resume_health": 0.8}
 WATCH_DEFAULT = {"type": "watch", "radius": 32, "every_s": 10}
 BAD_KINDS = ("helper_lost", "died", "respawned")
 
