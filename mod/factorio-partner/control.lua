@@ -21,7 +21,7 @@ local MODULES = {
   "perception.state", "perception.map", "perception.resources", "perception.stock", "perception.ghosts",
   "perception.recipes", "perception.vision", "perception.rates", "perception.find",
   "perception.access",
-  "perception.supply",
+  "perception.supply", "perception.lookup",
   "reflexes.flee", "reflexes.death",
   "core.nameplate",
 }

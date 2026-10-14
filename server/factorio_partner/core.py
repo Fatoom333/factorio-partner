@@ -60,6 +60,7 @@ HINTS = {
     "partner_recipes": "pass filter",
     "partner_find": "pass a smaller limit or fewer kinds",
     "partner_supply": "pass a smaller depth",
+    "partner_lookup": "pass a smaller limit",
     "partner_state": "",
     "partner_wait": "",     # never too large: _fit_wait cuts the page and sets more=true
 }
@@ -422,6 +423,32 @@ class Core:
                 args["depth"] = V.integer(1, V.SUPPLY_DEPTH_MAX)("depth", depth)
             return await self._mod("supply", args, h)
         return await self._tool("partner_supply", helper, key, a, run)
+
+    async def op_lookup(self, helper, key, name=None, kind=None, limit=None) -> dict:
+        """op ``lookup`` (STATE.md): what a thing is in the game, as the Factoriopedia shows it —
+        recipes, where it is used, machines, technologies. The mod's answer is passed as is; one that
+        does not fit the response limit is refused with a hint to lower ``limit``. For ``not_found``
+        the mod puts name suggestions into the text (``…; suggest: a, b``): they also go to
+        ``detail.suggest``."""
+        a = {"name": name, "kind": kind, "limit": limit}
+
+        async def run(h):
+            if name is None:
+                raise V.bad("name", "required")
+            args: dict = {"name": V.name("name", name)}
+            if kind is not None:
+                args["kind"] = V.enum(*V.LOOKUP_KINDS)("kind", kind)
+            if limit is not None:
+                args["limit"] = V.integer(1, V.LOOKUP_LIMIT_MAX)("limit", limit)
+            try:
+                return await self._mod("lookup", args, h)
+            except PartnerError as e:
+                if e.code == "not_found" and e.text and "; suggest: " in e.text:
+                    tail = e.text.rsplit("; suggest: ", 1)[1]
+                    names = [n for n in (s.strip() for s in tail.split(",")) if V.NAME_RE.match(n)]
+                    e.detail = {"suggest": names[:5]}
+                raise
+        return await self._tool("partner_lookup", helper, key, a, run)
 
     async def op_access(self, helper, key, area=None, radius=None, center=None, near=None) -> dict:
         """op ``access`` (STATE.md): land, liquid and the exits of a site — either ``area``, or a

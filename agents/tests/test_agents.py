@@ -233,6 +233,34 @@ def test_supply_order_rules_of_the_linter():
     assert any("insert" in p for p in lint.check_supply_order(craft_last, "x.md"))
 
 
+# ---- ревизия 3.8: справка partner_lookup ---------------------------------------------
+
+def test_lookup_is_whitelisted_and_described():
+    meta, body = lint.parse_agent(AGENT_TEXT)
+    short = {t[len(lint.TOOL_PREFIX):] for t in lint.agent_tools(meta)}
+    in_server, _ = lint.server_tools()
+    assert "partner_lookup" in short and "partner_lookup" in in_server
+    assert lint.mcp_tools()["partner_lookup"] == {"name", "kind", "limit"}
+    section = body.split("### Справка: `partner_lookup`", 1)[1]
+    for word in ("unlocked_by", "missing", "cost", "trigger", "suggest", "not_researched", "ничего не изучаешь"):
+        assert word in section, word
+    # большое поручение: supply показал not_researched — lookup по этому рецепту
+    big = body.split("### Большое поручение", 1)[1].split("### Справка", 1)[0]
+    assert "сделать нельзя: `partner_lookup` по этому рецепту" in big
+
+
+def test_lookup_example_rules_of_the_linter():
+    good = (lint.AGENTS_DIR / "examples" / "lookup-research.md").read_text(encoding="utf-8").replace("\r\n", "\n")
+    assert lint.check_lookup_example(good, "x.md") == []
+    assert [t for t, _ in lint.call_blocks(good)].count("partner_lookup") == 3
+    no_lookup = good.replace("partner_lookup {", "partner_state {")
+    assert any("нет вызова partner_lookup" in p for p in lint.check_lookup_example(no_lookup, "x.md"))
+    say_first = '```call\npartner_say {"text":"x"}\npartner_lookup {"name":"a"}\n```\n'
+    assert any("после partner_lookup" in p for p in lint.check_lookup_example(say_first, "x.md"))
+    with_act = good + '\n```call\npartner_act {"do":"walk","args":{"to":{"x":1,"y":1}}}\n```\n'
+    assert any("ничего не изучает" in p for p in lint.check_lookup_example(with_act, "x.md"))
+
+
 # ---- линтер ловит поломки -----------------------------------------------------------
 
 def _lint_with(tmp_path: Path, text: str) -> list[str]:
@@ -265,6 +293,8 @@ def _lint_with(tmp_path: Path, text: str) -> list[str]:
     ("без подтверждения хозяина", "сразу", "без подтверждения хозяина"),
     ("narrow_access", "tight", "narrow_access"),
     ("plan_belt", "lay_belt", "plan_belt"),
+    (", mcp__partner__partner_lookup", "", "partner_lookup"),
+    ("ничего не изучаешь", "изучай сам", "ничего не изучаешь"),
 ])
 def test_lint_catches(tmp_path, old, new, expect):
     assert old in AGENT_TEXT
@@ -292,6 +322,7 @@ def test_lint_catches_broken_frontmatter(tmp_path):
     ('partner_reflex {"set":[{"type":"flee","speed":2}]}', "speed"),
     ('partner_access {"side":"west"}', "side"),
     ('partner_supply {"item":"foundry","radius":32}', "radius"),
+    ('partner_lookup {"name":"foundry","depth":2}', "depth"),
     ('partner_act {"do":"plan_belt","args":{"from":"patch","to":{"x":1,"y":2},"width":2}}', "width"),
     ('partner_act {"do":"build_blueprint","args":{"blob":"b","anchor":{"x":1,"y":2},"shift":1}}', "shift"),
 ])

@@ -53,6 +53,8 @@ REQUIRED = (
     # ревизия 3.7: большое поручение начинается с partner_supply; как читать его ответ
     "partner_supply", "summary.short", "stored", "producers", "makers", "recipe.hand", "resource",
     "not_researched", "no_source", "руками не подменяй",
+    # ревизия 3.8: справка как в Факториопедии — что это в игре и почему не открыто
+    "partner_lookup", "unlocked_by", "missing", "suggest", "ничего не изучаешь",
 )
 # порядок шагов поручения «добыча с лентой» в примере (PLAN «Волна 4»)
 MINING_ORDER = ("partner_access", "plan_mining", "plan_belt", "collect", "build_ghosts")
@@ -317,6 +319,21 @@ def check_supply_order(text: str, name: str) -> list[str]:
     return problems
 
 
+def check_lookup_example(text: str, name: str) -> list[str]:
+    """Пример справки (ревизия 3.8): сначала partner_lookup, потом строка хозяину; помощник ничего
+    не изучает — действий в примере нет."""
+    steps = call_order(text)
+    if "partner_lookup" not in steps:
+        return [f"{name}: в примере справки нет вызова partner_lookup"]
+    problems: list[str] = []
+    if "partner_say" not in steps or steps.index("partner_say") < steps.index("partner_lookup"):
+        problems.append(f"{name}: хозяину говорят после partner_lookup, а не до")
+    acts = [t for t, _ in call_blocks(text) if t == "partner_act"]
+    if acts:
+        problems.append(f"{name}: в примере справки нет действий — помощник сам ничего не изучает")
+    return problems
+
+
 def lint_agent(agent_file: Path = AGENT_FILE, server_file: Path = SERVER_FILE, docs: Path = DOCS,
                extra_md: list[Path] | None = None) -> list[str]:
     problems: list[str] = []
@@ -429,6 +446,11 @@ def lint_all() -> list[str]:
         order += check_supply_order(supply.read_text(encoding="utf-8").replace("\r\n", "\n"), supply.name)
     else:
         order.append("examples/supply-order.md: нет примера большого поручения (ревизия 3.7)")
+    lookup = AGENTS_DIR / "examples" / "lookup-research.md"
+    if lookup.is_file():
+        order += check_lookup_example(lookup.read_text(encoding="utf-8").replace("\r\n", "\n"), lookup.name)
+    else:
+        order.append("examples/lookup-research.md: нет примера справки (ревизия 3.8)")
     return lint_agent(extra_md=examples) + order + lint_files(repo_files())
 
 

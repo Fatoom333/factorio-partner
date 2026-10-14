@@ -109,6 +109,12 @@ local function main_product(recipe, products)
   return nil
 end
 
+-- Можно ли сделать рецепт руками: категория — среди категорий крафта тела, жидкостей нет ни в
+-- ингредиентах, ни в продуктах. Общее с операцией `lookup` (её поле `hand` — «как у supply»).
+local function hand_of(category, fluids, hand_cats)
+  return (not fluids) and category ~= nil and hand_cats[category] == true
+end
+
 -- → {[kind/name] = {info, ...}}: info = {name, enabled, category, energy, ingredients, yield, hand}
 local function recipe_index(force, hand_cats)
   local index = {}
@@ -146,7 +152,7 @@ local function recipe_index(force, hand_cats)
               name = rname, item = name, enabled = prop(r, "enabled") == true, category = category,
               energy = tonumber(prop(r, "energy")) or 0, ingredients = list,
               yield = max(1, floor(net)),
-              hand = (not fluids) and category ~= nil and hand_cats[category] == true,
+              hand = hand_of(category, fluids, hand_cats),
             }
           end
         end
@@ -603,6 +609,9 @@ end
 M.ops = {
   supply = supply_op,
 }
+
+-- Общее с соседними операциями восприятия (`lookup`): правится здесь, а не копируется.
+M.lib = { entry_kind = entry_kind, expected = expected, main_product = main_product, hand_of = hand_of }
 
 -- Для тестов.
 M._internal = { expected = expected, parse_args = parse_args }

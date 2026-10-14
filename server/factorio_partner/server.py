@@ -137,6 +137,20 @@ def build_server(core: Core, admin: bool = False) -> FastMCP:
         return await _run(core.op_supply(helper, key, item, count, depth))
 
     @mcp.tool()
+    async def partner_lookup(helper: Helper, key: Key, name: str,
+                             kind: str | None = None,
+                             limit: int | None = None) -> dict:
+        """Справка как в Факториопедии: что это вообще такое в игре (а не на базе — это partner_supply).
+        name — имя предмета, жидкости, рецепта, технологии или постройки; kind — "item", "fluid",
+        "recipe", "technology", "entity" (без него — первое совпадение в этом порядке); limit — длина
+        списков (1..50, по умолчанию 20). Предмет: made_by (рецепты: ingredients, products, machines,
+        hand, unlocked_by у неоткрытых), used_in, mined_from, researched_any. Технология: researched,
+        available, prerequisites, missing (что изучить до неё, по порядку), unlocks, cost или trigger.
+        Постройка: size, items_to_place, crafting_categories, crafting_speed. Только чтение — ничего не
+        изучает. Имя неизвестно — not_found с подсказками (suggest). Ответ не влез — уменьши limit."""
+        return await _run(core.op_lookup(helper, key, name, kind, limit))
+
+    @mcp.tool()
     async def partner_access(helper: Helper, key: Key,
                              area: Area | None = None,
                              radius: int | None = None,
