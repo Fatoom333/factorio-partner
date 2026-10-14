@@ -19,8 +19,10 @@ logs/
 # worktree агентов workflow
 .claude/worktrees/
 
-# личное окружение автора
+# рабочие файлы Claude Code — никогда не в git (описание проекта — README и docs/)
+CLAUDE.md
 CLAUDE.local.md
+**/CLAUDE.md
 
 # служебное Claude Code
 .claude/scheduled_tasks.lock
