@@ -46,8 +46,12 @@ M.REPLAN_MIN_TICKS = 30     -- не чаще раза в 30 тиков из-за
 M.PLAN_TIMEOUT = 1800       -- ответ на запрос не пришёл за 30 с → запрос считается потерянным
 M.REQUEST_TTL = 36000       -- записи запросов старше 10 мин удаляются (on_nth)
 M.ARRIVE = 0.3              -- минимальная дистанция «на месте» и порог точки маршрута
--- Коробка для поиска пути чуть шире тела (±0.2): ходьба по 8 направлениям срезает углы.
-M.BOX = { left_top = { x = -0.35, y = -0.35 }, right_bottom = { x = 0.35, y = 0.35 } }
+-- Коробка для поиска пути — тело (collision_box прототипа персонажа, у ванильного ±0.2) плюс
+-- BOX_MARGIN с каждой стороны: ходьба по 8 направлениям срезает углы. Размер тела — из игры: моды
+-- меняют и персонажа, и постройки (Squeak Through 2 уменьшает рамки построек — щели находит сам
+-- движок поиска пути, а узкие для широкой коробки проходы берёт «тонкий» маршрут ниже).
+M.BOX_MARGIN = 0.15
+M.BOX = { left_top = { x = -0.35, y = -0.35 }, right_bottom = { x = 0.35, y = 0.35 } } -- если тела нет
 -- Тело стоит вплотную к постройке (так бывает у тела-игрока, которого подвёл человек): широкая
 -- коробка в точке старта уже «в стене», и движок не находит пути никуда. Тогда один повтор с
 -- настоящей коробкой тела (collision_box прототипа) — но только чтобы отойти: такой маршрут жмётся
@@ -110,6 +114,17 @@ local function same_surface(surface, want)
   return false
 end
 
+--- Широкая коробка поиска пути: тело из прототипа плюс запас.
+function M.wide_box(proto)
+  local b = proto and proto.collision_box
+  if b == nil then return M.BOX end
+  local lt, rb = b.left_top or b[1], b.right_bottom or b[2]
+  local x1, y1 = lt.x or lt[1], lt.y or lt[2]
+  local x2, y2 = rb.x or rb[1], rb.y or rb[2]
+  local m = M.BOX_MARGIN
+  return { left_top = { x = x1 - m, y = y1 - m }, right_bottom = { x = x2 + m, y = y2 + m } }
+end
+
 local function stop_walking(entity)
   if entity == nil or not entity.valid then return end
   local ws = entity.walking_state
@@ -146,7 +161,7 @@ local function request(task, ctx, st, goal, req_goal, keep_walking)
   forget_request(st)
   local proto = e.prototype
   local id = e.surface.request_path{
-    bounding_box = st.tight and proto.collision_box or M.BOX,
+    bounding_box = st.tight and proto.collision_box or M.wide_box(proto),
     collision_mask = proto.collision_mask,
     start = util.xy(e.position),
     goal = { x = req_goal.x, y = req_goal.y },
