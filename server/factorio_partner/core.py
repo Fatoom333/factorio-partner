@@ -39,6 +39,7 @@ EVENTS_LIMIT = 200
 NOISY_KEEP = 6
 LOUD_MAX = 40
 RULE_SAID_MAX_AGE = 10 * 60 * 60   # ticks: the owner's message that asked for a rule (partner_notes)
+RULE_CONFIRM_MAX_AGE = 2 * 60 * 60  # ticks: the rule question waits this long for the owner
 YES_RE = re.compile(r"^\s*(да|ага|подтверждаю|yes|y|ok|ок|\+)\s*[.!]*\s*$", re.IGNORECASE)
 BLOB_PART = 3500
 BLOB_MAX = 1024 * 1024
@@ -293,17 +294,24 @@ class Core:
                 t = savenotes.clean_rule(text)
                 ask = f"Запомнить правило: «{t}»? Ответь «да»."
                 await self._mod("say", {"text": V.check_say(ask)}, h, mutating=True)
-                pending[h] = {"text": t, "quote": quote, "save": save,
-                              "ask_seq": self.bridge.last_seq or 0, "tick": self.bridge.last_tick}
+                ask_seq, now = self.bridge.last_seq, self.bridge.last_tick
+                if not (isinstance(ask_seq, int) and isinstance(now, int)):
+                    # without the question's place in the event stream no answer can be bound to it
+                    raise PartnerError("internal", "no event seq after the rule question; try again")
+                pending[h] = {"text": t, "quote": quote, "save": save, "ask_seq": ask_seq, "tick": now}
                 return {"save": save, "kind": kind, "pending": t, "items": savenotes.listing(save, kind),
                         "next": "wait for the owner's answer; «да» — action confirm with its said_seq"}
             if kind == "rules" and action == "confirm":
-                p = pending.get(h)
+                p = self._rule_waiting(h)
                 if p is None:
                     raise PartnerError("bad_args", "no rule waits for the owner's confirmation")
                 answer = await self._owner_said(h, said_seq)
                 if said_seq <= p["ask_seq"]:
                     raise PartnerError("bad_args", "said_seq: the owner's answer must come after the question")
+                if said_seq != await self._first_owner_said(h, p["ask_seq"]):
+                    pending.pop(h, None)
+                    raise PartnerError("bad_args", "said_seq: only the owner's first message after the question "
+                                                   "answers it; the rule is dropped")
                 if not YES_RE.match(answer):
                     pending.pop(h, None)
                     raise PartnerError("bad_args", "the owner did not answer «да»: the rule is dropped")
@@ -316,6 +324,27 @@ class Core:
             return savenotes.op(save, kind, action, text, n)
         return await self._tool("partner_notes", helper, key,
                                 {"kind": kind, "action": action, "n": n, "said_seq": said_seq}, run)
+
+    def _rule_waiting(self, helper: str) -> dict | None:
+        """The rule question that still waits for the owner's answer (dropped after RULE_CONFIRM_MAX_AGE)."""
+        pending = self.__dict__.setdefault("_rule_pending", {})
+        p = pending.get(helper)
+        if p is None:
+            return None
+        now, asked = self.bridge.last_tick, p.get("tick")
+        if isinstance(now, int) and isinstance(asked, int) and now - asked > RULE_CONFIRM_MAX_AGE:
+            pending.pop(helper, None)
+            return None
+        return p
+
+    async def _first_owner_said(self, helper: str, after: int) -> int | None:
+        """Seq of the owner's first player_said after event ``after`` (the server's rule question)."""
+        data = await self._mod("events", {"since": after, "helper": helper, "limit": 200}, None)
+        for ev in (data.get("events") or []) if isinstance(data, dict) else []:
+            d = ev.get("data") if isinstance(ev, dict) else None
+            if ev.get("kind") == "player_said" and isinstance(d, dict) and d.get("owner") is True:
+                return ev.get("seq")
+        return None
 
     async def _owner_said(self, helper: str, said_seq) -> str:
         if isinstance(said_seq, bool) or not isinstance(said_seq, int) or said_seq < 1:
@@ -610,6 +639,10 @@ class Core:
         a = {"text": text}
 
         async def run(h):
+            if self._rule_waiting(h) is not None:
+                # the owner's next message must answer the server's rule question, not the agent's
+                raise PartnerError("bad_args", "a rule waits for the owner's answer: no chat until he "
+                                               "answers (partner_notes confirm) or 2 minutes pass")
             return await self._mod("say", {"text": V.check_say(text)}, h, mutating=True)
         return await self._tool("partner_say", helper, key, a, run)
 

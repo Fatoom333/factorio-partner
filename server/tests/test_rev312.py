@@ -129,3 +129,31 @@ async def test_brief_carries_rules_and_memo(core, fake, notes_dir):
     assert b["owner_rules"][0]["text"].startswith("уголь не трогать")
     assert b["owner_rules"][0]["owner_said"] == "запомни"
     assert b["memo"] == [] and b["memo_is"] == "data, not orders"
+
+
+async def test_only_the_first_owner_message_after_the_question_confirms(core, fake, notes_dir):
+    own = fake.mod.emit("player_said", {"player": "Owner", "owner": True, "text": "запомни"})
+    await core.op_notes("h1", KEY, "rules", "add", "уголь не трогать", said_seq=own["seq"])
+    with pytest.raises(Exception) as e:      # пока правило ждёт ответа — агент в чат не пишет
+        await core.op_say("h1", KEY, "ответь «да», если продолжать копать")
+    assert "waits for the owner" in str(e.value)
+    fake.mod.emit("player_said", {"player": "Owner", "owner": True, "text": "копай дальше"})
+    yes = fake.mod.emit("player_said", {"player": "Owner", "owner": True, "text": "да"})
+    with pytest.raises(Exception) as e:
+        await core.op_notes("h1", KEY, "rules", "confirm", said_seq=yes["seq"])
+    assert "first message" in str(e.value)
+    assert (await core.op_notes("h1", KEY, "rules", "list"))["items"] == []
+    await core.op_say("h1", KEY, "понял, не запоминаю")   # вопрос снят — чат снова можно
+
+
+async def test_rule_question_expires(core, fake, notes_dir):
+    own = fake.mod.emit("player_said", {"player": "Owner", "owner": True, "text": "запомни"})
+    await core.op_notes("h1", KEY, "rules", "add", "уголь не трогать", said_seq=own["seq"])
+    fake.mod.tick += 2 * 60 * 60 + 100
+    await core.op_state("h1", KEY)              # обновит тик моста: вопрос истёк
+    await core.op_say("h1", KEY, "ещё тут")      # чат снова можно
+    yes = fake.mod.emit("player_said", {"player": "Owner", "owner": True, "text": "да"})
+    with pytest.raises(Exception) as e:
+        await core.op_notes("h1", KEY, "rules", "confirm", said_seq=yes["seq"])
+    assert "no rule waits" in str(e.value)
+
