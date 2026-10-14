@@ -88,7 +88,7 @@ return M                          --   и снять своё: mining_state, cra
 | `walk` | `to:pos│"player", radius?=1` | `{pos, walked}` | B |
 | `approach` | `target│to:pos│"player", distance?` (по умолчанию reach; к постройке — не меньше половины её `bounding_box` + 0.6) | `{pos}` | B |
 | `follow` | `distance?=3, duration_s?=600` (за хозяином, та же поверхность) | `{}` | B |
-| `mine` | `target│resource:string, near?:pos, count:int` | `{mined: items}` | C |
+| `mine` | `target│resource:string│item:string, near?:pos, count:int` | `{mined: items}` | C |
 | `craft` | `recipe, count:int` | `{crafted: items}` (опрос очереди: событий крафта нет) | C |
 | `insert` | `target, items` | `{inserted: items}` | C |
 | `extract` | `target, items?` (нет → всё), `equip?:bool` | `{extracted: items}` | C |
@@ -335,3 +335,16 @@ P.U.M.P., чертёж, или `build_blueprint`). Перед стартом: с
   (открытый вопрос: учитывать ли радиус обзора тела из PROTOCOL §6.7).
 - Отдельного инструмента `partner_plan_belt` нет: действие идёт через `partner_act` (MCP.md, уточнения
   3.5 читать так же).
+
+## Уточнения ревизии 3.9
+- **`mine{item, count, near?}`** — «набери `count` этого предмета» (живая игра 14.10: вольфрам из камней —
+  агент копал камень за камнем и после каждого стоял, пока думал). Источники — всё, что рукой даёт
+  предмет: сущности типов `simple-entity`, `tree`, `fish` силы `neutral` и руда, которую можно копать
+  руками (не `required_fluid`, категория руды есть у персонажа). Что копается и что даёт — из
+  прототипов игры (`mineable_properties.products`: `amount` или среднее `amount_min`/`amount_max`, с
+  `probability`). Мод сам идёт от источника к источнику без остановок, выбирая **выгодный, а не
+  ближний**: ожидаемый выход предмета / (время пути + время добычи). Радиус поиска — 64 от `near`
+  (или от места старта), только открытые чанки. Готово — предмет вырос на `count`; источники
+  кончились — `failed{not_found}` с `detail.mined`. `mined` — весь прирост инвентаря (камень даёт и
+  попутное). Неизвестный предмет или ничего рукой его не даёт — `bad_args`. Свои постройки `item` не
+  разбирает. Ровно одно из `target`, `resource`, `item`.

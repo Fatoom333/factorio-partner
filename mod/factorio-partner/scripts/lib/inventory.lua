@@ -301,8 +301,36 @@ function M.reach(h, kind)
   return h.reach_distance
 end
 
---- Цель в досягаемости? Для reach — проверка движка can_reach_entity (учитывает размер),
---- иначе расстояние до центра.
+--- Рамка сущности {x0, y0, x1, y1}: bounding_box движка, иначе collision_box прототипа вокруг
+--- позиции, иначе точка.
+local function box_of(e)
+  local p = util.xy(e.position)
+  local ok, bb = pcall(function() return e.bounding_box end)
+  if not ok or type(bb) ~= "table" then
+    local ok2, cb = pcall(function() return e.prototype.collision_box end)
+    if ok2 and type(cb) == "table" then
+      local lt, rb = cb.left_top or cb[1], cb.right_bottom or cb[2]
+      if lt and rb then
+        return { p.x + (lt.x or lt[1]), p.y + (lt.y or lt[2]), p.x + (rb.x or rb[1]), p.y + (rb.y or rb[2]) }
+      end
+    end
+    return { p.x, p.y, p.x, p.y }
+  end
+  local lt, rb = bb.left_top or bb[1], bb.right_bottom or bb[2]
+  return { lt.x or lt[1], lt.y or lt[2], rb.x or rb[1], rb.y or rb[2] }
+end
+
+--- Расстояние от точки до рамки сущности (0 — внутри) и меньшая полуширина рамки.
+function M.edge_dist(pos, e)
+  local b = box_of(e)
+  local dx = math.max(b[1] - pos.x, 0, pos.x - b[3])
+  local dy = math.max(b[2] - pos.y, 0, pos.y - b[4])
+  return math.sqrt(dx * dx + dy * dy), math.min(b[3] - b[1], b[4] - b[2]) / 2
+end
+
+--- Цель в досягаемости? Для reach — проверка движка can_reach_entity (учитывает размер);
+--- near — до края рамки (огромный камень Вулкануса — ~2 клетки от центра до края: живая игра 14.10,
+--- по центру помощник упирался в камень и «не доставал»); иначе расстояние до центра.
 function M.in_reach(h, e, kind)
   if kind == "reach" or kind == nil then
     local ok, r = pcall(function() return h.can_reach_entity(e) end)
@@ -312,7 +340,7 @@ function M.in_reach(h, e, kind)
     -- движок сам знает размер камня; если он говорит «нет» — по расстоянию до центра с запасом
     local ok, r = pcall(function() return h.can_reach_entity(e) end)
     if ok and r == true then return true end
-    return util.dist(util.xy(h.position), util.xy(e.position)) <= M.reach(h, kind) - M.NEAR_MARGIN
+    return M.edge_dist(util.xy(h.position), e) <= M.reach(h, kind) - M.NEAR_MARGIN
   end
   return util.dist(util.xy(h.position), util.xy(e.position)) <= M.reach(h, kind)
 end
@@ -343,8 +371,10 @@ function M.approach(task, ctx, e, kind)
   if kind == "resource" then
     dist = reach - 0.5 - tries * 0.5
   elseif kind == "near" then
-    -- почти на предел: ближе мешает сама сущность (камень занимает пару клеток)
-    dist = reach - M.NEAR_MARGIN - 0.4 - tries * 0.4
+    -- почти на предел от края: ближе мешает сама сущность. Цель пути — круг вокруг центра, поэтому
+    -- к радиусу добавляем меньшую полуширину рамки (в круге радиуса d + half до края ≤ d)
+    local _, half = M.edge_dist(pos, e)
+    dist = reach - M.NEAR_MARGIN - 0.4 - tries * 0.4 + half
   elseif kind == "pickup" then
     dist = reach * 0.6 - tries * 0.2
   else

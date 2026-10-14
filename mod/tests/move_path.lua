@@ -403,5 +403,23 @@ S.suite("move_path", {
         B.run(job, 3000)
       end
   end },
+
+  { "ёрзает у круглой помехи (сдвиг есть, продвижения нет) — тоже застревание: выбирание за ~3 с", function()
+      local _, h = B.setup()
+      local o = { x = h.position.x, y = h.position.y }
+      B.blocked = function(_, p) return p.x - o.x > 0.5 and math.abs(p.y - o.y) < 6 end
+      B.act("walk", { to = { x = o.x + 30, y = o.y } })
+      local at
+      for t = 1, 600 do
+        B.tick(1)
+        if #B.events("stuck") > 0 then at = t break end
+        if h.position.x - o.x > 0.3 then
+          -- скользит вдоль помехи туда-сюда: каждый тик сдвиг 0.15, к цели — ничего
+          S.move(h, { x = h.position.x, y = h.position.y + (t % 2 == 0 and 0.15 or -0.15) })
+        end
+      end
+      S.ok(at ~= nil, "выбирание не включилось")
+      S.ok(at < 300, "выбирание поздно: " .. tostring(at))
+  end },
 })
 
