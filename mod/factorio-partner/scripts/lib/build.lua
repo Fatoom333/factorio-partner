@@ -42,7 +42,7 @@ M.OWN_STUCK = 58 * 60        -- свой «застрял» чуть раньш�
 M.ROBOT_PATIENCE = 120 * 60  -- сколько ждём летящих дронов без единой постройки
 M.AUTO_FALLBACK = 30 * 60    -- auto: дроны стоят столько без постройки → дальше руками
 M.MAX_ASIDE = 2              -- попыток отойти с места постройки
-M.BODY_MARGIN = 0.3          -- тело ±0.2 + запас
+M.BODY_MARGIN = 0.1          -- запас к телу (размер тела — collision_box прототипа, у ванильного ±0.2)
 M.MAX_MARKED = 500           -- столько помеченных к сносу сущностей области учитываем
 M.DIG_MIN_TIMEOUT = 300      -- тиков без исчезновения цели разбора до пропуска
 M.EPS = 0.05                 -- зазор при сравнении площадей
@@ -144,7 +144,14 @@ end
 function M.body_inside(h, proto, pos, dir)
   local hx, hy = M.half_size(proto, dir)
   local p = util.xy(h.position)
-  return math.abs(p.x - pos.x) < hx + M.BODY_MARGIN and math.abs(p.y - pos.y) < hy + M.BODY_MARGIN
+  local bx, by = 0.2, 0.2
+  local cb = h.prototype and h.prototype.collision_box
+  if cb ~= nil then
+    local lt, rb = cb.left_top or cb[1], cb.right_bottom or cb[2]
+    bx = ((rb.x or rb[1]) - (lt.x or lt[1])) / 2
+    by = ((rb.y or rb[2]) - (lt.y or lt[2])) / 2
+  end
+  return math.abs(p.x - pos.x) < hx + bx + M.BODY_MARGIN and math.abs(p.y - pos.y) < hy + by + M.BODY_MARGIN
 end
 
 --- Куда отойти, чтобы не мешать постройке: от её центра в сторону тела.
