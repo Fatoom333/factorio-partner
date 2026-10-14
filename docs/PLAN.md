@@ -161,3 +161,9 @@
 `partner_supply` (`validate.py`, `core.py`, `server.py`, тесты); агент — инструмент в белом списке
 `.claude/agents/partner.md`, раздел «Большое поручение» начинается с `partner_supply`, пример в
 `agents/examples`, линтер. Живой сценарий гоняет координатор отдельно (стенд занят игрой хозяина).
+
+## Поток L2 — справка (ревизия 3.8)
+Операция `lookup` (STATE.md): `scripts/perception/lookup.lua`, одна строка регистрации в `control.lua`,
+тесты `mod/tests/perception_lookup.lua`, сценарий стенда `lookup_live`; сервер — `partner_lookup`;
+агент — инструмент в белом списке и правило «не знаешь, что это или почему не открыто, — `partner_lookup`».
+Живой сценарий гоняет координатор отдельно.
