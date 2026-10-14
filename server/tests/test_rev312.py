@@ -157,3 +157,14 @@ async def test_rule_question_expires(core, fake, notes_dir):
         await core.op_notes("h1", KEY, "rules", "confirm", said_seq=yes["seq"])
     assert "no rule waits" in str(e.value)
 
+
+async def test_no_helper_chats_while_a_rule_waits(core, fake, notes_dir):
+    import factorio_partner.core as core_mod
+    own = fake.mod.emit("player_said", {"player": "Owner", "owner": True, "text": "запомни"})
+    await core.op_notes("h1", KEY, "rules", "add", "уголь не трогать", said_seq=own["seq"])
+    core.check_access = lambda helper, key: None      # второй помощник с тем же доступом
+    with pytest.raises(Exception) as e:
+        await core.op_say("h2", KEY, "ответь «да»")
+    assert "waits for the owner" in str(e.value)
+    assert core_mod.RULE_CONFIRM_MAX_AGE > 0
+

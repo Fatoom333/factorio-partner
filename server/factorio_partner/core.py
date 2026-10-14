@@ -639,8 +639,10 @@ class Core:
         a = {"text": text}
 
         async def run(h):
-            if self._rule_waiting(h) is not None:
-                # the owner's next message must answer the server's rule question, not the agent's
+            pending = self.__dict__.setdefault("_rule_pending", {})
+            if any(self._rule_waiting(x) is not None for x in list(pending)):
+                # the owner's next message must answer the server's rule question, not a question of
+                # this or any other helper (one owner, one chat)
                 raise PartnerError("bad_args", "a rule waits for the owner's answer: no chat until he "
                                                "answers (partner_notes confirm) or 2 minutes pass")
             return await self._mod("say", {"text": V.check_say(text)}, h, mutating=True)
