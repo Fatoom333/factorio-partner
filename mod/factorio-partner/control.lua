@@ -23,6 +23,7 @@ local MODULES = {
   "perception.access",
   "perception.supply",
   "reflexes.flee", "reflexes.death",
+  "core.nameplate",
 }
 for _, name in ipairs(MODULES) do
   core.register_module(require("scripts." .. name))

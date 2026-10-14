@@ -739,6 +739,20 @@ function Force.chart(self, surface, area)
   self.charted_log[#self.charted_log + 1] = { surface = type(surface) == "table" and surface.name or surface, area = norm_area(area) }
 end
 
+--- Объект игры в заглушке: методы в метатаблице, как у LuaObject (в storage класть можно).
+local GameObject = { __index = function(t, k)
+  if k == "destroy" then return function() rawset(t, "valid", false) end end -- obj.destroy(), как в игре
+end }
+function S.game_object(fields)
+  fields.valid = true
+  return setmetatable(fields, GameObject)
+end
+
+--- Метка на карте силы (nameplate).
+function Force.add_chart_tag(self, surface, t)
+  return S.game_object{ surface = surface, position = { x = t.position.x, y = t.position.y }, text = t.text }
+end
+
 function Force.get_spawn_position(self, surface)
   local s = type(surface) == "table" and surface.name or surface
   return S.copy(self.spawn[s] or { x = 0, y = 0 })

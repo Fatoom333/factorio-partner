@@ -51,7 +51,8 @@ function M.say(args, ctx)
   local text = util.chat_text(a.text, M.SAY_MAX)
   if text == "" then err.raise("bad_args", "args.text: empty after cleanup") end
   -- префикс без квадратных скобок (PROTOCOL §4): имя помощника не должно сложиться в rich-text тег
-  game.print(ctx.helper_id .. ": " .. text)
+  local np = require("scripts.core.nameplate")
+  game.print(np.display_name(ctx.helper_id) .. ": " .. text, { color = np.COLOR })
   return {}
 end
 
