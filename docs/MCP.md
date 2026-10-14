@@ -50,6 +50,7 @@
 | `partner_ghosts` | `radius?│area?, center?│near?` | op `ghosts` |
 | `partner_rates` | `scope?, period?, area?, surface?, items? (≤100), top? (1..100)` | op `rates` (`surface` — статистика другой планеты) |
 | `partner_recipes` | `filter?` | op `recipes` — что помощник может скрафтить из своего инвентаря |
+| `partner_supply` | `item, count?, depth?` | op `supply` — что из чего делается и где это взять на базе (STATE.md) |
 | `partner_act` | `do, args, replace=false` | op `act`; `do` из белого списка ACTIONS.md; для `build_blueprint` вместо `blob` можно `plan` (id из `partner_plan`) — сервер сам грузит чертёж через `blob_put` |
 | `partner_cancel` | `job?, all?` | op `cancel` |
 | `partner_wait` | `timeout=30 (≤55), quiet=true, since?` | ожидание (EVENTS.md), курсор на сервере |
