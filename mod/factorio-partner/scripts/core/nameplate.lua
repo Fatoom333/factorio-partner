@@ -1,7 +1,8 @@
 -- Имя помощника в игре (решение автора 14.10): у тела без игрока нет ни подписи над головой, ни точки
 -- на карте, а строка в списке игроков хозяину не нужна. Мод рисует подпись над телом и держит метку
 -- на карте силы рядом с ним; тем же именем подписаны сообщения `say`. У тела-игрока всё это есть от
--- самой игры — для него мод ничего не рисует.
+-- самой игры — для него мод ничего не рисует. Тело без игрока по умолчанию цвета силы (как хозяин) —
+-- мод красит его в цвет подписи (LuaEntity.color у персонажа доступен для записи; это только вид).
 --
 -- Имя — настройка `partner-helper-name` (по умолчанию «Claude»): у h1 — оно само, у остальных —
 -- «<имя> <id>». Квадратные скобки вырезаются (rich-text тег из имени не сложится, PROTOCOL §4).
@@ -67,6 +68,10 @@ function M.refresh(id, rec)
   if np.name ~= name or np.unit ~= e.unit_number then
     drop(np)
     np.name, np.unit = name, e.unit_number
+  end
+  if np.colored ~= e.unit_number then
+    local ok = pcall(function() e.color = M.COLOR end)
+    np.colored = ok and e.unit_number or nil
   end
   if np.text == nil or not np.text.valid then
     np.text = rendering.draw_text{

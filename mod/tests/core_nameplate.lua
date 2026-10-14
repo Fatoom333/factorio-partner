@@ -34,6 +34,7 @@ S.suite("core_nameplate", {
       local np = require("scripts.core.nameplate")
       np.refresh_all()
       S.eq(#drawn, 1)
+      S.eq(e.color, require("scripts.core.nameplate").COLOR, "тело покрашено в цвет подписи")
       S.eq(drawn[1].args.text, "Claude")
       S.eq(drawn[1].args.target.entity, e)
       S.eq(#tags, 1)
