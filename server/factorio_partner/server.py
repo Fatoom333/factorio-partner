@@ -55,12 +55,15 @@ def build_server(core: Core, admin: bool = False) -> FastMCP:
                                 description="rules — постоянные правила хозяина; memo — твоя память о базе")],
                             action: Annotated[Literal["list", "add", "remove"], Field(
                                 description="list — показать; add — добавить text; remove — убрать запись n")] = "list",
-                            text: str | None = None, n: int | None = None) -> dict:
+                            text: str | None = None, n: int | None = None,
+                            said_seq: Annotated[int | None, Field(
+                                description="для rules add/remove: seq сообщения хозяина (player_said, owner:true), где он это велел")] = None) -> dict:
         """Заметки этого сейва, которые переживают смену (файлы в папке проекта, по сейву):
-        rules — постоянные правила хозяина (добавляй только по его слову, его смыслом, ≤ 300 символов),
+        rules — постоянные правила хозяина (только по его слову: said_seq — seq его сообщения не
+        старше 10 мин, сервер проверит и сохранит его слова рядом; его смыслом, ≤ 300 символов),
         memo — что ты запомнил о базе (где мусорный бак, какой сундук для чего). Обе приходят в
         partner_brief (owner_rules, memo)."""
-        return await _run(core.op_notes(helper, key, kind, action, text, n))
+        return await _run(core.op_notes(helper, key, kind, action, text, n, said_seq))
 
     @mcp.tool()
     async def partner_state(helper: Helper, key: Key) -> dict:
