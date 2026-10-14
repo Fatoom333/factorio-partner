@@ -262,3 +262,40 @@ resource?, note?}`:
   предмета, потом по алфавиту. `producers` — машины, где предмет среди продуктов, включая побочные;
   буры — только в `resource.drills`.
 - Ответ сервера больше 24 КБ → `response too large` с подсказкой уменьшить `depth` (как у `map`/`find`).
+
+## `lookup` (h?, `name`, `kind?`, `limit?=20` (1..50)) — справка «как в Факториопедии»
+Зачем: помощник не знает игру наизусть, а моды добавляют своё. Факториопедия — окно для игрока, мод
+прочитать его не может, но она показывает данные самой игры — их мод читает напрямую. «Что это вообще
+такое в игре», в отличие от `supply` («как это получить на моей базе»). Всё из прототипов и сил игры,
+без имён в коде (PROTOCOL §6.12). Владелец — восприятие (`scripts/perception/lookup.lua`), регистрация
+одной строкой в `control.lua`. Только чтение: ничего не изучает, не меняет, карту не открывает.
+
+`kind` — `"item"│"fluid"│"recipe"│"technology"│"entity"`; без него — первое совпадение по имени в таком
+порядке. Имя неизвестно → `not_found`, в `detail.suggest` — до 5 имён прототипов, содержащих эту
+строку (без учёта регистра). Сила — помощника (без помощника — хозяина).
+
+**Предмет или жидкость** → `{kind, name, type, stack_size?, place_result?, fuel_value?,
+made_by:[recipe…], made_by_total, used_in:[{recipe, enabled, category}], used_in_total,
+mined_from:[{resource, required_fluid?, amount?}], researched_any:bool}`:
+- `recipe` = `{name, enabled, hidden?, category, hand:bool, time, ingredients:[{name, type, amount}],
+  products:[{name, type, amount, probability?}], machines:[имя…] (≤ 10, все прототипы машин игры,
+  чьи crafting_categories содержат категорию), machines_total, unlocked_by?:[имя технологии…] (≤ 5,
+  только если рецепт не открыт)}`; `hand` — как у `supply`.
+- `made_by` — рецепты, где это среди продуктов (основной продукт — первыми), скрытые рецепты не
+  показываются; `used_in` — где это ингредиент; оба списка ≤ `limit`, полное число — в `*_total`.
+- `mined_from` — ресурсы (и деревья, камни), при добыче которых это выпадает.
+- `researched_any` — открыт ли хоть один рецепт из `made_by` (или предмет добывается).
+
+**Рецепт** → тот же `recipe`, плюс `unlocked_by` всегда (пусто — открыт с начала).
+
+**Технология** → `{kind:"technology", name, researched, enabled, available:bool (все предпосылки
+изучены), prerequisites:[{name, researched}], missing:[имя…] (неизученные технологии, без которых эту не
+изучить, в порядке изучения, ≤ 30), unlocks:[рецепт…], other_effects:[{type, …}], cost?:{count,
+ingredients:[{name, amount}], time}, trigger?:{type, …} (технологии, изучаемые действием, а не колбами)}`.
+
+**Постройка (entity)** → `{kind:"entity", name, type, size:{w,h}, items_to_place:[имя…],
+crafting_categories?, crafting_speed?, mining_categories?, energy_usage?, mineable_results?}` — только
+поля, которые у прототипа есть.
+
+Размер ответа: списки ≤ `limit`, в целом ≤ 24 КБ на сервере (больше — `response too large` с подсказкой
+уменьшить `limit`).
