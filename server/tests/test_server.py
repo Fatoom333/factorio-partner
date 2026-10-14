@@ -15,7 +15,7 @@ PKG = Path(__file__).resolve().parent.parent / "factorio_partner"
 AGENT_TOOLS = {"partner_brief", "partner_state", "partner_map", "partner_resources", "partner_stock",
                "partner_ghosts", "partner_rates", "partner_act", "partner_cancel", "partner_wait",
                "partner_reflex", "partner_say", "partner_plan", "partner_recipes", "partner_find",
-               "partner_access", "partner_supply", "partner_lookup"}
+               "partner_access", "partner_supply", "partner_lookup", "partner_notes"}
 ADMIN_TOOLS = {"admin_hello", "admin_spawn", "admin_remove", "admin_raw_events", "admin_limit", "admin_attach"}
 
 

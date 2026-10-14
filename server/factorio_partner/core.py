@@ -22,6 +22,7 @@ from typing import Any, Awaitable, Callable
 
 from . import validate as V
 from .bridge import HELPER_RE, Bridge
+from . import savenotes
 from .brief import build_brief
 from .config import Config
 from .errors import (ACCESS_DENIED, GAME_PAUSED, REPEATED_FAILURE, RESPONSE_TOO_LARGE,
@@ -258,8 +259,25 @@ class Core:
     # ================================================================ tools
     async def op_brief(self, helper, key) -> dict:
         async def run(h):
-            return dict(build_brief(self.cfg, await self._forge_notes()), helper=h)
+            notes = await self._forge_notes()
+            out = dict(build_brief(self.cfg, notes), helper=h)
+            # revision 3.12: the owner's standing rules and the helper's memo for this save
+            profile = notes.get("profile") if isinstance(notes, dict) else None
+            save = savenotes.save_name(self.cfg, profile)
+            self._notes_save = save
+            out["save"] = save
+            out["owner_rules"] = savenotes.listing(save, "rules")
+            out["memo"] = savenotes.listing(save, "memo")
+            return out
         return await self._tool("partner_brief", helper, key, {}, run)
+
+    async def op_notes(self, helper, key, kind, action="list", text=None, n=None) -> dict:
+        """Revision 3.12: ``partner_notes`` — the owner's standing rules / the helper's memo per save."""
+        async def run(h):
+            save = getattr(self, "_notes_save", None) or savenotes.save_name(self.cfg)
+            return savenotes.op(save, kind, action, text, n)
+        return await self._tool("partner_notes", helper, key,
+                                {"kind": kind, "action": action, "n": n}, run)
 
     async def op_state(self, helper, key) -> dict:
         """op ``state`` (STATE.md). The answer carries ``body`` (the kind of the helper's body) and
