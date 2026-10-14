@@ -48,6 +48,9 @@ M.REQUEST_TTL = 36000       -- записи запросов старше 10 м�
 M.ARRIVE = 0.3              -- минимальная дистанция «на месте» и порог точки маршрута
 -- Коробка для поиска пути чуть шире тела (±0.2): ходьба по 8 направлениям срезает углы.
 M.BOX = { left_top = { x = -0.35, y = -0.35 }, right_bottom = { x = 0.35, y = 0.35 } }
+-- Тело стоит вплотную к постройке (так бывает у тела-игрока, которого подвёл человек): широкая
+-- коробка в точке старта уже «в стене», и движок не находит пути никуда. Тогда один повтор с
+-- настоящей коробкой тела (collision_box прототипа).
 
 local floor, abs, max, sqrt = math.floor, math.abs, math.max, math.sqrt
 local TAN_22_5 = 0.41421356237
@@ -124,7 +127,7 @@ local function request(task, ctx, st, goal, req_goal, keep_walking)
   forget_request(st)
   local proto = e.prototype
   local id = e.surface.request_path{
-    bounding_box = M.BOX,
+    bounding_box = st.tight and proto.collision_box or M.BOX,
     collision_mask = proto.collision_mask,
     start = util.xy(e.position),
     goal = { x = req_goal.x, y = req_goal.y },
@@ -232,8 +235,15 @@ local function poll_request(task, ctx, st, pos)
     return nil
   end
   if r.failed or type(r.waypoints) ~= "table" or r.waypoints[1] == nil then
+    if not st.tight then
+      st.tight = true
+      request(task, ctx, st, st.goal, st.req_goal or st.goal, false)
+      st.last_move_tick = tick
+      return nil
+    end
     return give_up(task, ctx, "path_failed", "no path to the goal", pos)
   end
+  st.tight = nil -- следующий запрос этой задачи снова с широкой коробкой
   -- путь — только по открытым чанкам (PROTOCOL §6.7)
   local seen = {}
   for _, wp in ipairs(r.waypoints) do
