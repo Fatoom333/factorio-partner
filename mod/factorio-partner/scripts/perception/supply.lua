@@ -158,7 +158,9 @@ end
 
 -- ---------------------------------------------------------------- база: один проход
 
--- → base = {by_recipe, producers, by_name, cats, stored, drills, hidden, view}
+-- → base = {by_recipe, producers, by_name, cats, chests, tanks, stored, drills, hidden, view}
+-- Содержимое сундуков и цистерн здесь не читается: только список видимых; читает его fill_stored —
+-- после дерева и только по именам из дерева (на большой базе это в разы меньше таблиц).
 local function scan(surface, force, helper_id)
   local view = C.chunk_view(force, surface, helper_id)
   local chest_types, tank_types = set_of(F.STORAGE_ITEM), set_of(F.STORAGE_FLUID)
@@ -168,8 +170,8 @@ local function scan(surface, force, helper_id)
   for t in pairs(tank_types) do types[#types + 1] = t end
   table.sort(types)
 
-  local base = { by_recipe = {}, producers = {}, by_name = {}, cats = {}, stored = {}, drills = {},
-                 hidden = 0, view = view }
+  local base = { by_recipe = {}, producers = {}, by_name = {}, cats = {}, chests = {}, tanks = {},
+                 stored = {}, drills = {}, hidden = 0, view = view }
   local budget = { n = 0, hint = "the base is too large for supply" }
   local function put(map, k, v)
     local list = map[k]
@@ -216,22 +218,43 @@ local function scan(surface, force, helper_id)
       elseif not view.visible(p) then
         base.hidden = base.hidden + 1
       elseif tank_types[t] then
-        local contents = call0(e, "get_fluid_contents")
-        if type(contents) == "table" then
-          for fname, n in pairs(contents) do
-            if type(fname) == "string" and type(n) == "number" and n > 0 then
-              put(base.stored, key_of("fluid", fname), { x = x, y = y, name = ename, amount = n })
-            end
-          end
-        end
+        base.tanks[#base.tanks + 1] = { x = x, y = y, name = ename, entity = e }
       else
-        for iname, n in pairs(C.inv_counts(e.get_inventory(defines.inventory.chest))) do
-          put(base.stored, key_of("item", iname), { x = x, y = y, name = ename, amount = n })
-        end
+        base.chests[#base.chests + 1] = { x = x, y = y, name = ename, entity = e }
       end
     end
   end
   return base
+end
+
+-- Запасы базы по именам, нужным дереву: items/fluids = {[имя] = true}. Заполняет base.stored.
+local function fill_stored(base, items, fluids)
+  local function put(k, c, n)
+    local list = base.stored[k]
+    if list == nil then list = {}; base.stored[k] = list end
+    list[#list + 1] = { x = c.x, y = c.y, name = c.name, amount = n }
+  end
+  if next(items) ~= nil then
+    for _, c in ipairs(base.chests) do
+      if c.entity.valid then
+        for iname, n in pairs(C.inv_counts(c.entity.get_inventory(defines.inventory.chest), items)) do
+          put(key_of("item", iname), c, n)
+        end
+      end
+    end
+  end
+  if next(fluids) ~= nil then
+    for _, c in ipairs(base.tanks) do
+      local contents = c.entity.valid and call0(c.entity, "get_fluid_contents") or nil
+      if type(contents) == "table" then
+        for fname, n in pairs(contents) do
+          if type(fname) == "string" and fluids[fname] and type(n) == "number" and n > 0 then
+            put(key_of("fluid", fname), c, n)
+          end
+        end
+      end
+    end
+  end
 end
 
 -- Ближайшая к центру группа из списка записей {x, y, name, recipe?, amount?}.
@@ -303,9 +326,10 @@ local function mined_index()
   return index
 end
 
--- Пятна нужных ресурсов вокруг центра: → {[имя ресурса] = ближайшее пятно}, limited (bool).
+-- Пятна нужных ресурсов вокруг центра: → {[имя ресурса] = ближайшее пятно}.
+-- Клеток слишком много даже в малом радиусе — пятен нет (узлы остаются без `resource`).
 local function patches_near(surface, base, center, names)
-  if #names == 0 then return {}, false end
+  if #names == 0 then return {} end
   local found
   for _, radius in ipairs(M.RESOURCE_RADII) do
     local filter = { position = center, radius = radius, name = names }
@@ -314,7 +338,7 @@ local function patches_near(surface, base, center, names)
       break
     end
   end
-  if found == nil then return {}, true end
+  if found == nil then return {} end
 
   local cells = {}
   for _, e in ipairs(found) do
@@ -345,7 +369,7 @@ local function patches_near(surface, base, center, names)
                      amount = best.amount, drills = drills, _d = best.dist }
     end
   end
-  return out, false
+  return out
 end
 
 -- ---------------------------------------------------------------- операция
@@ -477,7 +501,7 @@ local function supply_op(args, ctx)
     elseif mt.level >= a.depth then
       node.note = "depth"
     elseif #nodes + #info.ingredients > M.MAX_NODES then
-      node.note = "truncated"
+      node.note = "depth" -- контракт: note — закрытый список; что это обрезка, говорит truncated:true
       truncated = true
     else
       local crafts = ceil(node.short / info.yield)
@@ -491,9 +515,16 @@ local function supply_op(args, ctx)
       end
       node.recipe = recipe
     end
-    node.stored = stored_of(mt.key)
     node.producers = producers_of(mt.key, node.kind, node.name)
   end
+
+  -- Запасы: сундуки и цистерны читаются один раз и только по именам из дерева.
+  local want_items, want_fluids = {}, {}
+  for _, node in ipairs(nodes) do
+    if node.kind == "fluid" then want_fluids[node.name] = true else want_items[node.name] = true end
+  end
+  fill_stored(base, want_items, want_fluids)
+  for _, node in ipairs(nodes) do node.stored = stored_of(meta[node].key) end
 
   -- Пятна сырья: один запрос по именам ресурсов, нужных дереву.
   local mined = mined_index()
@@ -507,7 +538,7 @@ local function supply_op(args, ctx)
     end
   end
   table.sort(names)
-  local patches, limited = patches_near(surface, base, center, names)
+  local patches = patches_near(surface, base, center, names)
 
   local warnings, warned = {}, {}
   local function warn(text)
@@ -516,7 +547,6 @@ local function supply_op(args, ctx)
       warnings[#warnings + 1] = text
     end
   end
-  if limited then warn("limit:resources") end
 
   local any_source = false
   local short, short_at, raw, raw_seen = {}, {}, {}, {}
@@ -534,9 +564,12 @@ local function supply_op(args, ctx)
     if node.stored ~= nil or node.producers ~= nil or node.resource ~= nil or makers ~= nil then
       any_source = true
     end
-    if node.short > 0 then
+    -- Узел-«круг» (в т.ч. катализатор: продукт среди своих ингредиентов) — тот же предмет, что выше по
+    -- ветке, и там уже посчитан: в сводку нехватки второй раз не идёт.
+    if node.short > 0 and node.note ~= "cycle" then
       if mt.why == "not_researched" then warn("not_researched:" .. node.name) end
-      if node.stored == nil and node.producers == nil and node.resource == nil and mt.why ~= nil then
+      -- no_source — «нет ни рецепта»: неоткрытый рецепт — всё же рецепт, о нём своё предупреждение
+      if node.stored == nil and node.producers == nil and node.resource == nil and mt.why == "no_recipe" then
         warn("no_source:" .. node.name)
       end
       local at = short_at[mt.key]

@@ -7,10 +7,9 @@
 | `rcon.py` | RCON на `factorio-rcon-py` (UTF-8 с заменой, предел длины пакета); шлёт **только** `/partner <JSON>` |
 | `bridge.py` | конверт v1, два соединения `cmd`/`poll`, повтор тем же `id` (3 попытки), `game_paused`, `game_reloaded` |
 | `validate.py` | белые списки `do` и полей (ACTIONS.md, включая `plan_belt` и `search`/`rotate`/`partial` у `build_blueprint`), лимиты |
-| `core.py` | `op_*`: ключ помощника, логи, курсоры событий и ожидание, `repeated_failure`, загрузка чертежа через `blob_put` |
+| `core.py` | `op_*`: ключ помощника, логи, курсоры событий и ожидание, `repeated_failure`, загрузка чертежа через `blob_put`; `op_supply` (ревизия 3.7) — ответ мода отдаётся как есть, не влез в лимит ответа — `response too large` с подсказкой уменьшить `depth` |
 | `brief.py` | `partner_brief`: короткие правила честности (полные — в промпте агента `.claude/agents/partner.md`) + `notes.md` профиля forge + `FP_HOME/style.md` |
-| `server.py` | инструменты MCP (FastMCP, stdio), `--admin` — служебные |
-| `core.py`, `server.py` | `partner_supply` (`op_supply`, ревизия 3.7): «что из чего и где это взять» — `item`, `count` 1..10000, `depth` 1..5; ответ мода отдаётся как есть, не влез в лимит ответа — `response too large` с подсказкой уменьшить `depth` |
+| `server.py` | инструменты MCP (FastMCP, stdio), `--admin` — служебные; `partner_supply` — «что из чего и где это взять» (`item`, `count` 1..10000, `depth` 1..5) |
 | `cli.py` | JSON из stdin → JSON в stdout теми же `op_*`; флаги запуска `--helpers`, `--body` |
 | `forge.py` | поток I (`partner_plan`, заметки профиля); старый forge без нужных команд → `forge_too_old`, его сырой вывод агенту не уходит |
 

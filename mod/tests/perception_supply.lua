@@ -186,6 +186,7 @@ do
   G.eq(d.tree.recipe, nil)
   G.eq(d.nodes, 1)
   G.ok(U.has(d.warnings, "not_researched:secret"))
+  G.ok(not U.has(d.warnings, "no_source:secret"), "no_source — только без рецепта; здесь он есть")
   G.eq(U.flat(d.summary.raw), {}, "рецепт есть — это не сырьё")
   -- скрытый рецепт не выбирается вовсе
   U.recipe(w, "dust", { rock = 1 }, { hidden = true })
@@ -229,7 +230,7 @@ do
   G.eq(#U.nodes(d), d.nodes)
   local board, gear = d.tree.recipe.ingredients[1], d.tree.recipe.ingredients[2]
   G.eq(board.recipe, nil, "два ингредиента не влезли")
-  G.eq(board.note, "truncated")
+  G.eq(board.note, "depth", "note — закрытый список контракта; обрезку показывает truncated")
   G.ok(gear.recipe ~= nil, "один — влез")
   G.eq(U.flat(d.summary.short).plate, 10)
   S.MAX_NODES = 60
@@ -318,6 +319,7 @@ do
   d = U.supply({ item = "mystery", count = 6 }, ctx)
   G.eq({ d.tree.recipe.name, d.tree.recipe.yield, d.tree.recipe.crafts }, { "grow", 3, 2 }, "чистый выход 5 − 2")
   G.eq(d.tree.recipe.ingredients[1].note, "cycle")
+  G.eq(U.flat(d.summary.short).mystery, 6, "катализатор в нехватку второй раз не идёт")
   d = U.supply({ item = "bar" }, ctx)
   G.eq(d.tree.recipe.name, "bar", "рецепт без прибавки не выбран")
 end
