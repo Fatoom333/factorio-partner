@@ -22,3 +22,5 @@ logs/
 
 *.local.ps1
 .mcp.json
+# заметки хозяина и помощника по сейвам (partner_notes) — личное
+save-notes/

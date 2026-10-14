@@ -51,6 +51,7 @@
 | `partner_rates` | `scope?, period?, area?, surface?, items? (≤100), top? (1..100)` | op `rates` (`surface` — статистика другой планеты) |
 | `partner_recipes` | `filter?` | op `recipes` — что помощник может скрафтить из своего инвентаря |
 | `partner_lookup` | `name, kind?, limit?` | op `lookup` — справка как в Факториопедии: рецепты, где используется, машины, технологии (STATE.md) |
+| `partner_notes` | `kind:"rules"│"memo", action?="list"│"add"│"remove", text?, n?` | ревизия 3.12: постоянные правила хозяина (`rules`) и память помощника о базе (`memo`) этого сейва — файлы `save-notes/<сейв>/{rules,memo}.md` в папке проекта (`FP_NOTES_DIR`; сейв — `FP_SAVE_NAME`, иначе профиль forge, иначе `default`); запись ≤ 300 символов, правил ≤ 30, памяти ≤ 40; → `{save, kind, items:[{n, text}]}`; обе приходят и в `partner_brief` |
 | `partner_supply` | `item, count?, depth?` | op `supply` — что из чего делается и где это взять на базе (STATE.md) |
 | `partner_act` | `do, args, replace=false` | op `act`; `do` из белого списка ACTIONS.md; для `build_blueprint` вместо `blob` можно `plan` (id из `partner_plan`) — сервер сам грузит чертёж через `blob_put` |
 | `partner_cancel` | `job?, all?` | op `cancel` |
@@ -119,7 +120,8 @@ RCON и ответ не-JSON, например `Unknown command` без мода
 `say` ≤ 200 символов.
 
 ## Уточнения ревизии 3.4 (по волне 4)
-- `partner_brief` → `{rules, rules_full, notes, notes_missing?, reason? ("forge_too_old"), profile,
+- `partner_brief` → (ревизия 3.12: ещё `save`, `owner_rules:[{n, text}]`, `memo:[{n, text}]` — см. `partner_notes`)
+  `{rules, rules_full, notes, notes_missing?, reason? ("forge_too_old"), profile,
   style, helper}`; `rules` — короткие правила, `rules_full` — ссылка на полные.
 - `forge_too_old` определяется по коду выхода 2 и отказу разбора командной строки forge; прочие сбои
   forge отдают последнюю строку его stderr без путей.
