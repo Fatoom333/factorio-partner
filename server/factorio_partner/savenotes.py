@@ -25,6 +25,7 @@ from .errors import PartnerError
 
 KINDS = ("rules", "memo")
 ACTIONS = ("list", "add", "remove")
+MAX_RULE = 160          # a rule is read back to the owner in one chat line (say ≤ 200)
 MAX_ITEMS = {"rules": 30, "memo": 40}
 MAX_TEXT = 300
 MAX_QUOTE = 200
@@ -82,8 +83,33 @@ def _clean(text) -> str:
     return t
 
 
+SAID_RE = re.compile(r"^(.*?) — хозяин: «([^«»]*)»$")
+
+
+def _item(i: int, line: str, kind: str) -> dict:
+    """A stored line → {n, text[, owner_said]}: the owner's words are a separate field, so a rule
+    text cannot pass itself off as them (rule texts never contain « » or «хозяин:», see clean_rule)."""
+    if kind == "rules":
+        m = SAID_RE.match(line)
+        if m:
+            return {"n": i, "text": m.group(1), "owner_said": m.group(2)}
+    return {"n": i, "text": line}
+
+
 def listing(save: str, kind: str) -> list[dict]:
-    return [{"n": i, "text": t} for i, t in enumerate(load(save, kind), 1)]
+    return [_item(i, t, kind) for i, t in enumerate(load(save, kind), 1)]
+
+
+def _unquote(t: str) -> str:
+    t = t.replace("«", '"').replace("»", '"')
+    return re.sub(r"(?i)хозяин\s*:", "хозяин -", t)
+
+
+def clean_rule(text) -> str:
+    t = _unquote(_clean(text))
+    if len(t) > MAX_RULE:
+        raise PartnerError("limit", f"text: a rule is at most {MAX_RULE} characters")
+    return t
 
 
 def op(save: str, kind, action, text=None, n=None, quote: str | None = None) -> dict:
@@ -93,12 +119,12 @@ def op(save: str, kind, action, text=None, n=None, quote: str | None = None) -> 
         raise PartnerError("bad_args", "action: one of " + ", ".join(ACTIONS))
     items = load(save, kind)
     if action == "add":
-        t = _clean(text)
+        t = clean_rule(text) if kind == "rules" else _clean(text)
         if len(items) >= MAX_ITEMS[kind]:
             raise PartnerError("limit", f"{kind}: at most {MAX_ITEMS[kind]} entries; remove one first")
         said = ""
         if quote is not None:
-            q = " ".join(quote.split()).replace("»", "\"")[:MAX_QUOTE]
+            q = " ".join(quote.split()).replace("«", '"').replace("»", '"')[:MAX_QUOTE]
             said = f" — хозяин: «{q}»"
         items.append(f"{t} ({date.today().isoformat()}){said}")
         _write(save, kind, items)
@@ -107,4 +133,4 @@ def op(save: str, kind, action, text=None, n=None, quote: str | None = None) -> 
             raise PartnerError("bad_args", f"n: entry number 1..{len(items)}")
         items.pop(n - 1)
         _write(save, kind, items)
-    return {"save": save, "kind": kind, "items": [{"n": i, "text": t} for i, t in enumerate(items, 1)]}
+    return {"save": save, "kind": kind, "items": [_item(i, t, kind) for i, t in enumerate(items, 1)]}
