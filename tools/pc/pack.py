@@ -1,4 +1,4 @@
-"""Сборка для живых тестов (поток E): zip мода и пакет стенда для ПК.
+"""Сборка для живых тестов: zip мода и пакет стенда для ПК.
 
     python tools/pc/pack.py mod --src mod/factorio-partner --out DIR        -> печатает путь zip
     python tools/pc/pack.py scenario-mods --name e_chart                    -> печатает JSON-список модов

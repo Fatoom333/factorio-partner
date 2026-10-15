@@ -1,4 +1,4 @@
--- Заглушки потока B (движение). Дополняют mod/tests/stubs.lua потока A (TESTING.md §1).
+-- Заглушки движения. Дополняют mod/tests/stubs.lua (TESTING.md §1).
 --
 --   local S = require("stubs"); local B = require("stubs_b")
 --   local p, h = B.setup()          -- мод, хозяин Tartaluga в (0,0), помощник h1 в (2,0)

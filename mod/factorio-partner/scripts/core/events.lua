@@ -1,4 +1,4 @@
--- Буфер событий (поток A). Контракт: docs/EVENTS.md.
+-- Буфер событий. Контракт: docs/EVENTS.md.
 -- storage.events = {next_seq, list}: кольцо последних 500 событий, слот = (seq-1) % 500 + 1.
 -- Событие: {seq, tick, helper|nil, kind, data, loud}. seq растёт монотонно и переживает загрузку.
 -- Модули шлют события только через events.emit(helper, kind, data[, opts]); в действиях — ctx.emit.

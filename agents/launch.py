@@ -242,7 +242,7 @@ async def prepare_mod(core, ids: list[str], body: str, players: list[str],
         await _admin(core.admin_limit(limit))
     except ModError as e:
         if e.code == "unknown_op" and limit == 1:
-            say("мод не знает helper_limit (старше ревизии 3.2) — для одного помощника это не мешает")
+            say("мод не знает helper_limit (старая версия мода) — для одного помощника это не мешает")
         elif e.code == "limit":
             raise LaunchError("в игре сейчас больше занятых мест помощников, чем ты просишь: "
                               "сначала убери лишних или запусти с большим --helpers") from None

@@ -1,4 +1,4 @@
--- Действия insert / extract (поток C): подход на reach, без потерь и дублей, предметы с данными
+-- Действия insert / extract: подход на reach, без потерь и дублей, предметы с данными
 -- только transfer_stack/swap_stack, чужой резерв, equip, inventory_full.
 local S = require("stubs")
 local C = require("stubs_c")

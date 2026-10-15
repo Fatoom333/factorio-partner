@@ -1,4 +1,4 @@
--- Действие `collect` (поток C). Контракт: docs/ACTIONS.md, PROTOCOL.md §6, §7 (резервы),
+-- Действие `collect`. Контракт: docs/ACTIONS.md, PROTOCOL.md §6, §7 (резервы),
 -- STATE.md «stock» (какие склады видны).
 --
 -- args: items, center?:pos │ near?:"player", radius?=64 (≤ 128, больше → limit).

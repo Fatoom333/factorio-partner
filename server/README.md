@@ -1,4 +1,4 @@
-# factorio_partner — MCP-сервер (поток D)
+# factorio_partner — MCP-сервер
 
 Контракт — [docs/MCP.md](../docs/MCP.md), протокол — [docs/PROTOCOL.md](../docs/PROTOCOL.md).
 
@@ -7,11 +7,11 @@
 | `rcon.py` | RCON на `factorio-rcon-py` (UTF-8 с заменой, предел длины пакета); шлёт **только** `/partner <JSON>` |
 | `bridge.py` | конверт v1, два соединения `cmd`/`poll`, повтор тем же `id` (3 попытки), `game_paused`, `game_reloaded` |
 | `validate.py` | белые списки `do` и полей (ACTIONS.md, включая `plan_belt` и `search`/`rotate`/`partial` у `build_blueprint`), лимиты |
-| `core.py` | `op_*`: ключ помощника, логи, курсоры событий и ожидание, `repeated_failure`, загрузка чертежа через `blob_put`; `op_supply` (ревизия 3.7) — ответ мода отдаётся как есть, не влез в лимит ответа — `response too large` с подсказкой уменьшить `depth`; `op_lookup` (ревизия 3.8) — так же, подсказка — уменьшить `limit`, подсказки имён из текста `not_found` — ещё и в `detail.suggest` |
+| `core.py` | `op_*`: ключ помощника, логи, курсоры событий и ожидание, `repeated_failure`, загрузка чертежа через `blob_put`; `op_supply` — ответ мода отдаётся как есть, не влез в лимит ответа — `response too large` с подсказкой уменьшить `depth`; `op_lookup` — так же, подсказка — уменьшить `limit`, подсказки имён из текста `not_found` — ещё и в `detail.suggest` |
 | `brief.py` | `partner_brief`: короткие правила честности (полные — в промпте агента `.claude/agents/partner.md`) + `notes.md` профиля forge + `FP_HOME/style.md` |
 | `server.py` | инструменты MCP (FastMCP, stdio), `--admin` — служебные; `partner_supply` — «что из чего и где это взять» (`item`, `count` 1..10000, `depth` 1..5); `partner_lookup` — справка как в Факториопедии (`name`, `kind` из пяти видов, `limit` 1..50) |
 | `cli.py` | JSON из stdin → JSON в stdout теми же `op_*`; флаги запуска `--helpers`, `--body` |
-| `forge.py` | поток I (`partner_plan`, заметки профиля); старый forge без нужных команд → `forge_too_old`, его сырой вывод агенту не уходит |
+| `forge.py` | `partner_plan` и заметки профиля; старый forge без нужных команд → `forge_too_old`, его сырой вывод агенту не уходит |
 
 ## Запуск
 ```powershell

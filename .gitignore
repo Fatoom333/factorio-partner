@@ -16,9 +16,10 @@ server/logs/
 logs/
 .env
 
-# worktree агентов workflow
-
 *.local.ps1
 .mcp.json
 # заметки хозяина и помощника по сейвам (partner_notes) — личное
 save-notes/
+
+# внутренние заметки разработки (копии старых документов, отчёты) — не в git
+local/

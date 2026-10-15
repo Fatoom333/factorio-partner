@@ -1,4 +1,4 @@
--- scripts/lib/inventory.lua (поток C): перенос без потерь/дублей, предметы с данными, качество.
+-- scripts/lib/inventory.lua: перенос без потерь/дублей, предметы с данными, качество.
 local S = require("stubs")
 local C = require("stubs_c")
 

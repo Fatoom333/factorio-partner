@@ -1,4 +1,4 @@
--- Действие follow (поток B): ACTIONS.md список v1, «пульс» progress_tick.
+-- Действие follow: ACTIONS.md список v1, «пульс» progress_tick.
 local S = require("stubs")
 local B = require("stubs_b")
 

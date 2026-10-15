@@ -1,4 +1,4 @@
--- Поиск цели действия (поток A, ревизия 3.1). Контракт: docs/ACTIONS.md «Общие типы» → target.
+-- Поиск цели действия. Контракт: docs/ACTIONS.md «Общие типы» → target.
 --   target = {unit_number, pos?} │ {name, pos} — сущность на поверхности surface, своей силы
 --   или neutral (PROTOCOL §6.6).
 -- В 2.0 `game.get_entity_by_unit_number` находит только сущности с флагом get-by-unit-number

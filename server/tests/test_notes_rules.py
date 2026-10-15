@@ -1,4 +1,4 @@
-"""Revision 3.12: partner_notes — the owner's standing rules and the helper's memo per save."""
+"""partner_notes — the owner's standing rules and the helper's memo per save."""
 import pytest
 
 from factorio_partner import savenotes as N

@@ -1,4 +1,4 @@
-"""Связка сервер → настоящий forge.py (потоки D и I): core зовёт forge так, как в бою.
+"""Связка сервер → настоящий forge.py: core зовёт forge так, как в бою.
 
 forge-процесс не нужен: подменяется только `_run_forge`. Тест ловит разъезд сигнатур
 `core._forge_plan` ↔ `forge.plan` и `core._load_plan` ↔ `forge.load_plan`.

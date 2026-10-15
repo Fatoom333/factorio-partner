@@ -1,4 +1,4 @@
--- Действие build_blueprint (поток F): ACTIONS.md «build_blueprint» — blob → create_inventory →
+-- Действие build_blueprint: ACTIONS.md «build_blueprint» — blob → create_inventory →
 -- import_stack → проверки manual_ghost → build_blueprint{build_mode по args.force} → призраки построек
 -- и плиток, пометки к сносу → снос помеченного → плитки → постройки.
 local S = require("stubs")

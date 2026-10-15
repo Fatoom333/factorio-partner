@@ -1,6 +1,6 @@
--- Ядро мода (поток A): регистрация модулей и действий, команда /partner, склейка событий
+-- Ядро мода: регистрация модулей и действий, команда /partner, склейка событий
 -- всех модулей, жизненный цикл (on_init / on_configuration_changed). Контракты:
--- docs/PROTOCOL.md, ACTIONS.md, EVENTS.md, PLAN.md «Модульный интерфейс».
+-- docs/PROTOCOL.md, ACTIONS.md, EVENTS.md, ARCHITECTURE.md «Модульный интерфейс».
 --
 -- control.lua: core.register_action(mod) для каждого действия, core.register_module(mod)
 -- для остальных модулей, затем core.init(). Модули сами script.on_event / on_nth_tick /
@@ -163,7 +163,7 @@ function M.init()
       add_handler(map, id, fn, filter, "event " .. tostring(id) .. " of module " .. tostring(mod.name or i))
     end
   end
-  -- смерть: ядро ПОСЛЕ модулей, чтобы рефлекс смерти (H) видел state="alive" (или "removed")
+  -- смерть: ядро ПОСЛЕ модулей, чтобы рефлекс смерти видел state="alive" (или "removed")
   add_handler(map, ev.on_entity_died, registry.on_entity_died, CHAR, "registry.on_entity_died")
   add_handler(map, ev.on_post_entity_died, registry.on_post_entity_died, CHAR, "registry.on_post_entity_died")
   add_handler(map, ev.on_object_destroyed, registry.on_object_destroyed, nil, "registry.on_object_destroyed")

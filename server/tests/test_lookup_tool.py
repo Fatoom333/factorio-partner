@@ -1,4 +1,4 @@
-"""Revision 3.8 on the server side: ``partner_lookup`` — arguments are checked before the mod, only the
+"""Server side: ``partner_lookup`` — arguments are checked before the mod, only the
 given ones are sent, the mod's answer reaches the agent untouched, name suggestions of ``not_found``
 also go to ``detail.suggest``, an answer over the response limit is refused with a hint, the tool is
 served by MCP and by the debug CLI."""

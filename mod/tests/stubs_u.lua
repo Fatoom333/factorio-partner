@@ -1,4 +1,4 @@
--- Заглушки потока U (операция `supply`). Дополняют stubs_g.lua (мир восприятия), общий stubs.lua
+-- Заглушки операции `supply`. Дополняют stubs_g.lua (мир восприятия), общий stubs.lua
 -- не трогают.
 --
 --   local U = require("stubs_u")

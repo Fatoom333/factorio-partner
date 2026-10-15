@@ -1,4 +1,4 @@
--- say, reflexes, склейка событий модулей, жизненный цикл, миграции, честность (PROTOCOL §4, §6; PLAN «Модульный интерфейс»).
+-- say, reflexes, склейка событий модулей, жизненный цикл, миграции, честность (PROTOCOL §4, §6; docs/ARCHITECTURE.md «Модульный интерфейс»).
 local S = require("stubs")
 
 local function spawn()
@@ -272,7 +272,7 @@ S.suite("misc", {
       S.eq(registry.info("h1"), { body = "character", module_errors = 0 })
       S.eq({ registry.occupied() }, { 2, 1 })
   end },
-  { "dispatch: access — операция чтения с необязательным помощником (регистрирует её поток восприятия)", function()
+  { "dispatch: access — операция чтения с необязательным помощником (регистрирует её модуль восприятия)", function()
       S.load_mod()
       local d = require("scripts.core.dispatch")
       S.eq(d.HELPER_REQ.access, "h?")

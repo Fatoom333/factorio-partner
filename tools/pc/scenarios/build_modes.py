@@ -1,4 +1,4 @@
-"""Живой сценарий потока F «Стройка»: три режима постановки чертежа против настоящего движка.
+"""Живой сценарий: три режима постановки чертежа против настоящего движка.
 
 Зачем: поведение режимов `force` у `build_blueprint` (normal — клик, forced — Shift, superforced —
 Ctrl+Shift) записано в ACTIONS.md со слов игрока. Здесь оно сверяется с движком: маленький чертёж
@@ -196,7 +196,7 @@ def run(client) -> dict:
     def got(place, mode, key, default=None):
         return ((facts.get(place) or {}).get(mode) or {}).get(key, default)
 
-    # утверждения ACTIONS.md ревизии 3.3 (None — место не нашлось, проверить нечем)
+    # утверждения docs/ACTIONS.md («build_blueprint») (None — место не нашлось, проверить нечем)
     lava = "lava" in facts
     result["contract"] = {
         "normal_marks_nothing": all(f.get("marked", 0) == 0 for p in facts.values() for m, f in p.items() if m == "normal"),

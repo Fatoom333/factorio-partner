@@ -1,4 +1,4 @@
--- Действие `wait` (поток A, ACTIONS.md): пауза в очереди на seconds секунд.
+-- Действие `wait` (docs/ACTIONS.md): пауза в очереди на seconds секунд.
 -- Никогда не заменяет очередь (act{do="wait", replace=true} -> bad_args, проверяет jobs.lua).
 local M = {}
 M.name = "wait"

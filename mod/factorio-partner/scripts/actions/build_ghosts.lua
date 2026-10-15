@@ -1,4 +1,4 @@
--- Действие `build_ghosts` (поток F): построить призраки своей силы в области.
+-- Действие `build_ghosts`: построить призраки своей силы в области.
 -- Контракт: docs/ACTIONS.md («build_ghosts»), PROTOCOL.md §6.5 (blocked = ghost_revive false),
 -- §7 (резерв области на время задачи).
 --

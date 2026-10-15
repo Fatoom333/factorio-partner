@@ -1,4 +1,4 @@
-"""Revision 3.2 on the server side: ``partner_find``, the bounds of ACTIONS.md «Границы чисел v1»,
+"""Server side: ``partner_find``, the bounds of docs/ACTIONS.md «Границы чисел v1»,
 ``helper_limit`` / ``helper_attach`` admin calls and the launch flags of the CLI
 (``--helpers N``, ``--body character|player``)."""
 import io

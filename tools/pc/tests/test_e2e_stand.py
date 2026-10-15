@@ -1,4 +1,4 @@
-"""Стенд волны 3 (поток K): журнал игры по `log_must_not_match`, пакет с настоящим сервером,
+"""Стенд: журнал игры по `log_must_not_match`, пакет с настоящим сервером,
 запуск сценария через server_client, настройки forge без личных путей в git."""
 from __future__ import annotations
 
@@ -338,7 +338,7 @@ def test_e2e_doc_covers_scenarios_and_has_no_personal_paths():
     with open(os.path.join(REPO, "docs", "E2E.md"), "r", encoding="utf-8") as f:
         doc = f.read()
     for name in ("e2e_mcp", "e2e_ghosts", "e2e_mining", "e2e_forge", "log_must_not_match", "pc.local.json",
-                 "Финал с игроком", "--body player", "game.print(1)", "Vulkan-Start-test"):
+                 "Финал с игроком", "--body player", "game.print(1)", "копия тестового сейва"):
         assert name in doc, name
     # личных путей и адресов в публичном документе нет
     assert not re.search(r"[A-Za-z]:[\\/](Us" + r"ers|Т" + r"орт)", doc)

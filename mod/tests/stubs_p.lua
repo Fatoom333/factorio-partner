@@ -1,5 +1,5 @@
--- Заглушки потока P (тело-игрок, PROTOCOL §7 «Два вида тела»). Дополняют stubs.lua (A) и
--- stubs_b.lua (B: ходьба по walking_state и «движок пути»).
+-- Заглушки тела-игрока (PROTOCOL §7 «Два вида тела»). Дополняют stubs.lua и
+-- stubs_b.lua (ходьба по walking_state и «движок пути»).
 --
 --   local S = require("stubs"); local P = require("stubs_p")
 --   local owner, friend = P.setup()      -- мод, хозяин Tartaluga в (0,0), второй игрок Second в

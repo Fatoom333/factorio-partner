@@ -1,4 +1,4 @@
--- Рефлексы потока H: смерть (died) и возрождение (respawned). PROTOCOL §6.9, §7; EVENTS.md.
+-- Рефлексы: смерть (died) и возрождение (respawned). PROTOCOL §6.9, §7; EVENTS.md.
 local S = require("stubs")
 local B = require("stubs_b")
 local H = require("stubs_h")
@@ -266,7 +266,7 @@ S.suite("reflex_death", {
       S.eq(#B.events("respawned"), 0)
       S.eq(#S.nauvis.created, created, "мод не создал тело")
       S.eq(#B.events("reflex_done"), 0)
-      -- поток P отдаёт новое тело игрока ядру — состояние смерти забывается
+      -- helper_attach отдаёт новое тело игрока ядру — состояние смерти забывается
       local body = S.nauvis.create_entity{ name = "character", position = { 5, 5 }, force = "player" }
       require("scripts.core.registry").set_body("h1", body)
       B.tick(10)

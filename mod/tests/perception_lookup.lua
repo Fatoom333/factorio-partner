@@ -1,4 +1,4 @@
--- Тесты операции `lookup` (поток L2, ревизия 3.8). Контракт: docs/STATE.md «lookup»,
+-- Тесты операции `lookup`. Контракт: docs/STATE.md «lookup»,
 -- PROTOCOL §6.12 (имён в коде нет: всё из прототипов и сил).
 local K = require("stubs_lookup")
 local G = K.G

@@ -1,4 +1,4 @@
--- Действие place (поток F): ACTIONS.md, PROTOCOL §6.5 (can_place_entity → create_entity{raise_built,
+-- Действие place: ACTIONS.md, PROTOCOL §6.5 (can_place_entity → create_entity{raise_built,
 -- quality normal} → remove_item, откат), подход на build_distance.
 local S = require("stubs")
 local C = require("stubs_c")

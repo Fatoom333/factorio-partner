@@ -1,4 +1,4 @@
--- Слой игры для прокладки лент (поток N). Контракт: docs/ACTIONS.md «plan_belt», PROTOCOL §6.5, §6.12.
+-- Слой игры для прокладки лент. Контракт: docs/ACTIONS.md «plan_belt», PROTOCOL §6.5, §6.12.
 --
 -- Поиск пути — решатель мода Wuastbude Belt & Pipe Router (scripts/vendor/router/solver.lua, MIT):
 -- A* по состояниям «клетка + направление» с ценой поворотов и подземными участками. Решатель к игре
@@ -169,7 +169,7 @@ local function charted(env, x, y)
 end
 M.charted = charted
 
---- Клетка лежит в чанке без текущего обзора (план там — «по карте», PROTOCOL «Уточнения 3.5»).
+--- Клетка лежит в чанке без текущего обзора (план там — «по карте», docs/ACTIONS.md, «plan_belt»).
 function M.unseen(env, x, y)
   local cx, cy = floor(x / 32), floor(y / 32)
   local k = key(cx, cy)

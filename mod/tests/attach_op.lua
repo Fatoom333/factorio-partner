@@ -1,4 +1,4 @@
--- Тело-игрок (поток P): операция helper_attach. PROTOCOL §7 «Два вида тела», §3 (коды ошибок).
+-- Тело-игрок: операция helper_attach. PROTOCOL §7 «Два вида тела», §3 (коды ошибок).
 local S = require("stubs")
 local P = require("stubs_p")
 

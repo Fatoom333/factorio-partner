@@ -1,4 +1,4 @@
--- Команда /partner (поток A): конверт v1, маршрутизация операций, идемпотентность, лимиты.
+-- Команда /partner: конверт v1, маршрутизация операций, идемпотентность, лимиты.
 -- Контракт: docs/PROTOCOL.md §1–§4.
 --
 -- Запрос:  {"v":1, "id":"r-1", "op":"act", "helper":"h1", "args":{...}}
@@ -24,7 +24,7 @@ M.MAX_RESPONSE = 200000
 M.HELPER_REQ = {
   hello = false, helper_list = false, events = false, blob_put = false, helper_limit = false,
   helper_spawn = "spawn", helper_remove = "remove",
-  helper_attach = "spawn", -- операция потока P (scripts/core/attach.lua): id обязателен, тело проверяет сама
+  helper_attach = "spawn", -- операция тела-игрока (scripts/core/attach.lua): id обязателен, тело проверяет сама
   act = "h", cancel = "h", jobs = "h", reflexes = "h", say = "h", vision = "h", state = "h", recipes = "h",
   map = "h?", resources = "h?", stock = "h?", ghosts = "h?", rates = "h?", find = "h?", access = "h?",
 }

@@ -1,4 +1,4 @@
--- Заглушки потока N («Прокладка лент»). Дополняют stubs.lua (A) и stubs_c.lua (C), TESTING.md §1.
+-- Заглушки «Прокладки лент». Дополняют stubs.lua и stubs_c.lua, TESTING.md §1.
 --
 --   local S = require("stubs"); local X = require("stubs_n")
 --   local W = X.setup()                                   -- мод, хозяин, помощник h1, прототипы лент

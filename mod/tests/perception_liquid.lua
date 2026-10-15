@@ -1,4 +1,4 @@
--- Ревизия 3.3 (поток V3): `map` — проходимость и жидкости по правилам из игры, `resources.clipped`,
+-- `map` — проходимость и жидкости по правилам из игры, `resources.clipped`,
 -- `ghosts` считает плитки, `state.body` / `state.module_errors`. Контракт: docs/STATE.md, PROTOCOL §6.12.
 local G = require("stubs_g")
 

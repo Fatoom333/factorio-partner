@@ -113,7 +113,7 @@ def pos_or_player(field: str, v: Any):
 
 def pos_or_patch(field: str, v: Any):
     """``plan_belt.from``: a tile, ``"patch"`` — the outputs of this helper's last plan_mining, or
-    ``"resume"`` — re-lay the unbuilt rest of this helper's last belt plan (revision 3.5)."""
+    ``"resume"`` — re-lay the unbuilt rest of this helper's last belt plan."""
     if isinstance(v, str):
         if v not in ("patch", "resume"):
             raise bad(field, 'must be {x, y}, "patch" or "resume"')
@@ -216,11 +216,11 @@ ACTIONS: dict[str, tuple[dict[str, Validator], tuple[str, ...], tuple[tuple[tupl
     "approach": ({"target": target, "to": pos_or_player, "distance": REACH}, (),
                  ((("target", "to"), True),)),
     "follow": ({"distance": number(1, 32), "duration_s": integer(1, 3600)}, (), ()),
-    # revision 3.9: `item` — gather this item from rocks, trees and hand-minable ore
+    # `item` — gather this item from rocks, trees and hand-minable ore
     "mine": ({"target": target, "resource": name, "item": name, "near": pos,
               "count": integer(1, ITEM_COUNT_MAX)},
              ("count",), ((("target", "resource", "item"), True),)),
-    # revision 3.10: wait=false — queue the craft and go on (craft_done comes when it is ready)
+    # wait=false — queue the craft and go on (craft_done comes when it is ready)
     "craft": ({"recipe": name, "count": integer(1, 10_000), "wait": boolean}, ("recipe", "count"), ()),
     "insert": ({"target": target, "items": items}, ("target", "items"), ()),
     "extract": ({"target": target, "items": items, "equip": boolean}, ("target",), ()),
@@ -228,13 +228,13 @@ ACTIONS: dict[str, tuple[dict[str, Validator], tuple[str, ...], tuple[tuple[tupl
                 ("items",), ((("center", "near"), False),)),
     "pickup": ({"target": target, "area": area}, (), ((("target", "area"), False),)),
     "place": ({"item": name, "pos": pos, "direction": DIRECTION, "recipe": name}, ("item", "pos"), ()),
-    # revision 3.5: turn an own building like the R key (the last built belt of a re-planned belt)
+    # turn an own building like the R key (the last built belt of a re-planned belt)
     "rotate": ({"target": target, "direction": blueprint_direction}, ("target", "direction"), ()),
-    # revision 3.13: change the recipe of a standing assembling machine, like the machine window
+    # change the recipe of a standing assembling machine, like the machine window
     "set_recipe": ({"target": target, "recipe": name}, ("target",), ()),
     "build_blueprint": ({"blob": ident, "plan": ident, "anchor": pos, "direction": blueprint_direction,
                         "mode": MODE, "force": BUILD_FORCE, "dry_run": boolean,
-                        # revision 3.3: the search for a shift where the blueprint fits (`fit`), its
+                        # the search for a shift where the blueprint fits (`fit`), its
                         # rotations, and the cut blueprint the owner agreed to. `mirror` is how a
                         # `fit.mirror` answer is applied (the mod's argument)
                         "search": integer(0, FIT_SEARCH_MAX), "rotate": boolean, "partial": boolean,
@@ -275,7 +275,7 @@ def check_act(do: Any, args: Any) -> dict:
         if k not in out:
             raise bad(f"args.{k}", "required")
     if do == "plan_belt" and out["from"] != "resume" and "to" not in out:
-        # from="resume" takes the target from the remembered plan (ACTIONS.md, revision 3.5)
+        # from="resume" takes the target from the remembered plan (docs/ACTIONS.md, «plan_belt»)
         raise bad("args.to", 'required (optional only with from="resume")')
     for group, exactly_one in groups:
         n = sum(1 for k in group if k in out)

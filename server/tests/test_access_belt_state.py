@@ -1,4 +1,4 @@
-"""Revision 3.3 on the server side: ``partner_access``, ``plan_belt`` and the new arguments of
+"""Server side: ``partner_access``, ``plan_belt`` and the new arguments of
 ``build_blueprint`` in the whitelist, ``body`` / ``module_errors`` in ``partner_state``, the short
 rules of ``partner_brief`` and the ``forge_too_old`` answer of an old forge."""
 import io
@@ -354,7 +354,7 @@ def test_too_old_detector():
 
 async def test_tool_descriptions_carry_the_contract_hints(core):
     tools = {t.name: t.description for t in await build_server(core).list_tools()}
-    assert "«<helper>: »" in tools["partner_say"]
+    assert "имя помощника" in tools["partner_say"]
     assert "plan_belt" in tools["partner_act"] and "partial" in tools["partner_act"]
     assert "body" in tools["partner_state"] and "module_errors" in tools["partner_state"]
     assert "forge_too_old" in tools["partner_plan"] and "forge_too_old" in tools["partner_brief"]

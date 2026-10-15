@@ -1,4 +1,4 @@
-﻿# Стенд живых тестов factorio-partner — часть, которая работает НА ПК (поток E, docs/TESTING.md §3).
+﻿# Стенд живых тестов factorio-partner — часть, которая работает НА ПК (docs/TESTING.md §3).
 # Запускает tools/pc/run-live.ps1 по SSH из распакованного пакета D:\Temp\fp-live-<N>\stand\.
 #
 #   stand.ps1 -Action deploy   копия сейва, жёсткие ссылки на моды, конфиги, пароль RCON, запуск сервера без окна

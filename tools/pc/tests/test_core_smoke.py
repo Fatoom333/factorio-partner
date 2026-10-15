@@ -23,14 +23,14 @@ class Model:
         self.seq = 3
         self.alive = False
         self.removed = False
-        self.body = "character"   # helper_list.body (ревизия 3.3); None — мод до 3.3, поля нет
+        self.body = "character"   # helper_list.body; None — мод до 3.3, поля нет
         self.vision = False
         self.unknown_after_vision = unknown_after_vision
         self.no_owner = no_owner
         self.no_job_done = no_job_done
         self.bad_state = bad_state
         self.spawn_error = spawn_error
-        self.old_mod = old_mod            # мод до ревизии 3.2: нет module_errors и операции find
+        self.old_mod = old_mod            # старый мод: нет module_errors и операции find
         self.crash_after = crash_after    # после этой операции модуль «упал под pcall»
         self.bad_find = bad_find
         self.module_errors = 0

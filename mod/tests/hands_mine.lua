@@ -1,4 +1,4 @@
--- Действие mine (поток C): ACTIONS.md, PROTOCOL §6.5 (selected + mining_state), подход, прирост.
+-- Действие mine: ACTIONS.md, PROTOCOL §6.5 (selected + mining_state), подход, прирост.
 local S = require("stubs")
 local C = require("stubs_c")
 
@@ -251,7 +251,7 @@ S.suite("hands_mine", {
       S.eq(C.wait(mine{ item = "tungsten-ore", resource = "iron-ore", count = 1 }).code, "bad_args")
       S.eq(W.h.mining_state.mining, false)
   end },
-  { "огромный камень: «вплотную» — от края рамки, а не от центра (живая игра 14.10)", function()
+  { "огромный камень: «вплотную» — от края рамки, а не от центра", function()
       local W = C.setup()
       prototypes.entity["huge-rock"] = { name = "huge-rock", type = "simple-entity",
         collision_box = { left_top = { x = -2.5, y = -2.5 }, right_bottom = { x = 2.5, y = 2.5 } },

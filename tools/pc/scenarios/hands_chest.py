@@ -1,4 +1,4 @@
-"""Живой сценарий потока C «Руки»: extract из сундука хозяина и insert обратно — без потерь и дублей.
+"""Живой сценарий: extract из сундука хозяина и insert обратно — без потерь и дублей.
 
 Ход (сервер без окна, хозяин офлайн, PROTOCOL §4 helper_spawn):
 1. `hello`, `helper_spawn` помощника HELPER (пустой инвентарь).
@@ -8,7 +8,7 @@
 4. `act extract {target:{unit_number}, items:{item:N}}` → job_done, extracted = N;
    `stock`: в сундуке ровно −N, `state`: у помощника ровно +N.
 5. `act insert {target, items:{item:N}}` → job_done, inserted = N; сундук и помощник — как в начале.
-Подходит к сундуку сам (поток B): запускать после слияния wave-2/B.
+Подходит к сундуку сам.
 """
 from __future__ import annotations
 

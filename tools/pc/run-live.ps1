@@ -1,4 +1,4 @@
-﻿# Живой тест factorio-partner на ПК (поток E, docs/TESTING.md §3). Запускать на ноутбуке из PowerShell
+﻿# Живой тест factorio-partner на ПК (docs/TESTING.md §3). Запускать на ноутбуке из PowerShell
 # (не из Git Bash: ssh из Bash не видит ssh-agent Windows (ключи из менеджера паролей)).
 #
 #   powershell -File tools/pc/run-live.ps1 -Slot 1 -Scenario e_rcon_maxlen

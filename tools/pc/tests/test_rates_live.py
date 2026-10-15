@@ -1,4 +1,4 @@
-"""Сценарий rates_live против фейкового RCON (поток L)."""
+"""Сценарий rates_live против фейкового RCON."""
 from __future__ import annotations
 
 import json

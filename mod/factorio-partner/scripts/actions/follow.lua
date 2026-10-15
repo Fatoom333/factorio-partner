@@ -1,4 +1,4 @@
--- Действие `follow` (поток B): идти за хозяином duration_s секунд, держась в distance клеток.
+-- Действие `follow`: идти за хозяином duration_s секунд, держась в distance клеток.
 -- Контракт: docs/ACTIONS.md (список v1; «пульс» task.progress_tick, пока законно стоит рядом).
 --   args: distance = 1..32 (по умолчанию 3), duration_s = 1..3600 (по умолчанию 600)
 --   done.detail: {} — когда время вышло. Хозяин ушёл из игры → no_player,

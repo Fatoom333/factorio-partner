@@ -1,4 +1,4 @@
--- Заглушки потока H (рефлексы). Дополняют stubs.lua (A) и stubs_b.lua (B: ходьба и «движок пути»).
+-- Заглушки рефлексов. Дополняют stubs.lua и stubs_b.lua (ходьба и «движок пути»).
 --
 --   local S = require("stubs"); local B = require("stubs_b"); local H = require("stubs_h")
 --   local p, h = H.setup()            -- мод, хозяин Tartaluga в (0,0), помощник h1 в (2,0)

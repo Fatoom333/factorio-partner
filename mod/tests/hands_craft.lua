@@ -1,4 +1,4 @@
--- Действие craft (поток C): только begin_crafting, опрос очереди, done по росту инвентаря.
+-- Действие craft: только begin_crafting, опрос очереди, done по росту инвентаря.
 local S = require("stubs")
 local C = require("stubs_c")
 

@@ -1,4 +1,4 @@
--- Очередь задач (поток A). Контракт: docs/ACTIONS.md, PROTOCOL.md §4 (act/cancel/jobs).
+-- Очередь задач. Контракт: docs/ACTIONS.md, PROTOCOL.md §4 (act/cancel/jobs).
 --
 -- storage.jobs = { next_job, by_helper = { [helper] = { active = task|nil, queue = {task, ...} } } }
 -- task = { job, helper, ["do"], args (провалидированы, с default), req, created_tick, started_tick,
@@ -31,7 +31,7 @@ M.PROGRESS_EVERY = 5 * 60      -- job_progress не чаще раза в 5 с
 
 M.actions = {}                 -- name -> модуль действия (не в storage)
 
--- Тело-игрок (PROTOCOL §7 «Два вида тела», поток P): scripts/core/attach.lua ставит сюда свои
+-- Тело-игрок (PROTOCOL §7 «Два вида тела»): scripts/core/attach.lua ставит сюда свои
 -- функции. before_tick(tick) — до действий (сверка с игроком, удержание ходьбы и добычи),
 -- after_tick(tick) — после них (запомнить состояния). Ошибки внутри они ловят сами.
 M.body_hooks = { before_tick = nil, after_tick = nil }

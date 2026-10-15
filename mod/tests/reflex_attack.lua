@@ -1,4 +1,4 @@
--- Рефлексы потока H: attacked (первое в эпизоде громкое), health_low. EVENTS.md.
+-- Рефлексы: attacked (первое в эпизоде громкое), health_low. EVENTS.md.
 local S = require("stubs")
 local B = require("stubs_b")
 local H = require("stubs_h")

@@ -1,4 +1,4 @@
--- plan_mining, ревизия 3.3 (поток V3): жидкость под рудой (`on_liquid`), выходы с участка
+-- plan_mining: жидкость под рудой (`on_liquid`), выходы с участка
 -- (`narrow_access`, `enclosed`, `access_side`), сторона ленты по лучшему выходу, лимит итоговой
 -- области, запись `storage.mining_last`. ACTIONS.md «plan_mining», STATE.md «access», PROTOCOL §6.12, §7.
 local S = require("stubs")

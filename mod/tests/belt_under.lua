@@ -1,4 +1,4 @@
--- Действие plan_belt (поток N): подземные участки — режимы auto/never/prefer, маска подземного
+-- Действие plan_belt: подземные участки — режимы auto/never/prefer, маска подземного
 -- конвейера, длина по прототипу, существующие подземные конвейеры. ACTIONS.md «plan_belt», PROTOCOL §6.12.
 local S = require("stubs")
 local X = require("stubs_n")

@@ -1,4 +1,4 @@
--- Действие plan_belt (поток N): несколько лент пачкой (`lanes`) и ленты от разметки (`from: "patch"`).
+-- Действие plan_belt: несколько лент пачкой (`lanes`) и ленты от разметки (`from: "patch"`).
 -- ACTIONS.md «plan_belt», PROTOCOL §7 (storage.mining_last).
 local S = require("stubs")
 local X = require("stubs_n")

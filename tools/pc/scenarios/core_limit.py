@@ -1,10 +1,10 @@
-"""Живой сценарий ядра (поток Y, ревизия 3.2): число помощников задаёт игрок — `helper_limit`.
+"""Живой сценарий ядра: число помощников задаёт игрок — `helper_limit`.
 
 PROTOCOL §4: занятых мест (живые + ждущие возрождения + `away`) ≤ max_helpers, по умолчанию 1;
 `helper_limit {max:1..16}` -> `{max, alive}`; ниже числа уже занятых мест опустить нельзя (`limit`),
 `alive` в ответе — только живые. Ждущих возрождения и `away` на стенде без окна не получить (нет
 урона и второго клиента) — эти слагаемые проверены юнит-тестами (core_helpers, attach_away).
-В `helper_list` у каждой записи есть `body` (ревизия 3.3).
+В `helper_list` у каждой записи есть `body`.
 
  1. hello                  — мод отвечает, в ответе есть module_errors
  2. по умолчанию один      — spawn a ок, spawn b -> limit (max_helpers = 1)
@@ -84,7 +84,7 @@ def run(client) -> dict:
     def alive_ids():
         alive = [h for h in as_list(c.call_ok("helper_list")["helpers"]) if h.get("state") == "alive"]
         for h in alive:
-            # ревизия 3.3: вид тела в каждой записи; сценарий заводит только тела без игрока
+            # вид тела в каждой записи; сценарий заводит только тела без игрока
             need(h.get("body") == "character", f"helper_list: у {h.get('id')} body={h.get('body')!r}")
         return sorted(h["id"] for h in alive)
 

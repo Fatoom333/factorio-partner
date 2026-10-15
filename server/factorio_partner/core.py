@@ -264,7 +264,7 @@ class Core:
         async def run(h):
             notes = await self._forge_notes()
             out = dict(build_brief(self.cfg, notes), helper=h)
-            # revision 3.12: the owner's standing rules and the helper's memo for this save
+            # the owner's standing rules and the helper's memo for this save
             profile = notes.get("profile") if isinstance(notes, dict) else None
             save = savenotes.save_name(self.cfg, profile)
             self._notes_save = save
@@ -277,7 +277,7 @@ class Core:
         return await self._tool("partner_brief", helper, key, {}, run)
 
     async def op_notes(self, helper, key, kind, action="list", text=None, n=None, said_seq=None) -> dict:
-        """Revision 3.12: ``partner_notes`` — the owner's standing rules / the helper's memo per save.
+        """``partner_notes`` — the owner's standing rules / the helper's memo per save.
 
         A rule is an order that outlives the shift, so the agent alone cannot write one:
         ``add`` needs ``said_seq`` (the owner's own ``player_said`` that asked for it); the server then
@@ -374,7 +374,7 @@ class Core:
         return await self._tool("partner_state", helper, key, {}, run)
 
     async def _state_extras(self, helper: str, data: dict) -> dict:
-        """``body`` and ``module_errors`` come with ``state`` itself (revision 3.3). A mod that
+        """``body`` and ``module_errors`` come with ``state`` itself. A mod that
         does not send them yet is asked the old way — ``hello`` and ``helper_list``. A failure of
         these extra reads never hides the state the mod has already given."""
         if _is_int(data.get("module_errors")) and data.get("body") in BODY_KINDS:
@@ -629,7 +629,7 @@ class Core:
 
         async def run(h):
             if set is None:
-                # revision 3.4: `reflexes{}` without `set` only reads the current set
+                # `reflexes{}` without `set` only reads the current set
                 return await self._mod("reflexes", {}, h)
             rset = V.check_reflexes(set)
             return await self._mod("reflexes", {"set": rset}, h, mutating=True)
@@ -928,7 +928,7 @@ class Core:
         resp = await self.bridge.request("events", args, channel="poll")
         data = resp.get("data") if isinstance(resp, dict) else None
         if resp.get("ok") and isinstance(data, dict) and isinstance(data.get("events"), list):
-            # the same `fit: null` as partner_wait adds (ACTIONS.md, revision 3.5)
+            # the same `fit: null` as partner_wait adds (docs/ACTIONS.md, «plan_belt»)
             events = [_fit_null(ev) if isinstance(ev, dict) else ev for ev in data["events"]]
             resp = dict(resp, data=dict(data, events=events))
         return _admin_result(resp)
@@ -938,7 +938,7 @@ class Core:
 
 
 def _fit_null(ev: dict) -> dict:
-    """ACTIONS.md (revision 3.4): a `build_blueprint` result whose shift search found nothing carries
+    """ACTIONS.md: a `build_blueprint` result whose shift search found nothing carries
     ``detail.fit = null``. The mod's JSON has no null (a Lua table cannot hold one): it sends
     ``fit_checked`` without ``fit`` — the field is added here, so the agent always sees it."""
     data = ev.get("data")

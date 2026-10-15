@@ -1,4 +1,4 @@
-"""Запуск живого сценария через НАСТОЯЩИЙ пакет сервера (поток K, docs/TESTING.md §4, docs/E2E.md).
+"""Запуск живого сценария через НАСТОЯЩИЙ пакет сервера (docs/TESTING.md §4, docs/E2E.md).
 
 Сценарий с `RUNNER = "server"` получает не голого LiveClient, а `ServerClient`: его `tool(...)` зовёт
 `op_*` из `server/factorio_partner/core.py` — тот же код, что стоит за инструментами MCP `partner_*`

@@ -1,4 +1,4 @@
-"""Сценарии reflex_* (поток H) против фейкового RCON с моделью мода (без ПК и без игры)."""
+"""Сценарии reflex_* против фейкового RCON с моделью мода (без ПК и без игры)."""
 from __future__ import annotations
 
 import json
@@ -39,7 +39,7 @@ class Model:
         self.read_needs_set = read_needs_set
         self.no_cooldown = no_cooldown
         self.enemies = enemies
-        self.no_body = no_body          # мод до ревизии 3.3: в helper_list нет body
+        self.no_body = no_body          # старый мод: в helper_list нет body
         self.crash = crash              # проверка рефлекса падает под pcall: module_errors растёт
         self.no_recent = no_recent      # мод не хранит ответы по id (повтор исполняется заново)
         self.module_errors = 0

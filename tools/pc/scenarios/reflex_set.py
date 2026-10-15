@@ -1,4 +1,4 @@
-"""Живой сценарий потока H: набор рефлексов задаётся, проверки идут 30 с, ядро живо.
+"""Живой сценарий: набор рефлексов задаётся, проверки идут 30 с, ядро живо.
 
  1. hello                 — отвечает factorio-partner (proto=1)
  2. helper_spawn          — помощник появился
@@ -111,7 +111,7 @@ def run(client) -> dict:
                                                 {"type": "watch", "every_s": 5}]}, HELPER)
         want = [dict(FLEE_DEFAULT, radius=16, health=0.5), dict(WATCH_DEFAULT, every_s=5)]
         need(same(as_list(d.get("set")), want), f"набор в ответе: {d.get('set')!r}")
-        # ревизия 3.4: без set — только чтение, набор тот же
+        # без set — только чтение, набор тот же
         got = client.call_ok("reflexes", {}, HELPER)
         need(same(as_list(got.get("set")), want), f"reflexes без set: {got.get('set')!r}")
 

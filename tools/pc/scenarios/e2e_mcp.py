@@ -1,4 +1,4 @@
-"""Живой сценарий: MCP-сервер с настоящим модом (поток K, TESTING.md §4, docs/E2E.md).
+"""Живой сценарий: MCP-сервер с настоящим модом (TESTING.md §4, docs/E2E.md).
 
 Идёт через настоящий пакет `server/factorio_partner` (bridge + core, без слоя stdio): клиент
 сценария — `server_client.ServerClient`, его `tool(...)` — это `op_*`, стоящие за инструментами
@@ -94,7 +94,7 @@ def step_state(client, api, ctx):
     need(isinstance(d.get("surface"), str) and d["surface"], "state.surface")
     need(is_int(d.get("tick")) and is_int(d.get("seq")), "state: нет tick / seq")
     need(isinstance(d.get("reach"), dict), "state.reach")
-    # ревизия 3.3: вид тела и счётчик ошибок модулей — прямо в state
+    # вид тела и счётчик ошибок модулей — прямо в state
     need(d.get("body") in ("character", "player"), f"state.body = {d.get('body')!r}")
     need(is_int(d.get("module_errors")), f"state.module_errors = {d.get('module_errors')!r}")
     ctx["pos"], ctx["tick"] = d["pos"], d["tick"]
@@ -235,7 +235,7 @@ def step_refusals(client, api, ctx):
     need(not r["ok"] and r["error"]["code"] == "limit", f"радиус access сверх границы: {r}")
     r = client.try_tool("access", radius=8, area=E.area_around(ctx["pos"], 4))
     need(not r["ok"] and r["error"]["code"] == "bad_args", f"access с area и radius вместе: {r}")
-    # новые действия и аргументы ревизии 3.3 сервер знает, но неверные значения в мод не пускает
+    # новые действия и аргументы (plan_belt, build_blueprint) сервер знает, но неверные значения в мод не пускает
     r = client.try_tool("act", do="plan_belt", args={"from": "patch", "to": ctx["pos"], "lanes": 9})
     need(not r["ok"] and r["error"]["code"] == "limit", f"plan_belt.lanes сверх границы: {r}")
     r = client.try_tool("act", do="build_blueprint", args={"blob": "nope", "anchor": ctx["pos"], "partial": "yes"})

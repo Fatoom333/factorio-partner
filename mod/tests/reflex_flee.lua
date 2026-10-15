@@ -1,4 +1,4 @@
--- Рефлексы потока H: flee (отступление обычной ходьбой) и watch (saw_enemy).
+-- Рефлексы: flee (отступление обычной ходьбой) и watch (saw_enemy).
 -- EVENTS.md reflex_fired/reflex_done/saw_enemy, PROTOCOL §6.1, §6.7.
 local S = require("stubs")
 local B = require("stubs_b")
@@ -450,7 +450,7 @@ S.suite("reflex_flee", {
       S.eq(#S.logs, 0, table.concat(S.logs, "\n"))
   end },
 
-  { "после неудачи ходьбы кандидаты считаются заново: от нового места и нынешнего врага (ревизия 3.2)", function()
+  { "после неудачи ходьбы кандидаты считаются заново: от нового места и нынешнего врага", function()
       local _, h = H.setup()
       H.set{ { type = "flee" } }
       local biter = H.enemy({ x = -8, y = 0 })
@@ -518,7 +518,7 @@ S.suite("reflex_flee", {
       vis.visible = orig
   end },
 
-  { "возврат к делу (3.11): отступление сняло walk — враг ушёл, здоровье есть — мод ставит его снова", function()
+  { "возврат к делу: отступление сняло walk — враг ушёл, здоровье есть — мод ставит его снова", function()
       local _, h = H.setup()
       H.set{ { type = "flee" } }
       local o = { x = h.position.x, y = h.position.y }

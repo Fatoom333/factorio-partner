@@ -1,4 +1,4 @@
-"""Сквозные сценарии e2e_ghosts и e2e_mining (потоки K, V4) против модели мода (e2e_world.World):
+"""Сквозные сценарии e2e_ghosts и e2e_mining против модели мода (e2e_world.World):
 настоящий LiveClient → фейковый RCON → модель. Плюс общие помощники scenarios/_e2e.py."""
 from __future__ import annotations
 
@@ -146,7 +146,7 @@ def test_ghosts_avoids_buildings_seen_on_the_map(live):
 
 
 def test_ghosts_drills_go_only_on_ore_they_can_mine(live):
-    """Живой замер 2026-10-13: на голой земле и на вольфраме призрак электрического бура не встаёт."""
+    """В игре на голой земле и на вольфраме призрак электрического бура не встаёт."""
     world = World(ore={"tungsten-ore": ore_rect(20, 0, 12, 12), "iron-ore": ore_rect(60, 40, 14, 14)})
     client, _ = live(world)
     res = load("e2e_ghosts").run(client)
@@ -255,7 +255,7 @@ def test_mining_happy_path(live):
     belts = [a for do, a in world.acts if do == "plan_belt"]
     assert belts[0].get("dry_run") is True and not belts[-1].get("dry_run")
     assert all(b["from"] == "patch" and b["belt"] == BELT for b in belts)
-    # ревизия 3.4: один сухой прогон с underground:"auto" и пачкой из двух лент; строится лента без подземных
+    # один сухой прогон с underground:"auto" и пачкой из двух лент; строится лента без подземных
     auto = [b for b in belts if b["underground"] != "never"]
     assert len(auto) == 1 and auto[0]["underground"] == "auto" and auto[0]["lanes"] == 2 and auto[0]["dry_run"]
     assert belts.index(auto[0]) == len(belts) - 2 and "lanes" not in belts[-1]

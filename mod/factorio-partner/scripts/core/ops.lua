@@ -1,4 +1,4 @@
--- Простые операции ядра (поток A): hello, say. PROTOCOL.md §4.
+-- Простые операции ядра: hello, say. PROTOCOL.md §4.
 local err = require("scripts.core.err")
 local util = require("scripts.core.util")
 local schema = require("scripts.core.schema")
@@ -47,7 +47,7 @@ end
 
 local SAY_SCHEMA = { text = { type = "string", required = true, max = 4000 } }
 
--- Метки карты в чате помощника (ревизия 3.13): из всего rich-text остаётся только `[gps=x,y,поверхность]`,
+-- Метки карты в чате помощника: из всего rich-text остаётся только `[gps=x,y,поверхность]`,
 -- собранная заново из чисел и имени существующей поверхности, — хозяин кликает и видит место. Место
 -- числами в скобках «(x,y)» мод сам делает такой меткой на поверхности помощника. Прочие теги
 -- вырезаются, как раньше (PROTOCOL §4).

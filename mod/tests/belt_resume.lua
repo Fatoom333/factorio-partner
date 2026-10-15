@@ -1,6 +1,6 @@
--- Действие plan_belt, перекладка остатка (поток R): память плана storage.belt_last, from = "resume",
+-- Действие plan_belt, перекладка остатка: память плана storage.belt_last, from = "resume",
 -- предупреждение unseen, уборка своих призраков при отказе по времени.
--- ACTIONS.md и PROTOCOL.md «Уточнения ревизии 3.5».
+-- docs/ACTIONS.md («plan_belt»), docs/PROTOCOL.md §7.
 local S = require("stubs")
 local C = require("stubs_c")
 local X = require("stubs_n")

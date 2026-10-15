@@ -1,4 +1,4 @@
-"""Revision 3.9: `mine{item}` — gather an item from rocks, trees and hand-minable ore (ACTIONS.md)."""
+"""`mine{item}` — gather an item from rocks, trees and hand-minable ore (docs/ACTIONS.md, «mine»)."""
 import pytest
 
 from factorio_partner import validate as V

@@ -27,8 +27,8 @@ SERVER_FILE = ROOT / "server" / "factorio_partner" / "server.py"
 DOCS = ROOT / "docs"
 
 TOOL_PREFIX = "mcp__partner__"
-# инструменты из docs/MCP.md, которые добавляет другой поток той же волны (сервер может отставать).
-# После волны 4 пусто: всё, что есть в таблице MCP.md, сервер уже отдаёт.
+# инструменты из docs/MCP.md, которые сервер ещё не отдаёт (если такие бывают).
+# Сейчас пусто: всё, что есть в таблице MCP.md, сервер уже отдаёт.
 PENDING_TOOLS: set[str] = set()
 # аргументы partner_plan описаны в MCP.md отдельным разделом, а не в таблице
 PLAN_ARGS = {"task", "resource", "patch", "options"}
@@ -39,26 +39,26 @@ SERVER_ERRORS = ("access denied", "transport_timeout", "game_paused", "repeated_
                  "response too large")
 LAYOUTS = ("simple", "compact", "super_compact", "sparse", "logistics", "compact_logistics",
            "sparse_logistics")
-# что обязано быть в промпте (задача потока J); строка или набор вариантов
+# что обязано быть в промпте ; строка или набор вариантов
 REQUIRED = (
     "owner:true", "owner:false", "partner_brief", "partner_state", "partner_map", "partner_find",
     "partner_stock", "partner_rates", "partner_wait", "partner_say", "collect", "timed_out",
     "flee", "watch", "module_errors", "superforced", "dry_run", "to_remove", "build_ghosts",
     "plan_mining", "partner_plan", "build_blueprint", "supported:false", "notes", "style",
-    # ревизия 3.3: жидкость и выходы с участка, поиск места для чертежа, лента до базы, заметки смены
+    # жидкость и выходы с участка, поиск места для чертежа, лента до базы, заметки смены
     "partner_access", "narrow_access", "enclosed", "on_liquid", "fit", "rotate", "partial", "plan_belt",
     "areas", "need", "chosen", "forge_too_old", "только как факты", "без подтверждения хозяина",
-    # ревизия 3.5: стройка ленты встала — осмотреться, переложить остаток, не больше трёх раз подряд
+    # стройка ленты встала — осмотреться, переложить остаток, не больше трёх раз подряд
     '"from":"resume"', "resumed", "unseen", "blocked_total", "трёх перекладок подряд",
-    # ревизия 3.7: большое поручение начинается с partner_supply; как читать его ответ
+    # большое поручение начинается с partner_supply; как читать его ответ
     "partner_supply", "summary.short", "stored", "producers", "makers", "recipe.hand", "resource",
     "not_researched", "no_source", "руками не подменяй",
-    # ревизия 3.8: справка как в Факториопедии — что это в игре и почему не открыто
+    # справка как в Факториопедии — что это в игре и почему не открыто
     "partner_lookup", "unlocked_by", "missing", "suggest", "ничего не изучаешь",
 )
-# порядок шагов поручения «добыча с лентой» в примере (PLAN «Волна 4»)
+# порядок шагов поручения «добыча с лентой» в примере
 MINING_ORDER = ("partner_access", "plan_mining", "plan_belt", "collect", "build_ghosts")
-# пример «поставь ещё литейных» (ревизия 3.7): сначала спросить игру, потом идти и брать
+# пример «поставь ещё литейных»: сначала спросить игру, потом идти и брать
 SUPPLY_ORDER = ("partner_supply", "partner_say", "collect", "extract", "craft", "insert", "place")
 # чем разведку источников в таком примере начинать нельзя — это делает partner_supply одним вызовом
 SCOUT_TOOLS = ("partner_find", "partner_stock", "partner_recipes", "partner_resources")
@@ -320,7 +320,7 @@ def check_supply_order(text: str, name: str) -> list[str]:
 
 
 def check_lookup_example(text: str, name: str) -> list[str]:
-    """Пример справки (ревизия 3.8): сначала partner_lookup, потом строка хозяину; помощник ничего
+    """Пример справки: сначала partner_lookup, потом строка хозяину; помощник ничего
     не изучает — действий в примере нет."""
     steps = call_order(text)
     if "partner_lookup" not in steps:
@@ -445,12 +445,12 @@ def lint_all() -> list[str]:
     if supply.is_file():
         order += check_supply_order(supply.read_text(encoding="utf-8").replace("\r\n", "\n"), supply.name)
     else:
-        order.append("examples/supply-order.md: нет примера большого поручения (ревизия 3.7)")
+        order.append("examples/supply-order.md: нет примера большого поручения")
     lookup = AGENTS_DIR / "examples" / "lookup-research.md"
     if lookup.is_file():
         order += check_lookup_example(lookup.read_text(encoding="utf-8").replace("\r\n", "\n"), lookup.name)
     else:
-        order.append("examples/lookup-research.md: нет примера справки (ревизия 3.8)")
+        order.append("examples/lookup-research.md: нет примера справки")
     return lint_agent(extra_md=examples) + order + lint_files(repo_files())
 
 

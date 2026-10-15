@@ -1,4 +1,4 @@
-"""Сценарии build_place / build_decon / build_ghosts (поток F) против фейкового RCON с моделью мода.
+"""Сценарии build_place / build_decon / build_ghosts против фейкового RCON с моделью мода.
 
 Модель (`Model`) — общая для всех офлайн-тестов сценариев build_*: её же берут test_build_modes.py
 и test_build_shapes.py.
@@ -26,7 +26,7 @@ class Model:
     плитки, лава, камни и деревья, пометки к сносу. «Движок» постановки чертежа ведёт себя так, как
     показал живой прогон 2026-10-13 (2.0.77): normal — помеха → призрака нет; forced — камни и
     деревья помечаются, свои постройки нет, на лаве без исследованной подложки ничего не встаёт;
-    superforced — помечаются ещё и свои постройки. Мод — по ACTIONS.md ревизии 3.3: клетка на лаве
+    superforced — помечаются ещё и свои постройки. Мод — по docs/ACTIONS.md («build_blueprint»): клетка на лаве
     без возможной подложки в forced/superforced → чертёж не ставится вовсе (`cannot_place`,
     `on_liquid`, `liquids`, `fit`), с `partial` — обрезанный, в normal — пропуск клетки; свои пометки
     к сносу снимаются при сбое и отмене. Флаги ломают отдельные части (для тестов «сценарий
@@ -254,7 +254,7 @@ class Model:
         return None
 
     def _unmark(self, own):
-        """→ сколько своих пометок снято (detail.unmarked, ревизия 3.4)."""
+        """→ сколько своих пометок снято (detail.unmarked)."""
         if self.keep_marks:
             return 0
         n = len(self.marked & set(own))

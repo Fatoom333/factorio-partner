@@ -1,4 +1,4 @@
--- Действие pickup (поток C): труп и предметы на земле; только normal, своя сила/neutral, видимые.
+-- Действие pickup: труп и предметы на земле; только normal, своя сила/neutral, видимые.
 local S = require("stubs")
 local C = require("stubs_c")
 

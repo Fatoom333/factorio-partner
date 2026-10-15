@@ -1,4 +1,4 @@
--- Действие `pickup` (поток C). Контракт: docs/ACTIONS.md, PROTOCOL.md §6.
+-- Действие `pickup`. Контракт: docs/ACTIONS.md, PROTOCOL.md §6.
 --
 -- args: target (труп: `{name:"character-corpse", pos}`) │ area (предметы на земле). Ровно одно.
 -- * труп — цель в форме {name, pos} (у трупа в игре нет unit_number; pos — `corpse` из события

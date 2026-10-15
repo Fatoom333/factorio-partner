@@ -1,4 +1,4 @@
--- Действие deconstruct (поток F): ACTIONS.md «deconstruct», PROTOCOL §6.5 (selected + mining_state
+-- Действие deconstruct: ACTIONS.md «deconstruct», PROTOCOL §6.5 (selected + mining_state
 -- до исчезновения сущности), §6.6 (только своя сила и neutral), резерв области.
 local S = require("stubs")
 local C = require("stubs_c")
