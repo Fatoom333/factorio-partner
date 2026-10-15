@@ -1,4 +1,4 @@
--- Рефлексы «смерть и возрождение» (поток H). Всегда включены, в набор `reflexes` не входят.
+-- Рефлексы «смерть и возрождение». Всегда включены, в набор `reflexes` не входят.
 -- Контракт: docs/PROTOCOL.md §6.9 (появление тела), §7 (смерть, registry.set_body),
 -- docs/EVENTS.md (died, respawned).
 --
@@ -97,7 +97,7 @@ function M.sweep(tick)
         st.death = nil
       else
         if not d.announced and tick > d.tick then announce(id, d, rec.corpse_pos) end
-        -- тело-игрок (PROTOCOL §7): возрождает движок, новое тело подхватывает поток P
+        -- тело-игрок (PROTOCOL §7): возрождает движок, новое тело подхватывает helper_attach
         if rec.player_index == nil and tick >= d.tick + M.RESPAWN_TICKS and tick >= (d.retry_tick or 0) then
           respawn(id, st, d, tick)
         end

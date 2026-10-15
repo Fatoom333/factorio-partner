@@ -1,4 +1,4 @@
--- Операция `recipes` (поток G): что помощник может скрафтить руками сейчас.
+-- Операция `recipes`: что помощник может скрафтить руками сейчас.
 -- Контракт: docs/STATE.md «recipes». Перебор force.recipes: enabled, не hidden,
 -- категория ∈ crafting_categories персонажа; значение — get_craftable_count, нули не выводим.
 local C = require("scripts.perception.state").common

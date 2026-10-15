@@ -1,4 +1,4 @@
--- Тесты операции `ghosts` (поток G). Контракт: docs/STATE.md «ghosts», PROTOCOL §6.5.
+-- Тесты операции `ghosts`. Контракт: docs/STATE.md «ghosts», PROTOCOL §6.5.
 local G = require("stubs_g")
 
 local function ghost(w, name, x, y, o)

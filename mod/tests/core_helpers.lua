@@ -39,7 +39,7 @@ S.suite("helpers", {
       S.err(S.req("helper_spawn", {}, "h1"), "no_player", "такого игрока в сейве нет")
       S.eq(storage.helpers.h1, nil)
   end },
-  { "spawn: хозяин офлайн (ревизия 3) — у его последней позиции на его поверхности", function()
+  { "spawn: хозяин офлайн — у его последней позиции на его поверхности", function()
       S.load_mod()
       S.okr(S.req("helper_limit", { max = 2 }))
       local vulc = S.surface{ name = "vulcanus" }
@@ -217,7 +217,7 @@ S.suite("helpers", {
       S.ok(rec.corpse_pos ~= nil, "позиция трупа")
       S.tick()
       local ev = S.okr(S.req("events", { since = 0 })).events
-      -- после job_failed идёт died от рефлекса смерти (поток H, EVENTS.md); helper_lost не шлётся
+      -- после job_failed идёт died от рефлекса смерти (EVENTS.md); helper_lost не шлётся
       S.eq(#ev, 2, "helper_lost после смерти не шлётся")
       S.eq({ ev[1].kind, ev[1].data.code, ev[2].kind }, { "job_failed", "no_helper", "died" })
       S.err(S.req("jobs", {}, "h1"), "no_helper")
@@ -230,7 +230,7 @@ S.suite("helpers", {
       S.load_mod()
       S.add_player{ name = "Tartaluga" }
       S.okr(S.req("helper_spawn", {}, "h1"))
-      -- помощник должен остаться мёртвым: возрождение (поток H, PROTOCOL §6.9) здесь отключено;
+      -- помощник должен остаться мёртвым: возрождение (PROTOCOL §6.9) здесь отключено;
       -- load_mod грузит модули заново, поэтому правка не выходит за этот тест
       require("scripts.reflexes.death").RESPAWN_TICKS = math.huge
       S.tick(5)
@@ -261,7 +261,7 @@ S.suite("helpers", {
       S.eq(storage.helpers.h1.reg, reg)
       S.eq(S.okr(S.req("events", { since = 0 })).events, {})
   end },
-  { "set_body (возрождение, поток H): мёртвый -> живой", function()
+  { "set_body (возрождение): мёртвый -> живой", function()
       S.load_mod()
       S.add_player{ name = "Tartaluga" }
       S.okr(S.req("helper_spawn", {}, "h1"))

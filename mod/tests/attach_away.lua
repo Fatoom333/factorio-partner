@@ -1,5 +1,5 @@
--- Тело-игрок (поток V1, волна 4): состояние `away`, поля `body`/`away` в helper_list, лимит,
--- helper_remove без трупа и перезарядки, правила helper_attach. PROTOCOL §4, §7 (ревизия 3.3).
+-- Тело-игрок: состояние `away`, поля `body`/`away` в helper_list, лимит,
+-- helper_remove без трупа и перезарядки, правила helper_attach. PROTOCOL §4, §7.
 local S = require("stubs")
 local P = require("stubs_p")
 

@@ -1,7 +1,7 @@
-"""Сценарии build_liquid и build_marks (поток V2) против фейкового RCON с моделью мода.
+"""Сценарии build_liquid и build_marks против фейкового RCON с моделью мода.
 
 Модель и запуск — из test_build_scenarios.py. Проверяется, что сценарии принимают поведение по
-ACTIONS.md ревизии 3.3 (клетка без подложки → чертёж не ставится, `fit`, `partial`, `rotate`; свои
+docs/ACTIONS.md, «build_blueprint» (клетка без подложки → чертёж не ставится, `fit`, `partial`, `rotate`; свои
 пометки к сносу снимаются при сбое и отмене) и замечают каждую поломку мода по отдельности.
 """
 from __future__ import annotations
@@ -61,7 +61,7 @@ def test_liquid_no_lava_is_setup_error(fake_rcon, monkeypatch):
 
 
 def test_liquid_mod_places_on_liquid_is_failure(fake_rcon, monkeypatch):
-    """Мод прежней ревизии: ставит, что встаёт, и молчит про жидкость — сценарий не находит места для проверки."""
+    """Старый мод без проверки подложки: ставит, что встаёт, и молчит про жидкость — сценарий не находит места для проверки."""
     _no_wait(monkeypatch)
     res = run("build_liquid", Model(lava=LAVA, place_on_liquid=True), fake_rcon)
     assert res["ok"] is False
@@ -136,7 +136,7 @@ def test_marks_ok(fake_rcon, monkeypatch):
     # отмена: призрак появился, задача отменена, пометки нет
     assert cancelled["anchor"] == {"x": -12.5, "y": 3.5} and cancelled["placed"] is True
     assert cancelled["run"]["code"] == "cancelled" and cancelled["probe"]["marks_left"] is False
-    # ревизия 3.4: число снятых своих пометок — в detail и при сбое, и при отмене
+    # число снятых своих пометок — в detail и при сбое, и при отмене
     assert failed["run"]["detail"]["unmarked"] == 1 and cancelled["run"]["detail"]["unmarked"] == 1
     # замер: повторная постановка помечает камень заново, помощник его разбирает и строит
     assert res["recovery"]["ok"] is True and res["recovery"]["obstacle_left"] == 0 and res["recovery"]["built_on_map"] == 1

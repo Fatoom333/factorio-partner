@@ -1,4 +1,4 @@
--- Тесты операции `resources` (поток G). Контракт: docs/STATE.md «resources».
+-- Тесты операции `resources`. Контракт: docs/STATE.md «resources».
 local G = require("stubs_g")
 
 local function ore(w, name, x, y, amount)

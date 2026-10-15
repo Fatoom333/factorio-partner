@@ -1,4 +1,4 @@
--- Действие plan_belt (поток N): путь по земле — прямая, обход плиток без опоры, концы, ошибки.
+-- Действие plan_belt: путь по земле — прямая, обход плиток без опоры, концы, ошибки.
 -- ACTIONS.md «plan_belt», PROTOCOL §6.5 (manual_ghost), §6.11 (quality normal), §6.12 (плитки из игры).
 local S = require("stubs")
 local C = require("stubs_c")

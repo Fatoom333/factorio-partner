@@ -1,4 +1,4 @@
--- Тесты операции `map` (поток G). Контракт: docs/STATE.md «map».
+-- Тесты операции `map`. Контракт: docs/STATE.md «map».
 local G = require("stubs_g")
 
 local function cell(d, x, y)

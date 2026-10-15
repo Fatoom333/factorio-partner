@@ -1,4 +1,4 @@
-"""Revision 3.4 on the server side: ``partner_reflex`` without ``set`` reads the current set, a
+"""Server side: ``partner_reflex`` without ``set`` reads the current set, a
 ``build_blueprint`` result with no shift found carries ``fit: null``, ``unmarked`` and the ``at`` of
 ``helper_spawn`` pass through untouched."""
 import json

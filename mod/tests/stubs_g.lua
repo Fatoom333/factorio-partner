@@ -1,4 +1,4 @@
--- Заглушки потока G (восприятие). Дополняют mod/tests/stubs.lua потока A (TESTING.md §1):
+-- Заглушки восприятия. Дополняют mod/tests/stubs.lua (TESTING.md §1):
 -- G.reset() сначала вызывает S.reset() (defines, helpers.table_to_json, log и т.д.), затем
 -- ставит свой простой мир для тестов восприятия. Ошибка загрузки stubs.lua — провал тестов G.
 --

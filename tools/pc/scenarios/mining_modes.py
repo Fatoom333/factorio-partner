@@ -1,4 +1,4 @@
-"""Живой сценарий потока M: режимы раскладки `plan_mining` на настоящем пятне руды.
+"""Живой сценарий: режимы раскладки `plan_mining` на настоящем пятне руды.
 
 Ход:
 1. Как mining_plan: помощник, ближайшее пятно, где встаёт раскладка `simple` (сухой прогон).
@@ -96,7 +96,7 @@ def run(client) -> dict:
         # сборные ленты compact идут поперёк — сторону ленты сверяет mining_plan (simple)
         P.verify(client, patch, before, real, result, reasons, direction=DIRECTION, belts=False)
         if real["kind"] == "job_done":
-            # ревизия 3.3: буры не стоят на жидкости (на Вулканусе — на лаве), предупреждения о
+            # буры не стоят на жидкости (на Вулканусе — на лаве), предупреждения о
             # жидкости и выходах известного вида и согласны с операцией access
             P.check_liquid_and_access(client, patch, detail, cells, result, reasons)
             if detail.get("warnings") != dry_detail.get("warnings"):

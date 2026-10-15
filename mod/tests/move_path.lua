@@ -1,4 +1,4 @@
--- Модуль пути scripts/lib/path.lua (поток B): ACTIONS.md «Модуль пути», PROTOCOL §6.1, §6.7.
+-- Модуль пути scripts/lib/path.lua: ACTIONS.md «Модуль пути», PROTOCOL §6.1, §6.7.
 local S = require("stubs")
 local B = require("stubs_b")
 
@@ -242,7 +242,7 @@ S.suite("move_path", {
       S.eq(task.approach, nil)
   end },
 
-  { "path_lost и «не двигаюсь» в одном тике: одно шумное stuck и один новый запрос (ревизия 3.2)", function()
+  { "path_lost и «не двигаюсь» в одном тике: одно шумное stuck и один новый запрос", function()
       local _, h = B.setup()
       local P = path_mod()
       local task = { job = 60, helper = "h1" }

@@ -1,12 +1,12 @@
--- Схема storage и миграции (поток A). PROTOCOL.md §7: ключи верхнего уровня
+-- Схема storage и миграции. PROTOCOL.md §7: ключи верхнего уровня
 -- proto, helpers, jobs, events, recent, blobs, reservations, vision, reflexes, reflex_state,
 -- path_requests, mining_last.
 -- Ядро создаёт все ключи (пустыми таблицами), чтобы модули могли на них рассчитывать;
--- содержимое `vision` (G), `reflex_state` (H), `path_requests` (B) и `mining_last` (M пишет,
--- N читает) заполняют их владельцы.
+-- содержимое `vision`, `reflex_state`, `path_requests` и `mining_last` (пишет разметка добычи,
+-- читает прокладка лент) заполняют их владельцы.
 --
--- storage.proto = { version = <номер схемы storage>, max_helpers = <1..16> } (ревизия 3.2:
--- раньше это было просто число версии). Новая версия схемы = новая функция в STEPS[n]
+-- storage.proto = { version = <номер схемы storage>, max_helpers = <1..16> } (раньше
+-- это было просто число версии). Новая версия схемы = новая функция в STEPS[n]
 -- (переход n-1 -> n) + увеличить VERSION. Шаги должны быть идемпотентными.
 local M = {}
 
@@ -69,7 +69,7 @@ function M.ensure_shape()
   -- mining_last[helper] = { surface, outputs = { {pos = {x, y}, direction}, ... }, tick } — выходы
   -- последней разметки: пишет plan_mining, читает plan_belt{from:"patch"}. Ядро только держит
   -- форму: запись не таблица — убрать, outputs не таблица — пустой список.
-  ensure(s, "belt_last", {}) -- последний план plan_belt помощника: пишет и читает поток лент (PROTOCOL §7)
+  ensure(s, "belt_last", {}) -- последний план plan_belt помощника: пишет и читает прокладка лент (PROTOCOL §7)
   local ml = ensure(s, "mining_last", {})
   for helper, last in pairs(ml) do
     if type(last) ~= "table" then
@@ -83,7 +83,7 @@ end
 -- Переходы между версиями схемы: STEPS[n] переводит версию n-1 в n.
 local STEPS = {
   [1] = function() end, -- первая версия: только ensure_shape
-  -- 2 (ревизия 3.2): proto — таблица с max_helpers. Сейв, где помощников уже больше одного
+  -- 2: proto — таблица с max_helpers. Сейв, где помощников уже больше одного
   -- (прежняя константа разрешала 4), после обновления не должен оказаться «сверх лимита».
   [2] = function()
     local occupied = 0
@@ -93,7 +93,7 @@ local STEPS = {
     if occupied > M.MAX_HELPERS_CAP then occupied = M.MAX_HELPERS_CAP end
     if occupied > storage.proto.max_helpers then storage.proto.max_helpers = occupied end
   end,
-  -- 3 (ревизия 3.3): у тела-игрока, чей игрок вышел или остался без персонажа, отдельное
+  -- 3: у тела-игрока, чей игрок вышел или остался без персонажа, отдельное
   -- состояние "away" (раньше — "dead" с полем away); ключ mining_last заводит ensure_shape.
   [3] = function()
     for _, rec in pairs(storage.helpers) do

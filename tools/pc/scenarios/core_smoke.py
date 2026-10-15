@@ -1,11 +1,11 @@
-"""Дымовой живой сценарий ядра мода factorio-partner (поток A, волна 2; ревизия 3.2 — поток Y).
+"""Дымовой живой сценарий ядра мода factorio-partner.
 
 Идёт по основным операциям протокола на сервере без окна (хозяин в сейве офлайн — спавн у его
-последней позиции, PROTOCOL §4 ревизия 3) и сверяет формы ответов с docs/PROTOCOL.md и STATE.md:
+последней позиции, PROTOCOL §4) и сверяет формы ответов с docs/PROTOCOL.md и STATE.md:
 
  1. hello                  — proto, mod, owner, players_online, players, helpers, module_errors, tick, seq
  2. helper_spawn h1        — helper, unit_number, surface, pos (хозяина нет в сейве -> стоп);
-                             helper_list: state=alive, body=character, поля away нет (ревизия 3.3)
+                             helper_list: state=alive, body=character, поля away нет
  3. state                  — STATE.md «state»
  4. map                    — bbox, axis, rows (ровные строки), legend, entities, surface, truncated
  5. resources (radius 32)  — patches[], truncated
@@ -279,7 +279,7 @@ def run(client) -> dict:
         lst = as_list(r.ok_call("helper_list")["helpers"])
         mine = [h for h in lst if h.get("id") == HELPER]
         need(len(mine) == 1 and mine[0].get("state") == "alive", f"helper_list: {lst!r}"[:200])
-        # ревизия 3.3: вид тела в каждой записи; away — только у тела-игрока, чей игрок вышел
+        # вид тела в каждой записи; away — только у тела-игрока, чей игрок вышел
         need(mine[0].get("body") == "character", f"helper_list: body={mine[0].get('body')!r}, ждали 'character'")
         need("away" not in mine[0], f"helper_list: лишнее поле away у живого тела: {mine[0]!r}"[:200])
 

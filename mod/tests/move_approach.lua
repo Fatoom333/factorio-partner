@@ -1,4 +1,4 @@
--- Действие approach (поток B): ACTIONS.md «Подход», список v1.
+-- Действие approach: ACTIONS.md «Подход», список v1.
 local S = require("stubs")
 local B = require("stubs_b")
 

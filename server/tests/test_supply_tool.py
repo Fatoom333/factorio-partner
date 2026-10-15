@@ -1,4 +1,4 @@
-"""Revision 3.7 on the server side: ``partner_supply`` — arguments are checked before the mod, only the
+"""Server side: ``partner_supply`` — arguments are checked before the mod, only the
 given ones are sent, the mod's answer reaches the agent untouched, an answer over the response limit
 is refused with a hint, the tool is served by MCP and by the debug CLI."""
 import io

@@ -1,4 +1,4 @@
--- Настройки мода (поток A). PROTOCOL.md §7: хозяин помощников.
+-- Настройки мода. PROTOCOL.md §7: хозяин помощников.
 data:extend({
   {
     type = "string-setting",

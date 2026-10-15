@@ -16,7 +16,7 @@ server/logs/
 logs/
 .env
 
-# worktree агентов workflow
+# служебные папки Claude Code
 .claude/worktrees/
 
 # рабочие файлы Claude Code — никогда не в git (описание проекта — README и docs/)
@@ -31,3 +31,6 @@ CLAUDE.local.md
 .mcp.json
 # заметки хозяина и помощника по сейвам (partner_notes) — личное
 save-notes/
+
+# внутренние заметки разработки (копии старых документов, отчёты) — не в git
+local/

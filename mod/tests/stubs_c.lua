@@ -1,4 +1,4 @@
--- Заглушки потока C («Руки»). Дополняют mod/tests/stubs.lua потока A (TESTING.md §1).
+-- Заглушки «Рук». Дополняют mod/tests/stubs.lua (TESTING.md §1).
 --
 --   local S = require("stubs"); local C = require("stubs_c")
 --   local W = C.setup()            -- мод с фейковым path, хозяин в (0,0), помощник h1 в (2,0)
@@ -457,7 +457,7 @@ function C.equip(h, opts)
     return true
   end)
   rawset(h, "clear_selected_entity", function() rawset(h, "selected", nil) end)
-  -- как в игре (живой замер 2026-10-13): до дерева, камня и рыбы рука достаёт только с
+  -- как в игре (по замеру в игре): до дерева, камня и рыбы рука достаёт только с
   -- resource_reach_distance; C.near_only = false возвращает прежнее «всё с reach_distance»
   local can_reach = h.can_reach_entity
   rawset(h, "can_reach_entity", function(e)

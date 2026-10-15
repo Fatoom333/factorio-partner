@@ -1,6 +1,6 @@
-"""Живой сценарий потока V2 «Стройка»: пометки к сносу, которые поставила задача, снимаются при сбое и отмене.
+"""Живой сценарий: пометки к сносу, которые поставила задача, снимаются при сбое и отмене.
 
-Зачем (ACTIONS.md ревизии 3.3, находка ревью волны 3): `build_blueprint` в режиме `forced` помечает
+Зачем (docs/ACTIONS.md («build_blueprint»)): `build_blueprint` в режиме `forced` помечает
 деревья и камни на месте построек к сносу. Если задача упала или её отменили, а пометки остались,
 дроны хозяина снесут помеченное без замены. Задача обязана снять свои пометки (`cancel_deconstruction`)
 при `failed`, `cancel` и `stuck`.
@@ -90,7 +90,7 @@ def judge(tag, trial, reasons):
     if p["marks_left"]:
         reasons.append(f"{tag}: пометка к сносу не снята — помощник разобрал помеху сам "
                        f"(removed = {p['detail'].get('removed')}, на карте осталось {p['obstacle_left']})")
-    # ревизия 3.4: число снятых своих пометок — в detail итога (failed, cancel, stuck)
+    # число снятых своих пометок — в detail итога (failed, cancel, stuck)
     if trial["run"]["kind"] == "job_failed":
         n = d.get("unmarked")
         if not isinstance(n, (int, float)) or isinstance(n, bool) or n < 1:

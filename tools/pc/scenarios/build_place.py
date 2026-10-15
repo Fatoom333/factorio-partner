@@ -1,4 +1,4 @@
-"""Живой сценарий потока F «Стройка»: поставить сундук из инвентаря помощника (act place).
+"""Живой сценарий: поставить сундук из инвентаря помощника (act place).
 
 Ход (сервер без окна, хозяин офлайн, PROTOCOL §4 helper_spawn):
 1. `hello`, `helper_spawn` помощника HELPER (пустой инвентарь).
@@ -10,7 +10,7 @@
 4. Сверка: job_done с unit_number; у помощника стало на 1 предмет меньше; `map` видит сундук на месте.
 Остальные сценарии build_* берут отсюда `prepare()`, `get_item()`, `place_near()` и разведку карты
 (`survey`, `lava_cells`, `rocks`) — загрузка по пути, как _hands.
-Цель действий — всегда `{unit_number, pos}` (ACTIONS.md «target», ревизия 3.1).
+Цель действий — всегда `{unit_number, pos}` (docs/ACTIONS.md «target»).
 Только конверты `/partner <JSON>` через live_client (TESTING.md §3).
 """
 from __future__ import annotations
@@ -34,7 +34,7 @@ JOB_TIMEOUT_S = 150.0
 VISIBLE_WAIT_S = 15.0
 CHESTS = ("wooden-chest", "iron-chest", "steel-chest")
 # запасной путь: из чего скрафтить сундук руками
-# (живой замер 2026-10-13: на складах базы не было ни сундуков, ни пластин железа, ни дерева — только
+# (на складах базы не было ни сундуков, ни пластин железа, ни дерева — только
 # сталь и каменный кирпич, поэтому в списке есть и они; стена — такая же постройка 1×1)
 CRAFT = (("iron-chest", "iron-plate", 8), ("wooden-chest", "wood", 2),
          ("steel-chest", "steel-plate", 8), ("stone-wall", "stone-brick", 5))
@@ -86,8 +86,8 @@ def _stock_total(client, items, result):
 
 def obtain(client, item, count, radius, result, key):
     """Взять count предметов item со складов хозяина: `collect`, а если он ничего не взял —
-    `extract` из ближайшего сундука по `stock` (живой замер 2026-10-13: без игроков онлайн `collect`
-    отвечал no_items, хотя `stock` показывал сундук рядом — обзор помощника, ревизия 3.1). → bool."""
+    `extract` из ближайшего сундука по `stock` (без игроков онлайн `collect`
+    отвечал no_items, хотя `stock` показывал сундук рядом — обзор помощника). → bool."""
     before = helper_count(client, item)
     r = act(client, "collect", {"items": {item: count}, "radius": radius})
     result[key] = brief(r)

@@ -1,4 +1,4 @@
--- Тело-игрок (поток P): игрок вышел и вернулся, смерть и возрождение движком, тело пропало или
+-- Тело-игрок: игрок вышел и вернулся, смерть и возрождение движком, тело пропало или
 -- подменено. PROTOCOL §7 «Два вида тела», §6.8, §6.9; EVENTS.md (helper_lost, respawned, died).
 local S = require("stubs")
 local P = require("stubs_p")
@@ -36,7 +36,7 @@ S.suite("attach_life", {
       S.eq(lost.loud, true)
       S.eq(A.stops, 1, "stop действия вызван")
       local rec = P.rec()
-      S.eq(rec.state, "away", "запись ждёт игрока (PROTOCOL §7, ревизия 3.3)")
+      S.eq(rec.state, "away", "запись ждёт игрока (PROTOCOL §7)")
       S.eq(rec.away, "player_left")
       S.eq(rec.corpse_pos, nil)
       S.eq(rec.entity, nil)

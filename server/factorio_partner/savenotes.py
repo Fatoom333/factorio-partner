@@ -1,4 +1,4 @@
-"""Standing rules of the owner and the helper's memo, kept per save (revision 3.12, docs/MCP.md).
+"""Standing rules of the owner and the helper's memo, kept per save (docs/MCP.md).
 
 The owner asked (15.10) for rules that outlive one shift: «всё, что считаем мусором — X, Y, Z — носи в
 бак вот тут». They live as plain files in the project folder the helper is started from (the owner's

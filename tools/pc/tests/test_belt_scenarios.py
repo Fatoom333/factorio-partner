@@ -1,4 +1,4 @@
-"""Сценарии belt_* (поток N) против фейкового RCON с моделью мода: map → plan_belt → сверка с картой."""
+"""Сценарии belt_* против фейкового RCON с моделью мода: map → plan_belt → сверка с картой."""
 from __future__ import annotations
 
 import json

@@ -1,4 +1,4 @@
-"""Revision 3.5 on the server side: ``plan_belt{from:"resume"}`` passes the whitelist (``to`` is then
+"""Server side: ``plan_belt{from:"resume"}`` passes the whitelist (``to`` is then
 optional), the ``resumed`` answer and the ``unseen`` warning reach the agent untouched, ``admin_events``
 adds ``fit: null`` the same way ``partner_wait`` does, the tool description tells about the re-lay."""
 import json

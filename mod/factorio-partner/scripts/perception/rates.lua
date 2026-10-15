@@ -1,15 +1,14 @@
--- Операция `rates` (поток L). Контракт: docs/STATE.md «rates», docs/PROTOCOL.md §4, §6.7, §6.11.
+-- Операция `rates`. Контракт: docs/STATE.md «rates», docs/PROTOCOL.md §4, §6.7, §6.11.
 --
 -- scope="surface": фактическая статистика производства силы на поверхности
 --   (LuaFlowStatistics.get_flow_count, count=true -> количество за весь период).
 -- scope="area": номинальная оценка по машинам в прямоугольнике (в минуту, nominal=true).
---   Идея «сгруппировать машины по рецепту и сложить номинальные потоки» — как у мода
+--   Идея «сгруппировать машины по рецепту и сложить номинальные расходы» — как у мода
 --   Rate Calculator (MIT); код написан заново, текст оттуда не брался.
 --
 -- Категории LuaFlowStatistics (проверено по lua-api.factorio.com/2.0.77, LuaFlowStatistics):
 --   "input"  = левая колонка окна статистики = ПРОИЗВЕДЕНО;
 --   "output" = правая колонка = ПОТРЕБЛЕНО.
--- (В STATE.md ревизии 2 категории перепутаны — вынесено в contract_issues.)
 --
 -- Только чтение: ничего не меняет в игре, в storage не пишет.
 local err = require("scripts.core.err")
@@ -298,7 +297,7 @@ local function capped_productivity(e, recipe)
   return math.min(prod, cap)
 end
 
--- Номинальный поток в минуту. Возвращает key, recipe_name, in{}, out{} или nil (машина не считается).
+-- Номинальный расход в минуту. Возвращает key, recipe_name, in{}, out{} или nil (машина не считается).
 local function crafter_flow(e)
   local recipe, q = machine_recipe(e)
   if not recipe then return nil end

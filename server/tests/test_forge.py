@@ -1,4 +1,4 @@
-"""Юнит-тесты связки с forge (поток I). forge здесь не нужен: `_run_forge` подменяется."""
+"""Юнит-тесты связки с forge. forge здесь не нужен: `_run_forge` подменяется."""
 
 from __future__ import annotations
 
@@ -449,7 +449,7 @@ def test_brief_notes_missing_and_errors(tmp_path, monkeypatch):
     assert out["notes"] == "" and out["reason"]
 
 
-# --- правки после ревью ---------------------------------------------------------------
+# --- дополнительные проверки ---------------------------------------------------------------
 
 def test_plan_uses_config_forge_home(tmp_path, fake):
     f = fake()

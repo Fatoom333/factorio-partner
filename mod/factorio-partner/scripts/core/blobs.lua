@@ -1,7 +1,7 @@
--- Большие данные частями (поток A): операция blob_put. PROTOCOL.md §4.
+-- Большие данные частями: операция blob_put. PROTOCOL.md §4.
 -- storage.blobs = { bytes = <всего байт>, items = { [blob] = {total, parts={[i]=str}, received, bytes, last_tick} } }
 -- Живут 10 мин с последней части; всего ≤ 1 МБ (иначе `limit`). Повтор части безопасен.
--- Чтение для build_blueprint (F): blobs.get(id) -> строка целиком | nil, received, total.
+-- Чтение для build_blueprint: blobs.get(id) -> строка целиком | nil, received, total.
 local err = require("scripts.core.err")
 local schema = require("scripts.core.schema")
 

@@ -1,4 +1,4 @@
-"""Сценарии build_2x2 и build_robots (поток F) против фейкового RCON с моделью мода.
+"""Сценарии build_2x2 и build_robots против фейкового RCON с моделью мода.
 
 Модель и запуск — из test_build_scenarios.py.
 """

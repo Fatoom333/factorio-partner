@@ -1,4 +1,4 @@
--- Действие build_ghosts (поток F): ACTIONS.md «build_ghosts», PROTOCOL §6.5 (blocked = ghost_revive
+-- Действие build_ghosts: ACTIONS.md «build_ghosts», PROTOCOL §6.5 (blocked = ghost_revive
 -- false), §7 (резерв области). Режимы hand/robots/auto, no_items, stuck с detail, прогресс.
 local S = require("stubs")
 local C = require("stubs_c")

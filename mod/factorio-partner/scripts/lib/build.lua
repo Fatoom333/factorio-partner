@@ -1,4 +1,4 @@
--- Стройка: общие функции потока F (place, build_blueprint, build_ghosts, deconstruct).
+-- Стройка: общие функции (place, build_blueprint, build_ghosts, deconstruct).
 -- Контракты: docs/ACTIONS.md («Подход», build_blueprint, build_ghosts, deconstruct),
 -- PROTOCOL.md §6 (честность: без предметов из воздуха, досягаемость build_distance, только своя
 -- сила/neutral, только quality normal, §6.5 — проверки постановки), §7 (резерв области).

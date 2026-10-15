@@ -27,7 +27,7 @@ class Model:
         self.alive = ["old"] if preexisting else []
         self.removed = []
         self.module_errors = 0
-        self.body = {"body": "character"}   # helper_list.body (ревизия 3.3); {} — мод до 3.3
+        self.body = {"body": "character"}   # helper_list.body; {} — мод до 3.3
         self.ops = []
 
     def __call__(self, cmd):

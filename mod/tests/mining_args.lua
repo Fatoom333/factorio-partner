@@ -1,4 +1,4 @@
--- plan_mining (поток M): поиск пятна (near/area, связность, открытые чанки, лимит), проверка
+-- plan_mining: поиск пятна (near/area, связность, открытые чанки, лимит), проверка
 -- аргументов, выбор построек по умолчанию из открытого исследованиями. ACTIONS.md «plan_mining».
 local S = require("stubs")
 local C = require("stubs_c")

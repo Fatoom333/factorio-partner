@@ -1,4 +1,4 @@
-"""Сценарий core_respawn против фейкового RCON с моделью общей перезарядки helper_spawn (ревизия 3.4)."""
+"""Сценарий core_respawn против фейкового RCON с моделью общей перезарядки helper_spawn."""
 from __future__ import annotations
 
 import json
@@ -15,7 +15,7 @@ def load():
 
 
 class Model:
-    """PROTOCOL «Уточнения 3.4»: перезарядка 10 с общая; 10 с..5 мин — точка возрождения, позже — хозяин."""
+    """PROTOCOL §4: перезарядка 10 с общая; 10 с..5 мин — точка возрождения, позже — хозяин."""
 
     def __init__(self, tick_step=100, cooldown=600, per_id=False, at_owner=False, no_at=False, frozen=False,
                  last_gone=None, crash=False):

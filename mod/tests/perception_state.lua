@@ -1,4 +1,4 @@
--- Тесты операции `state` и общих помощников (поток G). Контракт: docs/STATE.md «state».
+-- Тесты операции `state` и общих помощников. Контракт: docs/STATE.md «state».
 local G = require("stubs_g")
 
 -- 1. Полный ответ

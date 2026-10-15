@@ -1,4 +1,4 @@
--- Ошибки с кодом из PROTOCOL.md §3 (поток A).
+-- Ошибки с кодом из PROTOCOL.md §3.
 -- Модули бросают err.raise(code, text); ядро превращает это в ответ {ok=false, error={code,text}}
 -- или в job_failed{code,text}. Любая другая ошибка Lua становится `internal`.
 local M = {}

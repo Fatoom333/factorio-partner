@@ -1,4 +1,4 @@
--- Тесты операции `supply` (поток U, ревизия 3.7). Контракт: docs/STATE.md «supply»,
+-- Тесты операции `supply`. Контракт: docs/STATE.md «supply»,
 -- PROTOCOL §6.7 (содержимое — только видимое), §6.11 (качество normal), §6.12 (имён в коде нет).
 local U = require("stubs_u")
 local G = U.G

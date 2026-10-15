@@ -1,4 +1,4 @@
--- Заглушки потока F («Стройка»). Дополняют stubs.lua (A) и stubs_c.lua (C), TESTING.md §1.
+-- Заглушки «Стройки». Дополняют stubs.lua и stubs_c.lua, TESTING.md §1.
 --
 --   local S = require("stubs"); local F = require("stubs_f")
 --   local W = F.setup{ items = { ["iron-chest"] = 3 } }  -- мод, хозяин, помощник h1 (как C.setup)
@@ -6,7 +6,7 @@
 --   local d, kind = F.wait(F.job("build_ghosts", { radius = 20, mode = "hand" }))
 --
 -- Что даёт сверх stubs_c:
--- * подмену scripts.core.vis / scripts.core.target (ядро, поток A): F.vis.result, счётчики вызовов;
+-- * подмену scripts.core.vis / scripts.core.target (ядро): F.vis.result, счётчики вызовов;
 -- * плитки: прототипы плиток и их предметов, F.tile_ghost(имя, клетка), F.set_tile, F.tile_at,
 --   F.tile_revive_fails; вода — помеха постройке (ghost_revive = false, пока не положена плитка);
 -- * снос: F.mark(e) помечает сущность (to_be_deconstructed), find_entities_filtered понимает
@@ -561,7 +561,7 @@ function F.setup(opts)
   F.proxy, F.bp_return_existing, F.ghost_restored = nil, false, 0
   F.unmarked, F.bp_set_entities = {}, 0
   F.physics = true
-  -- как в игре (живой замер 2026-10-13): камни и деревья достаются только с resource_reach_distance
+  -- как в игре (по замеру в игре): камни и деревья достаются только с resource_reach_distance
   F.reach_only_openable = false
   F.tile_revive_calls, F.tile_revive_fails, F.tile_log, F.revive_log = 0, false, {}, {}
   CHECK_NAMES = {}

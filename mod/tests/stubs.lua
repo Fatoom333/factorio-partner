@@ -1,5 +1,5 @@
--- Заглушки API Factorio 2.0 для юнит-тестов мода (docs/TESTING.md §1). Владелец — поток A.
--- Другие потоки дополняют заглушки только в своих mod/tests/stubs_<поток>.lua, например:
+-- Заглушки API Factorio 2.0 для юнит-тестов мода (docs/TESTING.md §1). Базовые заглушки.
+-- Остальные лежат в отдельных файлах mod/tests/stubs_<имя>.lua, например:
 --   local S = require("stubs"); S.add_prototype("entity", {name="burner-mining-drill", type="mining-drill"})
 --
 -- Как пользоваться (пример — mod/tests/core_dispatch.lua):
@@ -14,7 +14,7 @@
 --   })
 -- S.suite сам вызывает S.reset() перед каждым случаем и бросает error() при провалах.
 --
--- Полезное для других потоков:
+-- Полезное для других заглушек:
 --   S.load_mod{ replace = { ["scripts.lib.path"] = fake } } — подменить модуль мода тестовым;
 --   S.req(op, args, helper) / S.call(envelope)            — вызов /partner через JSON-мост;
 --   S.okr(resp) -> data, S.err(resp, code)                 — проверки ответа;
@@ -172,7 +172,7 @@ local function make_events()
     if ev[n] == nil then ev[n] = nextid; nextid = nextid + 1 end
   end
   S.unknown_events = {}
-  -- Незнакомое имя получает новый номер (чтобы файлы других потоков грузились),
+  -- Незнакомое имя получает новый номер (чтобы остальные файлы заглушек грузились),
   -- но запоминается в S.unknown_events — тест может это проверить.
   return setmetatable(ev, {
     __index = function(t, k)

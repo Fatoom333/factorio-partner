@@ -1,4 +1,4 @@
--- Действие plan_mining (поток M): раскладка simple — счёт, призраки, покрытие, сторона ленты.
+-- Действие plan_mining: раскладка simple — счёт, призраки, покрытие, сторона ленты.
 -- ACTIONS.md «plan_mining», PROTOCOL §6.5 (manual_ghost), §6.11 (quality normal).
 local S = require("stubs")
 local C = require("stubs_c")

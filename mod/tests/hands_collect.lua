@@ -1,4 +1,4 @@
--- Действие collect (поток C): склады своей силы в радиусе (видимые), резервы, missing, from.
+-- Действие collect: склады своей силы в радиусе (видимые), резервы, missing, from.
 local S = require("stubs")
 local C = require("stubs_c")
 

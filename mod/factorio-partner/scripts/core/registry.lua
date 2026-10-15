@@ -1,4 +1,4 @@
--- Помощники (поток A): storage.helpers, операции helper_spawn/remove/list, учёт смерти и
+-- Помощники: storage.helpers, операции helper_spawn/remove/list, учёт смерти и
 -- исчезновения тела. Контракт: PROTOCOL.md §4, §6.9, §7.
 --
 -- storage.helpers[id] = {
@@ -14,18 +14,18 @@
 --                    -- away_pos/away_surface — где тело было в последний раз; hold — состояния
 --                    -- ходьбы и добычи активного действия, которые ядро выставляет каждый тик
 --
--- Лимит (PROTOCOL §4, ревизия 3.3): занятых мест (живые + ждущие возрождения + away) ≤
+-- Лимит (PROTOCOL §4): занятых мест (живые + ждущие возрождения + away) ≤
 -- storage.proto.max_helpers (по умолчанию 1, задаёт игрок при запуске: helper_limit {max:1..16}).
 --
 -- API для модулей (только чтение storage.helpers напрямую; запись — через функции ниже):
 --   registry.get(id) -> rec|nil
 --   registry.alive(id) -> rec, entity | nil       (state="alive" и entity.valid)
 --   registry.mark_dead(id, corpse_pos?)           (ядро делает это само в on_entity_died)
---   registry.set_body(id, entity)                 (возрождение, поток H: новое тело после смерти)
+--   registry.set_body(id, entity)                 (возрождение: новое тело после смерти)
 --   registry.max_helpers() / registry.occupied(except_id?)   (лимит и занятые места)
 --   registry.check_slot(id)                       (limit, если для нового тела id нет места)
 --   registry.bind(id, entity, fields?) -> rec     (новая запись с живым телом; fields.player_index —
---                                                  тело-игрок, операция helper_attach потока P)
+--                                                  тело-игрок, операция helper_attach)
 --   registry.is_player_body(id) -> bool
 --   registry.body_kind(id) -> "character"|"player"
 --   registry.info(id) -> {body, module_errors}    (для операции `state`, STATE.md: вид тела и счётчик
@@ -51,7 +51,7 @@ M.hooks = {
   before_remove = function(id) end, -- helper_remove: до die()
   on_dead = function(id) end,       -- смерть (тело ещё valid)
   on_lost = function(id) end,       -- тело исчезло не по смерти
-  -- тело-игрок исчезло не по смерти: true — запись забрал поток P (ждёт новое тело игрока)
+  -- тело-игрок исчезло не по смерти: true — запись забрал helper_attach (ждёт новое тело игрока)
   on_player_body_gone = function(id) return false end,
 }
 
@@ -176,7 +176,7 @@ end
 
 --- Новая запись помощника с живым телом (заменяет прежнюю запись id; отметки перезарядки
 --- переносятся: у тела-игрока — одним полем char_gone_tick, которое helper_remove не стирает). fields — простые поля записи (player_index у тела-игрока).
---- Проверки (лимит, перезарядка, чьё тело) делает вызывающий: helper_spawn здесь, helper_attach — поток P.
+--- Проверки (лимит, перезарядка, чьё тело) делает вызывающий: helper_spawn здесь, helper_attach — scripts/core/attach.lua.
 function M.bind(id, entity, fields)
   if not (entity and entity.valid and entity.type == "character") then error("registry.bind: not a character", 2) end
   local old = storage.helpers[id]
@@ -232,7 +232,7 @@ function M.mark_dead(id, corpse_pos)
   return true
 end
 
---- Новое тело помощника (возрождение после смерти, поток H, PROTOCOL §6.9).
+--- Новое тело помощника (возрождение после смерти, PROTOCOL §6.9).
 --- Сущность создаёт вызывающий (у force.get_spawn_position той же поверхности, пустой инвентарь).
 --- У тела-игрока (scripts/core/attach.lua) — ещё и возврат из "away": тело то же или новое, его
 --- даёт движок, мод ничего не создаёт.
@@ -245,7 +245,7 @@ function M.set_body(id, entity)
   attach(rec, entity)
   rec.spawned_tick = game.tick
   rec.corpse_pos = nil
-  rec.died_surface = nil -- возрождение: поверхность смерти больше не нужна (PROTOCOL «Уточнения 3.5»)
+  rec.died_surface = nil -- возрождение: поверхность смерти больше не нужна (PROTOCOL §7)
   rec.away = nil
   rec.away_pos = nil
   rec.away_surface = nil
@@ -355,7 +355,7 @@ function M.op_remove(args, ctx)
   M.hooks.before_remove(id)
   local data = {}
   local e = rec.entity
-  -- state="removed" ставится ДО die(): рефлекс смерти (H) такие события игнорирует (PROTOCOL §7)
+  -- state="removed" ставится ДО die(): рефлекс смерти такие события игнорирует (PROTOCOL §7)
   rec.state = "removed"
   rec.removed_tick = game.tick
   if e and e.valid then

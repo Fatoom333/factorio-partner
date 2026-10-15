@@ -1,4 +1,4 @@
--- Хозяин помощников (поток A). PROTOCOL.md §7: игрок из настройки `partner-owner`
+-- Хозяин помощников. PROTOCOL.md §7: игрок из настройки `partner-owner`
 -- (runtime-global, строка; пусто -> игрок с индексом 1). Приказы — только от хозяина.
 local M = {}
 
@@ -40,7 +40,7 @@ function M.present()
   return p, ch
 end
 
---- Где стоит хозяин для helper_spawn (PROTOCOL §4, ревизия 3): `player, surface, position`.
+--- Где стоит хозяин для helper_spawn (PROTOCOL §4): `player, surface, position`.
 --- Хозяин онлайн -> нужно тело (`present`), иначе nil. Хозяин в сейве, но офлайн (сервер без
 --- окна в тестах) -> его последняя `physical_position` на `physical_surface`. Хозяина нет в
 --- сейве -> nil (вызывающий отвечает `no_player`).

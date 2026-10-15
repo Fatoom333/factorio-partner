@@ -1,4 +1,4 @@
--- Действие walk (поток B): ACTIONS.md список v1, PROTOCOL §6.1.
+-- Действие walk: ACTIONS.md список v1, PROTOCOL §6.1.
 local S = require("stubs")
 local B = require("stubs_b")
 

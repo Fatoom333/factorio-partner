@@ -1,6 +1,6 @@
-"""Сценарий hands_mine (поток V2, «Руки») против фейкового RCON с маленькой моделью мода.
+"""Сценарий hands_mine («Руки») против фейкового RCON с маленькой моделью мода.
 
-Проверяется шаг ревизии 3.3: дерево и камень добываются вплотную (`resource_reach_distance`), а не с
+Проверяется: дерево и камень добываются вплотную (`resource_reach_distance`), а не с
 `reach_distance`. Модель умеет вести себя и «по-старому» (встаёт в 8 клетках и ничего не добывает).
 """
 from __future__ import annotations
@@ -17,7 +17,7 @@ from conftest import PASSWORD, PC_DIR
 
 class World:
     """Руда рядом, камень и дерево поодаль. far_reach — мод подходит к камню и дереву только на
-    reach_distance (как до ревизии 3.3): в игре с такого расстояния рука их не добывает."""
+    reach_distance (как в старом моде): в игре с такого расстояния рука их не добывает."""
 
     YIELD = {"big-volcanic-rock": {"stone": 4, "coal": 2}, "ashland-lichen-tree": {"wood": 2}}
 
@@ -135,7 +135,7 @@ def test_mine_ore_then_rock_and_tree_up_close(fake_rcon):
 
 
 def test_mine_from_reach_distance_is_failure(fake_rcon):
-    """Мод до ревизии 3.3: подходит на reach_distance и застревает — сценарий это ловит."""
+    """Старый мод: подходит на reach_distance и застревает — сценарий это ловит."""
     res = run(World(far_reach=True), fake_rcon)
     assert res["ok"] is False
     assert sum("mine не done: stuck" in r for r in res["reasons"]) == 2, res["reasons"]

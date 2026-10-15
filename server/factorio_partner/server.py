@@ -230,8 +230,9 @@ def build_server(core: Core, admin: bool = False) -> FastMCP:
     @mcp.tool()
     async def partner_say(helper: Helper, key: Key,
                           text: str) -> dict:
-        """Сказать в чат игры (до 200 символов). Мод сам ставит перед текстом префикс «<helper>: »
-        (id помощника, например «h1: »), своё имя в текст не добавляй."""
+        """Сказать в чат игры (до 200 символов). Мод сам ставит перед текстом имя помощника
+        («Claude: », у второго и дальше — «Claude h2: »), своё имя в текст не добавляй. Место —
+        меткой [gps=x,y,планета]: она кликается."""
         return await _run(core.op_say(helper, key, text))
 
     @mcp.tool()

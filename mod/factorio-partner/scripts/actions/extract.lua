@@ -1,4 +1,4 @@
--- Действие `extract` (поток C). Контракт: docs/ACTIONS.md («extract / перенос предметов с
+-- Действие `extract`. Контракт: docs/ACTIONS.md («extract / перенос предметов с
 -- данными»), PROTOCOL.md §6, §7 (резервы).
 --
 -- args: target, items? (нет → всё), equip?:bool. Берёт предметы из главного инвентаря цели

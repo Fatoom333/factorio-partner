@@ -1,4 +1,4 @@
-"""Связка с factorio-forge: `partner_plan` и заметки профиля для `partner_brief` (поток I).
+"""Связка с factorio-forge: `partner_plan` и заметки профиля для `partner_brief`.
 
 Модуль самодостаточен: только стандартная библиотека; из пакета `factorio_partner` берёт
 лишь `PartnerError` (если пакет есть), чтобы `PlanArgsError` сервер отдал как `bad_args`.

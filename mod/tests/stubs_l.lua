@@ -1,4 +1,4 @@
--- Заглушки потока L (op `rates`). Дополняют mod/tests/stubs.lua потока A (TESTING.md §1):
+-- Заглушки op `rates`. Дополняют mod/tests/stubs.lua (TESTING.md §1):
 -- если stubs.lua есть — подгружается первым, дальше L ставит только своё (game, prototypes,
 -- settings на время теста и нужные константы defines). Без stubs.lua тоже работает.
 pcall(require, "stubs")

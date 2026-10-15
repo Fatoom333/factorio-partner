@@ -1,4 +1,4 @@
--- Тесты операции `stock` (поток G). Контракт: docs/STATE.md «stock».
+-- Тесты операции `stock`. Контракт: docs/STATE.md «stock».
 local G = require("stubs_g")
 
 local function chest(w, x, y, items, o)

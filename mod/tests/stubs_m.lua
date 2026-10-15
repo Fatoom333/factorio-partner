@@ -1,4 +1,4 @@
--- Заглушки потока M («Разметка добычи»). Дополняют stubs.lua (A) и stubs_c.lua (C), TESTING.md §1.
+-- Заглушки «Разметки добычи». Дополняют stubs.lua и stubs_c.lua, TESTING.md §1.
 --
 --   local S = require("stubs"); local X = require("stubs_m")
 --   local W = X.setup{ research = { "electric-mining-drill", "transport-belt" } }

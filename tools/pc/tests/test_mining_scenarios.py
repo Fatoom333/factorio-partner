@@ -1,4 +1,4 @@
-"""Сценарии mining_* (поток M) против фейкового RCON с моделью мода: resources → plan_mining → сверка."""
+"""Сценарии mining_* против фейкового RCON с моделью мода: resources → plan_mining → сверка."""
 from __future__ import annotations
 
 import json
@@ -36,7 +36,7 @@ class Model:
                  occupied=False, existing=0, sparse_drills=None, no_underground=False, never_done=False,
                  lava=(), warnings=(), real_warnings=None, access=None, access_fails=None):
         self.lava = set(lava)             # клетки жидкости на карте (`~`)
-        self.warnings = list(warnings)    # предупреждения разметки (ревизия 3.3)
+        self.warnings = list(warnings)    # предупреждения разметки
         self.real_warnings = real_warnings  # у настоящего прогона другие, чем у сухого
         self.access = access or {}        # поправки к ответу access
         self.access_fails = access_fails
@@ -419,7 +419,7 @@ def test_modes_no_patch(fake_rcon):
     assert res["ok"] is False and res["reasons"]
 
 
-# ---------- ревизия 3.3: жидкость и выходы с участка ----------
+# ---------- жидкость и выходы с участка ----------
 
 NARROW = {"exits": [{"side": "west", "pos": {"x": 16, "y": 10}, "width": 2, "neck": "narrow"}], "best": "west"}
 ISLAND = {"exits": [], "enclosed": True, "best": None}

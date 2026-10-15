@@ -1,4 +1,4 @@
--- Тесты операции `recipes` (поток G). Контракт: docs/STATE.md «recipes».
+-- Тесты операции `recipes`. Контракт: docs/STATE.md «recipes».
 local G = require("stubs_g")
 
 do
