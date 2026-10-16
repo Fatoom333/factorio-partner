@@ -158,6 +158,7 @@ local EVENT_NAMES = {
   "on_trigger_created_entity", "on_picked_up_item", "on_player_used_capsule", "on_pre_build",
   "on_post_entity_died", "on_worker_robot_expired", "on_player_driving_changed_state",
   "on_player_toggled_map_editor", "on_gui_click", "on_string_translated", "on_tick_paused",
+  "on_entity_cloned", "on_space_platform_built_entity", "on_space_platform_mined_entity",
 }
 
 local function table_size_impl(t)

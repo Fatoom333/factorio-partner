@@ -5,6 +5,7 @@
 local err = require("scripts.core.err")
 local core_owner = require("scripts.core.owner")
 local jobs = require("scripts.core.jobs")
+local metrics = require("scripts.core.metrics")
 local vis = require("scripts.core.vis")
 -- Реестр помощников ядра: нужен только для поля `state.body`; без него — запасное значение.
 local registry_ok, core_registry = pcall(require, "scripts.core.registry")
@@ -469,6 +470,7 @@ local function state_op(args, ctx)
   end
 
   local job, queue = C.job_summary(helper_id)
+  local idle_ticks, busy_share, busy_window = metrics.snapshot(helper_id, game.tick)
 
   return {
     helper = helper_id,
@@ -488,6 +490,9 @@ local function state_op(args, ctx)
     robots = robots(e),
     job = job,
     queue = queue,
+    idle_ticks = idle_ticks,
+    busy_share = busy_share and floor(busy_share * 100 + 0.5) / 100 or nil,
+    busy_window = busy_window,
     players = players_list(e),
     near = near(e, helper_id),
     vision = C.vision_on(helper_id),

@@ -50,10 +50,10 @@ MCP-сервер `factorio_partner` (Python) общаются **только** �
   Поэтому сервер после обрыва соединения может безопасно повторить любой запрос с тем же `id`.
   Исключения (чтобы не раздувать сейв): ответы **операций только для чтения** (`hello`,
   `helper_list`, `jobs`, `events`, `state`, `map`, `resources`, `stock`, `ghosts`, `recipes`,
-  `rates`, `find`, `access`, `supply`, `lookup`) длиннее 16 КБ не сохраняются — повтор исполнится
+  `rates`, `find`, `access`, `status`, `supply`, `lookup`) длиннее 16 КБ не сохраняются — повтор исполнится
   заново (безопасно, `tick` новый); ответ `limit` на запрос > 8 КБ тоже не сохраняется (операция не
   исполнялась). Ответы операций с последствиями (`act`, `cancel`, `helper_*`, `reflexes`, `vision`,
-  `say`, `blob_put`) сохраняются всегда.
+  `say`, `blob_put`, `owner_hold`) сохраняются всегда.
 - Ответ ≤ 200 000 байт (RCON 2.0.77 отдаёт и 300 КБ целиком); больше → `too_large`. Операции,
   которые могут вырасти, ограничены аргументами (радиус, `limit`, `top`).
 - Размер **запроса** (параметр команды) ≤ 8 КБ, больше → `limit`. Запрос до 512 КБ мод всё же
@@ -83,6 +83,7 @@ MCP-сервер `factorio_partner` (Python) общаются **только** �
 | `stuck` | застрял, не смог выбраться, или задача без прогресса 60 с |
 | `no_space` | в инвентаре помощника нет места (задача не может продолжать) |
 | `cancelled` | задача отменена |
+| `owner_hold` | `act` не принят: хозяин сказал «стоп» или «иди сюда», hold стоит (EVENTS.md «Слово хозяина») |
 | `too_large` | ответ больше лимита |
 | `internal` | ошибка Lua внутри мода (текст — без путей) |
 
@@ -112,6 +113,7 @@ MCP-сервер `factorio_partner` (Python) общаются **только** �
 | `reflexes` | h | `{set?:[{type,...}] (≤ 16)}` | `{set:[...]}` — полная замена; без `set` — только прочитать текущий набор (типы — EVENTS.md) | ядро (`core/reflexes.lua`) |
 | `vision` | h | `{on:bool}` | `{on}` | восприятие (`perception/vision.lua`) |
 | `say` | h | `{text}` | `{}` — сообщение в чат от имени помощника (правила ниже) | ядро |
+| `owner_hold` | h? | `{release?=false, seq?}` | без `release` — `{hold:{id:{kind, tick, seq}}}`; `release:true` (нужны `helper` и `seq` нового поручения хозяина) — `{released:[id]}`; правила — EVENTS.md «Слово хозяина» | ядро (`core/owner_words.lua`) |
 | `blob_put` | | `{blob, part, total, data}` | `{blob, received, total}` | ядро (`core/blobs.lua`) |
 | `state` | h | `{}` | STATE.md | восприятие |
 | `map` | h? | `{center?│near?:"player", radius?=16 (≤32), types?, names?}` | STATE.md | восприятие |
@@ -122,6 +124,7 @@ MCP-сервер `factorio_partner` (Python) общаются **только** �
 | `find` | h? | `{item, kinds?, surface?, limit?=20 (≤50)}` | STATE.md | восприятие |
 | `access` | h? | `{area│center?+radius?=32 (≤64)}` | STATE.md — суша, преграды и выходы с участка | восприятие |
 | `rates` | h? | `{scope?="surface"│"area", area?, surface?, period?="1m"│"10m"│"1h", items?, top?=20}` | STATE.md | восприятие |
+| `status` | h? | `{radius?=64 (≤128), limit?=20 (≤50), center?│near?}` | STATE.md — что стоит и почему | восприятие |
 | `supply` | h | `{item, count?=1 (≤10000), depth?=3 (≤5)}` | STATE.md — что из чего и где это взять | восприятие |
 | `lookup` | h? | `{name, kind?, limit?=20 (≤50)}` | STATE.md — справка «как в Факториопедии» | восприятие |
 
@@ -190,9 +193,9 @@ MCP-сервер `factorio_partner` (Python) общаются **только** �
   **повторяет тот же `id`** (мод вернёт сохранённый ответ, действие не задвоится).
   Не удалось за 3 попытки → агенту `transport_timeout`.
 - `tick` не растёт 3 с подряд → пауза (хост в меню/пауза). Изменяющие вызовы (`act`, `cancel`,
-  `reflexes{set}`, `say`, `blob_put`) → ошибка `game_paused` без отправки в мод (перед отказом
+  `reflexes{set}`, `say`, `blob_put`, `owner_hold{release}`) → ошибка `game_paused` без отправки в мод (перед отказом
   сервер ещё раз спрашивает `hello` — вдруг игра уже идёт); чтение (`state`, `map`, `resources`,
-  `stock`, `ghosts`, `rates`, `recipes`, `wait` и др.) → данные с полем `warning:"game_paused"`.
+  `stock`, `ghosts`, `rates`, `status`, `recipes`, `wait` и др.) → данные с полем `warning:"game_paused"`.
   Если пауза стала видна только в ответе на уже исполненный изменяющий вызов — результат с тем же
   `warning` (задача уже принята, скрывать её нельзя).
 - `tick` уменьшился → игра перезагружена: событие `game_reloaded`, задачи считаются потерянными.
@@ -299,7 +302,8 @@ MCP-сервер `factorio_partner` (Python) общаются **только** �
   `storage.helpers[id]` (`state`, `died_tick`, `unit_number`) сами (только чтение). Ядро отдаёт модулям
   `registry.info(helper_id) -> {body, module_errors}` (для `state`).
 - **Резерв** (для нескольких помощников): `storage.reservations = {items={[helper]={[name]=count}},
-  areas={[helper]=area}}`. `collect`/`extract` не берут чужой резерв, `build_*` держат область на
+  areas={[helper]=area}, machines={[unit_number]=helper}}` (`machines` — печи, которые помощник занял
+  для плавки в `get_items`, до конца шага). `collect`/`extract` не берут чужой резерв, `build_*` держат область на
   время задачи (пересечение → `reserved`). Область держат `build_ghosts`, `build_blueprint`,
   `deconstruct{area}`; `place` и `deconstruct{target}` чужой резерв только проверяют.
 - **Доступ модулей к ядру** (кроме `ctx`): чтение — `jobs.active`, `jobs.queue_len`,

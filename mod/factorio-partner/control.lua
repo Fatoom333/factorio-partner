@@ -11,6 +11,7 @@ local ACTIONS = {
   "place", "rotate", "set_recipe", "build_blueprint", "build_ghosts", "deconstruct",
   "plan_mining",
   "plan_belt",
+  "get_items",
 }
 for _, name in ipairs(ACTIONS) do
   core.register_action(require("scripts.actions." .. name))
@@ -22,8 +23,9 @@ local MODULES = {
   "perception.recipes", "perception.vision", "perception.rates", "perception.find",
   "perception.access",
   "perception.supply", "perception.lookup",
-  "reflexes.flee", "reflexes.death", "reflexes.ammo", "reflexes.shoot",
-  "core.nameplate", "core.bgcraft", "core.tidy",
+  "core.index", "perception.status",
+  "reflexes.flee", "reflexes.death", "reflexes.ammo", "reflexes.shoot", "reflexes.upkeep",
+  "core.nameplate", "core.bgcraft", "core.tidy", "core.owner_words", "core.metrics",
 }
 for _, name in ipairs(MODULES) do
   core.register_module(require("scripts." .. name))

@@ -60,6 +60,7 @@ stdout принадлежит протоколу MCP, журналы — тол�
 | `partner_resources` | `radius?, name?, center?│near?` | op `resources` |
 | `partner_stock` | `radius?, items?, limit?, center?│near?` | op `stock` (`items` — список имён) |
 | `partner_find` | `item, kinds?, surface?, limit?` | op `find` — где по всей базе делают, тратят, хранят предмет |
+| `partner_status` | `radius?=64 (≤128), limit?=20 (≤50), center?│near?` | op `status` — что стоит и почему: остановившиеся машины хозяина в радиусе по причинам (STATE.md) |
 | `partner_access` | `area? │ radius?, center?│near?` | op `access` — суша, жидкость и выходы с участка (вызвать перед разметкой и стройкой у лавы или воды) |
 | `partner_ghosts` | `radius?│area?, center?│near?` | op `ghosts` |
 | `partner_rates` | `scope?, period?, area?, surface?, items? (≤100), top? (1..100)` | op `rates` (`surface` — статистика другой планеты) |
@@ -69,6 +70,7 @@ stdout принадлежит протоколу MCP, журналы — тол�
 | `partner_supply` | `item, count?, depth?` | op `supply` — что из чего делается и где это взять на базе (STATE.md) |
 | `partner_act` | `do, args, replace=false` | op `act`; `do` из белого списка ACTIONS.md (ниже «partner_act») |
 | `partner_cancel` | `job?, all?` | op `cancel` (ровно одно из двух) |
+| `partner_hold` | `release?=false, said_seq?` | op `owner_hold`: без `release` — прочитать hold хозяина у помощника; `release:true` + `said_seq` (новое поручение хозяина, `player_said` `owner:true`) — снять его; правила снятия — EVENTS.md «Слово хозяина» |
 | `partner_wait` | `timeout=30 (≤55), quiet=true, since?` | ожидание (EVENTS.md), курсор на сервере |
 | `partner_reflex` | `set?: list` (≤ 16 рефлексов, всё ≤ 4 КБ) | op `reflexes`: полная замена набора, `[]` снимает все; без `set` — прочитать текущий набор (типы — EVENTS.md) |
 | `partner_say` | `text ≤ 200` | op `say` (префикс с именем помощника ставит мод, PROTOCOL §4) |

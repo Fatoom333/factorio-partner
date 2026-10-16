@@ -25,6 +25,22 @@ end
 local function set(list) return S.okr(S.req("reflexes", { set = list }, "h1")).set end
 
 S.suite("reflex_ammo", {
+  { "стоп хозяина: ни прямой подачи, ни задач; после снятия работает", function()
+      local W = setup(100)
+      local p = S.norm_pos(W.h.position)
+      local _, near = turret({ x = p.x + 4, y = p.y }, 0)
+      local _, far = turret({ x = p.x - 18, y = p.y }, 0)
+      storage.owner_hold = { h1 = { kind = "stop", tick = 0, seq = 1 } }
+      set{ { type = "ammo", radius = 20, min = 10, fill = 30 } }
+      C.run(200)
+      S.eq(near.get_item_count(), 0)
+      S.eq(far.get_item_count(), 0)
+      S.eq(#C.events("reflex_fired"), 0)
+      S.eq(#W.path.calls, 0, "задач не ставил")
+      storage.owner_hold = nil
+      C.run(120)
+      S.ok(near.get_item_count() > 0, "после снятия кладёт")
+  end },
   { "турель рядом: патроны из инвентаря до fill, по одной турели, шумное reflex_fired", function()
       local W = setup(100)
       local p = S.norm_pos(W.h.position)

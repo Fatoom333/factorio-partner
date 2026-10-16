@@ -140,6 +140,19 @@ def build_server(core: Core, admin: bool = False) -> FastMCP:
         return await _run(core.op_find(helper, key, item, kinds, surface, limit))
 
     @mcp.tool()
+    async def partner_status(helper: Helper, key: Key,
+                             radius: float | None = None,
+                             limit: int | None = None,
+                             center: Pos | None = None,
+                             near: Literal["player"] | None = None) -> dict:
+        """Что стоит и почему: машины хозяина в радиусе (по умолчанию 64, ≤ 128) вокруг помощника,
+        center или хозяина (near="player"). Ответ: {machines:{seen, running, stopped, hidden},
+        causes:{power|fuel|resource|input|output|recipe|heat|disabled|other: сколько},
+        stopped:[{name, reason, cause, recipe?, count, pos, dist}] (ближайшая из группы), index_ready,
+        helper?}. Статус машины — живое: в невидимых чанках машины идут в hidden. limit ≤ 50 строк."""
+        return await _run(core.op_status(helper, key, radius, limit, center, near))
+
+    @mcp.tool()
     async def partner_supply(helper: Helper, key: Key, item: str,
                              count: int | None = None,
                              depth: int | None = None) -> dict:
@@ -190,8 +203,12 @@ def build_server(core: Core, admin: bool = False) -> FastMCP:
     async def partner_act(helper: Helper, key: Key, do: str,
                           args: dict[str, Any] | None = None, replace: bool = False) -> dict:
         """Поставить задачу в очередь: walk, approach, follow, mine, craft, insert, extract, collect,
-        pickup, place, rotate, set_recipe, build_blueprint, build_ghosts, deconstruct, plan_mining, plan_belt, wait.
-        Ответ — {job, queued_before}; итог придёт событием job_done / job_failed. Для build_blueprint
+        get_items, pickup, place, rotate, set_recipe, build_blueprint, build_ghosts, deconstruct, plan_mining,
+        plan_belt, wait. Ответ — {job, queued_before}; итог придёт событием job_done / job_failed.
+        get_items{items} — добрать предметы в карманы до этих чисел (склады -> крафт -> плавка -> добыча
+        руками). auto_supply=true у insert, place, build_blueprint, build_ghosts — сначала добрать
+        недостающее так же, вместо отказа no_items. Отказ owner_hold — хозяин сказал «стоп»: не
+        повторяй, жди его слова (partner_hold). Для build_blueprint
         вместо blob передай plan (id из partner_plan); search / rotate — поиск места, где чертёж
         встаёт целиком (ответ detail.fit; не нашлось — fit: null), partial — обрезанный чертёж, только
         по согласию хозяина; detail.unmarked — сколько своих пометок к сносу задача сняла при сбое.
@@ -203,6 +220,17 @@ def build_server(core: Core, admin: bool = False) -> FastMCP:
         resumed:{built, removed}); потом снова build_ghosts. replace=true отменяет текущую задачу и
         очередь."""
         return await _run(core.op_act(helper, key, do, args, replace))
+
+    @mcp.tool()
+    async def partner_hold(helper: Helper, key: Key,
+                           release: bool = False,
+                           said_seq: Annotated[int | None, Field(
+                               description="для release: seq нового поручения хозяина (player_said, owner:true)")] = None) -> dict:
+        """hold хозяина («стоп», «иди сюда»): пока он стоит, act отвечает owner_hold. Без release —
+        прочитать ({hold:{id:{kind, tick, seq}}}). release=true — снять по новому поручению хозяина:
+        said_seq — его сообщение новее hold, не слово, на которое уже ответил мод (auto_reply), не
+        адресованное другому помощнику; одно сообщение снимает один hold. Ответ {released:[id]}."""
+        return await _run(core.op_hold(helper, key, release, said_seq))
 
     @mcp.tool()
     async def partner_cancel(helper: Helper, key: Key,

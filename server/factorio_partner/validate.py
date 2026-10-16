@@ -24,6 +24,8 @@ NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.\-]{0,99}$")
 ID_RE = re.compile(r"^[a-z0-9-]{1,32}$")   # blob / plan ids (PROTOCOL §4 blob_put)
 MAX_HELPERS = 16                   # PROTOCOL §4 helper_limit {max:1..16}
 FIND_LIMIT_MAX = 50                # STATE.md «find»
+STATUS_RADIUS_MAX = 128            # STATE.md «status»
+STATUS_LIMIT_MAX = 50
 FIND_KINDS = ("producers", "consumers", "storage", "entities")
 PLAYER_NAME_MAX = 60
 MAX_OPTIONS = 32                   # plan_mining.options: MPP flags
@@ -222,12 +224,15 @@ ACTIONS: dict[str, tuple[dict[str, Validator], tuple[str, ...], tuple[tuple[tupl
              ("count",), ((("target", "resource", "item"), True),)),
     # wait=false — queue the craft and go on (craft_done comes when it is ready)
     "craft": ({"recipe": name, "count": integer(1, 10_000), "wait": boolean}, ("recipe", "count"), ()),
-    "insert": ({"target": target, "items": items}, ("target", "items"), ()),
+    "insert": ({"target": target, "items": items, "auto_supply": boolean}, ("target", "items"), ()),
     "extract": ({"target": target, "items": items, "equip": boolean}, ("target",), ()),
     "collect": ({"items": items, "center": pos, "near": enum("player"), "radius": number(1, 128)},
                 ("items",), ((("center", "near"), False),)),
+    # bring the items up to these counts in the pockets: storages -> craft -> smelt -> mine by hand
+    "get_items": ({"items": items, "radius": number(1, 128)}, ("items",), ()),
     "pickup": ({"target": target, "area": area}, (), ((("target", "area"), False),)),
-    "place": ({"item": name, "pos": pos, "direction": DIRECTION, "recipe": name}, ("item", "pos"), ()),
+    "place": ({"item": name, "pos": pos, "direction": DIRECTION, "recipe": name, "auto_supply": boolean},
+              ("item", "pos"), ()),
     # turn an own building like the R key (the last built belt of a re-planned belt)
     "rotate": ({"target": target, "direction": blueprint_direction}, ("target", "direction"), ()),
     # change the recipe of a standing assembling machine, like the machine window
@@ -238,9 +243,9 @@ ACTIONS: dict[str, tuple[dict[str, Validator], tuple[str, ...], tuple[tuple[tupl
                         # rotations, and the cut blueprint the owner agreed to. `mirror` is how a
                         # `fit.mirror` answer is applied (the mod's argument)
                         "search": integer(0, FIT_SEARCH_MAX), "rotate": boolean, "partial": boolean,
-                        "mirror": boolean},
+                        "mirror": boolean, "auto_supply": boolean},
                         ("anchor",), ((("blob", "plan"), True),)),
-    "build_ghosts": ({"area": area, "radius": number(1, 64), "mode": MODE}, (),
+    "build_ghosts": ({"area": area, "radius": number(1, 64), "mode": MODE, "auto_supply": boolean}, (),
                      ((("area", "radius"), False),)),
     "deconstruct": ({"target": target, "area": area, "filter": name_list(32)}, (),
                     ((("target", "area"), True),)),

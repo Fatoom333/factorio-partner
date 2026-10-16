@@ -1,6 +1,6 @@
 {
   "name": "factorio-partner",
-  "version": "0.4.10",
+  "version": "0.5.0",
   "title": "Factorio Partner",
   "author": "Tartaluga",
   "description": "Claude plays as a second character in your save: macro-commands over RCON via a mod command (achievements stay enabled), honest actions only.",

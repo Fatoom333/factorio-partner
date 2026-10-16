@@ -26,14 +26,14 @@ M.HELPER_REQ = {
   helper_spawn = "spawn", helper_remove = "remove",
   helper_attach = "spawn", -- операция тела-игрока (scripts/core/attach.lua): id обязателен, тело проверяет сама
   act = "h", cancel = "h", jobs = "h", reflexes = "h", say = "h", vision = "h", state = "h", recipes = "h",
-  map = "h?", resources = "h?", stock = "h?", ghosts = "h?", rates = "h?", find = "h?", access = "h?",
+  map = "h?", resources = "h?", stock = "h?", ghosts = "h?", rates = "h?", find = "h?", access = "h?", status = "h?",
 }
 M.DEFAULT_MODULE_REQ = "h?"
 
 -- Только чтение: большой ответ таких операций не храним в recent (повтор безопасен).
 M.READ_ONLY = {
   hello = true, helper_list = true, jobs = true, events = true, state = true, map = true,
-  resources = true, stock = true, ghosts = true, recipes = true, rates = true, find = true, access = true,
+  resources = true, stock = true, ghosts = true, recipes = true, rates = true, find = true, access = true, status = true,
   supply = true, lookup = true,
 }
 

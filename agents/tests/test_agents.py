@@ -48,14 +48,14 @@ def test_contract_parsers_see_the_tables():
     assert {"walk", "collect", "build_ghosts", "build_blueprint", "plan_mining", "wait"} <= set(acts)
     assert acts["collect"] == {"items", "center", "near", "radius"}
     assert {"blob", "plan", "anchor", "direction", "force", "dry_run", "mode", "rotate", "search",
-            "partial", "mirror"} == acts["build_blueprint"]
+            "partial", "mirror", "auto_supply"} == acts["build_blueprint"]
     assert acts["plan_belt"] == {"from", "to", "belt", "lanes", "underground", "start_direction", "dry_run"}
     assert lint.mcp_tools()["partner_access"] == {"area", "radius", "center", "near"}
     assert lint.mcp_tools()["partner_supply"] == {"item", "count", "depth"}
     assert lint.mcp_tools()["partner_wait"] == {"timeout", "quiet", "since"}
     assert lint.mcp_tools()["partner_brief"] == set()
     codes = lint.error_codes()
-    assert len(codes) == 22 and "no_space" in codes and "internal" in codes
+    assert len(codes) == 23 and "no_space" in codes and "owner_hold" in codes and "internal" in codes
     assert {"job_failed", "player_said", "game_reloaded", "helper_lost"} <= set(lint.loud_events())
     reflexes = lint.reflex_types()
     assert reflexes["flee"]["radius"] == (4.0, 32.0) and reflexes["watch"]["every_s"] == (1.0, 600.0)

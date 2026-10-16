@@ -13,6 +13,7 @@
 -- * Патронов нет: громкое ammo_low{item?, turret} не чаще раза в LOW_REPEAT; задан item и chests —
 --   при свободной очереди задача `collect{items:{item: fill × 2}}` со складов в 64 клетках (не чаще
 --   раза в COLLECT_BACKOFF).
+-- * Пока хозяин держит помощника словом «стоп» (owner_hold) — не делает ничего.
 -- * Пока идёт отступление (flee) — молчит: жизнь важнее.
 -- Состояние — в reflexes.common body_state: ammo_tick, ammo_low_tick, ammo_collect_until.
 local util = require("scripts.core.util")
@@ -80,7 +81,7 @@ function M.check(id, entity, params, tick)
   local st = C.body_state(id, entity)
   if st.ammo_tick ~= nil and tick - st.ammo_tick < M.EVERY then return end
   st.ammo_tick = tick
-  if st.flee ~= nil then return end
+  if st.flee ~= nil or jobs.held(id) ~= nil then return end
   local fill = math.max(params.fill, params.min)
   local turrets = entity.surface.find_entities_filtered{
     type = "ammo-turret", force = entity.force, position = util.xy(entity.position), radius = params.radius,

@@ -2,7 +2,8 @@
 -- Контракт: docs/ACTIONS.md (список v1, «Подход»), PROTOCOL.md §6.5.
 --
 -- args: item (предмет из инвентаря), pos, direction? = 0 (defines.direction, 0..15),
---       recipe? (только для сборочных машин: рецепт своей силы, открытый, подходящей категории).
+--       recipe? (только для сборочных машин: рецепт своей силы, открытый, подходящей категории),
+--       auto_supply? = false (нет предмета в инвентаре — сначала добыть его как `get_items`).
 -- done.detail: {unit_number, name, pos}.
 -- Ход (честность §6.5): сам подходит на build_distance → LuaControl.can_place_entity
 -- (досягаемость + коллизии) → surface.create_entity{force, raise_built=true, quality="normal"}
@@ -14,6 +15,7 @@
 local util = require("scripts.core.util")
 local inv = require("scripts.lib.inventory")
 local B = require("scripts.lib.build")
+local G = require("scripts.lib.getitems")
 
 local M = {}
 M.name = "place"
@@ -22,6 +24,7 @@ M.schema = {
   pos = { type = "pos", required = true },
   direction = { type = "int", min = 0, max = 15, default = 0 },
   recipe = { type = "string", max = 100 },
+  auto_supply = { type = "bool", default = false },
 }
 
 local function stop(task, ctx)
@@ -69,7 +72,8 @@ function M.start(task, ctx)
   if not B.charted(h, a.pos) then return B.failed("not_charted", "pos is in an uncharted chunk") end
   B.check_free(ctx, B.footprint(ep, a.pos, a.direction))
   if inv.count(h.get_main_inventory(), a.item) < need then
-    return B.failed("no_items", "no " .. a.item .. " in the inventory")
+    if not a.auto_supply then return B.failed("no_items", "no " .. a.item .. " in the inventory") end
+    G.begin(task, ctx, { [a.item] = need }, {})
   end
   task.entity_name = ep.name
   task.need = need
@@ -79,6 +83,12 @@ end
 
 function M.tick(task, ctx)
   local a, h = task.args, ctx.entity
+  local pre = G.pre_tick(task, ctx)
+  if pre == nil then return nil end
+  if pre ~= false then
+    stop(task, ctx)
+    return B.failed(pre.code, pre.text, { supply = pre.detail })
+  end
   if task.aside ~= nil then
     local r = B.approach(task, ctx, task.aside, 0.6)
     if r == nil then return nil end
@@ -93,7 +103,8 @@ function M.tick(task, ctx)
   end
   if not B.visible(ctx, a.pos) then return fail(task, ctx, "not_visible", "pos is not visible") end
   if inv.count(h.get_main_inventory(), a.item) < task.need then
-    return fail(task, ctx, "no_items", "no " .. a.item .. " in the inventory")
+    stop(task, ctx)
+    return B.failed("no_items", "no " .. a.item .. " in the inventory", G.with_supply(task))
   end
   local proto = prototypes.entity[task.entity_name]
   if not h.can_place_entity{ name = task.entity_name, position = a.pos, direction = a.direction } then
@@ -128,6 +139,7 @@ function M.tick(task, ctx)
 end
 
 function M.stop(task, ctx)
+  G.stop(task, ctx)
   stop(task, ctx)
 end
 
