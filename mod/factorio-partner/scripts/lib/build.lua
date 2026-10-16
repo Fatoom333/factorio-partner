@@ -1201,6 +1201,19 @@ local function robots_step(task, ctx, rb, busy)
   return nil
 end
 
+--- Взять переключатель вылета личных дронов на время задачи: «только руками» — не вылетают, иначе
+--- вылетают. Прежнее значение запоминается один раз и возвращается в ghosts_stop; после ghosts_stop
+--- (например, на время снабжения) звать снова — переключатель встанет заново.
+function M.dispatch_arm(task, ctx)
+  local g, h = task.g, ctx.entity
+  if g == nil or h == nil or not h.valid or M.robots(h) == nil then return end
+  if g.prev_dispatch == nil then
+    local prev = read(h, "allow_dispatching_robots")
+    g.prev_dispatch = prev == nil and true or prev
+  end
+  set_dispatch(h, g.mode ~= "hand")
+end
+
 --- Начать стройку призраков области area в режиме mode ("auto"│"hand"│"robots").
 function M.ghosts_start(task, ctx, area, mode)
   local h = ctx.entity
@@ -1210,13 +1223,7 @@ function M.ghosts_start(task, ctx, area, mode)
     next_scan = 0, scanned = false,
     last_progress = ctx.tick, last_built = ctx.tick,
   }
-  if M.robots(h) ~= nil then
-    -- переключатель дронов на время задачи наш: «только руками» — не вылетают, иначе — вылетают.
-    -- Прежнее значение запоминаем в любом режиме и возвращаем в ghosts_stop.
-    local prev = read(h, "allow_dispatching_robots")
-    task.g.prev_dispatch = prev == nil and true or prev
-    set_dispatch(h, mode ~= "hand")
-  end
+  M.dispatch_arm(task, ctx)
   set_progress(task)
   return nil
 end
@@ -1282,7 +1289,9 @@ function M.ghosts_tick(task, ctx)
       soon(g, tick, 0)
       return nil
     end
-    return finish(task, ctx, M.failed("no_items", "not enough items for the remaining ghosts", detail_of(g)))
+    local res = M.failed("no_items", "not enough items for the remaining ghosts", detail_of(g))
+    res.shortage = true -- нехватка предметов (а не дронов): по этому признаку работает auto_supply
+    return finish(task, ctx, res)
   end
 
   local r

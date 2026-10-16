@@ -2,6 +2,7 @@
 -- Контракт: docs/ACTIONS.md («build_blueprint»), PROTOCOL.md §4 (blob_put), §6.5, §6.12, §7.
 --
 -- args: blob (id из blob_put), anchor (центр чертежа), direction? = 0 (0/4/8/12),
+--       auto_supply? = false (предметы кончились — добыть недостающее как `get_items`, как у build_ghosts),
 --       mode? = "auto"│"hand"│"robots" (кто строит), force? = "forced" (как ставится чертёж:
 --       "normal" — клик, "forced" — Shift, "superforced" — Ctrl+Shift),
 --       search? = 16 (0..32, радиус поиска сдвига `fit`; 0 — не искать), rotate? = false (в поиске
@@ -52,6 +53,7 @@ local blobs = require("scripts.core.blobs")
 local reserve = require("scripts.core.reserve")
 local inv = require("scripts.lib.inventory")
 local B = require("scripts.lib.build")
+local G = require("scripts.lib.getitems")
 
 local M = {}
 M.name = "build_blueprint"
@@ -66,6 +68,7 @@ M.schema = {
   partial = { type = "bool", default = false },
   mirror = { type = "bool", default = false },
   dry_run = { type = "bool", default = false },
+  auto_supply = { type = "bool", default = false },
 }
 M.MAX_ENTITIES = 1000
 M.MAX_TILES = 4000
@@ -909,8 +912,12 @@ end
 
 function M.tick(task, ctx)
   if task.fit ~= nil then return fit_tick(task, ctx) end
+  local pre = G.pre_tick(task, ctx)
+  if pre == nil then return nil end
+  if pre ~= false then return merged(task, G.build_failed(task, pre)) end
   local r = B.ghosts_tick(task, ctx)
   if r == nil then return nil end
+  if r.status == "failed" and r.code == "no_items" and G.start_for_build(task, ctx, r) then return nil end
   return merged(task, r)
 end
 
@@ -919,6 +926,7 @@ end
 --- → {unmarked = N}, если задача ставила пометки: ядро дописывает это в detail события job_failed
 --- (failed от самой задачи, cancel, stuck — ACTIONS.md, уточнения 3.4).
 function M.stop(task, ctx)
+  G.stop(task, ctx)
   unmark(task)
   task.fit = nil
   if task.g ~= nil then B.ghosts_stop(task, ctx) else B.stop_approach(task, ctx) end

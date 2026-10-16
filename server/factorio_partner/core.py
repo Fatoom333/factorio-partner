@@ -63,6 +63,7 @@ HINTS = {
     "partner_rates": "pass items or a smaller top",
     "partner_recipes": "pass filter",
     "partner_find": "pass a smaller limit or fewer kinds",
+    "partner_status": "pass a smaller radius or limit",
     "partner_supply": "pass a smaller depth",
     "partner_lookup": "pass a smaller limit",
     "partner_state": "",
@@ -455,6 +456,20 @@ class Core:
             return await self._mod("stock", args, h)
         return await self._tool("partner_stock", helper, key, a, run)
 
+    async def op_status(self, helper, key, radius=None, limit=None, center=None, near=None) -> dict:
+        """op ``status`` (STATE.md): which machines around stand still and why."""
+        a = {"radius": radius, "limit": limit, "center": center, "near": near}
+
+        async def run(h):
+            args: dict = {}
+            if radius is not None:
+                args["radius"] = V.number(1, V.STATUS_RADIUS_MAX)("radius", radius)
+            if limit is not None:
+                args["limit"] = V.integer(1, V.STATUS_LIMIT_MAX)("limit", limit)
+            self._where(args, center, near)
+            return await self._mod("status", args, h)
+        return await self._tool("partner_status", helper, key, a, run)
+
     async def op_ghosts(self, helper, key, radius=None, area=None, center=None,
                         near=None) -> dict:
         a = {"radius": radius, "area": area, "center": center, "near": near}
@@ -623,6 +638,31 @@ class Core:
                 raise V.bad("args", "pass job or all=true")
             return self._stamp(await self._mod("cancel", args, h, mutating=True))
         return await self._tool("partner_cancel", helper, key, a, run)
+
+    async def op_hold(self, helper, key, release=False, said_seq=None) -> dict:
+        """``partner_hold`` -> op ``owner_hold`` (docs/EVENTS.md «Слово хозяина»).
+
+        Without ``release`` it only reads the owner's hold on this helper. ``release=true`` lifts it
+        and needs ``said_seq``: a new message of the owner (``player_said``, ``owner:true``) that came
+        after the hold. The hold is lifted only by such a message that was not a stop word or a
+        templated question the mod already answered; the mod also refuses a message addressed by name
+        to another helper and a message that already lifted this helper's hold (a message without a
+        name lifts each helper's hold once). Whether the message is an order is decided by the agent
+        under its own rules.
+        """
+        a = {"release": release, "said_seq": said_seq}
+
+        async def run(h):
+            if not V.boolean("release", release):
+                if said_seq is not None:
+                    raise V.bad("said_seq", "only with release=true")
+                return await self._mod("owner_hold", {}, h)
+            if said_seq is None:
+                raise V.bad("said_seq", "seq of the owner's new order (player_said, owner:true) is required")
+            seq = V.integer(1, 2**53)("said_seq", said_seq)
+            return self._stamp(await self._mod("owner_hold", {"release": True, "seq": seq}, h,
+                                               mutating=True))
+        return await self._tool("partner_hold", helper, key, a, run)
 
     async def op_reflex(self, helper, key, set=None) -> dict:  # noqa: A002
         a = {"set": set}

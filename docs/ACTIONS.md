@@ -13,15 +13,16 @@
 | `follow` | `distance?=3, duration_s?=600` (за хозяином, та же поверхность) | `{}` |
 | `mine` | `target│resource:string│item:string, near?:pos, count:int` | `{mined: items}` |
 | `craft` | `recipe, count:int, wait?=true` | `{crafted: items}`; `wait:false` — `{queued: items, crafts}` сразу |
-| `insert` | `target, items` | `{inserted: items, left?: items, reason?}` |
+| `insert` | `target, items, auto_supply?=false` | `{inserted: items, left?: items, reason?}` |
 | `extract` | `target, items?` (нет → всё), `equip?:bool` | `{extracted: items, missing?: items, equipped?, unequipped?}` |
 | `collect` | `items, center?│near?:"player", radius?=64` | `{collected: items, missing: items, from:[unit]}` |
+| `get_items` | `items, radius?=64` | `{have: items, from: {inventory?, storage?, crafted?, smelted?, mined?: items}, shortfall?: [{item, missing, reason, via?}]}` |
 | `pickup` | `target?` (труп: `{name:"character-corpse", pos}`) │ `area?` (предметы на земле) | `{picked: items}` |
 | `rotate` | `target, direction:0│4│8│12` | `{name, pos, direction, was}` |
 | `set_recipe` | `target, recipe?` | `{name, pos, recipe, was, returned: items, spilled?}` |
-| `place` | `item, pos, direction?:0..15, recipe?` | `{unit_number, name, pos}` |
-| `build_blueprint` | `blob, anchor:pos, direction?:0│4│8│12, mode?="auto", force?="forced", search?=16, rotate?=false, mirror?=false, partial?=false, dry_run?:bool` | `{ghosts:int, tiles:int, skipped:[...], skipped_total, tiles_skipped, on_liquid:int, liquids?, fit?, to_remove?, to_remove_total?, missing: items}` + поля `build_ghosts` |
-| `build_ghosts` | `area?│radius?=64, mode?="auto"` | `{built:int, tiles_built:int, left:int, removed:int, not_removed:int, blocked:[...], blocked_total, missing: items}` |
+| `place` | `item, pos, direction?:0..15, recipe?, auto_supply?=false` | `{unit_number, name, pos}` |
+| `build_blueprint` | `blob, anchor:pos, direction?:0│4│8│12, mode?="auto", force?="forced", search?=16, rotate?=false, mirror?=false, partial?=false, dry_run?:bool, auto_supply?=false` | `{ghosts:int, tiles:int, skipped:[...], skipped_total, tiles_skipped, on_liquid:int, liquids?, fit?, to_remove?, to_remove_total?, missing: items}` + поля `build_ghosts` |
+| `build_ghosts` | `area?│radius?=64, mode?="auto", auto_supply?=false` | `{built:int, tiles_built:int, left:int, removed:int, not_removed:int, blocked:[...], blocked_total, missing: items}` |
 | `deconstruct` | `target│area, filter?:[name]` | `{removed:int, got: items, skipped?}` |
 | `plan_mining` | `resource?:string, area│near:pos, layout?="simple", direction?, miner?, belt?, pole?, pipe?, options?:object, dry_run?:bool` | `{ghosts:int, drills:int, tiles:int, skipped:int, area, need: items, layout, chosen:{miner, belt│chest, pole, pipe?}, warnings:[...], dry_run?}` |
 | `plan_belt` | `from:pos│"patch"│"resume", to:pos, belt?, lanes?=1 (1..4), underground?="auto", start_direction?, dry_run?:bool` | `{ghosts:int, length:int, undergrounds:int, turns:int, need: items, area, path:[pos…] (углы, ≤ 40), warnings:[...], lanes, chosen}` |
@@ -236,6 +237,56 @@
   `detail`; остался только неделимый стак — `reason:"whole_stacks_only"`. Полный инвентарь —
   `no_space` (`detail` — что успел собрать). Сбор — решение агента: другие действия сами его не
   запускают.
+
+### `get_items`
+Довести карманы помощника до `items` (`{имя: число}` — сколько каждого предмета должно **стать** в
+инвентаре, а не сколько добавить): `radius?=64` (1..128) — где искать склады и печи вокруг помощника.
+Одно действие вместо цепочки `collect` + `craft` + `mine` + `insert`. Для каждого предмета по порядку:
+1. **уже есть** в карманах — засчитывается;
+2. **склады** своей силы в радиусе (как `collect`: видимые, чужой резерв не берётся);
+3. **ручной крафт** по открытым рецептам своей силы; промежуточные продукты и сырьё дерево рецептов
+   разворачивает само, каждая ступень — отдельный `craft`;
+4. **плавка** в печах своей силы в радиусе: видимые, пустые (ни сырья, ни продукта), рецепт печи берёт
+   категорию. До 4 печей сразу, в печь влезает один стак сырья, дальше следующий круг. Печи хозяина
+   не трогаются: печь пропускается, если к ней подключён манипулятор или загрузчик (рядом с печью — в пределах
+   наибольшей дальности манипуляторов из прототипов, включая длинные и модовые; цель взятия или выброса — эта печь), если в её горелке уже лежит или горит чужое топливо
+   или если её занял другой помощник (занятая печь числится за помощником на время шага плавки и
+   освобождается при завершении и отмене). Топливо кладёт только помощник и только в пустую горелку
+   (из карманов, при нехватке оно добывается тем же способом); своё топливо в печи, которую он сам
+   заправил, он использует дальше. Из выхода печи забирается только своя доля (заложенное сырьё ×
+   выход рецепта), не выплавленное в срок сырьё возвращается не больше заложенного. Печей нет → причина
+   `no_furnace`, топлива нет → `no_fuel`;
+5. **добыча руками** (`mine{item}`): камни, деревья, руда, которую берёт рука.
+
+Только легальные действия (PROTOCOL §6): без предметов из воздуха, без телепорта, склады и печи только
+видимые. План пересобирается перед каждым шагом по живому миру; шаг, не давший прироста, закрывает
+свой способ до конца задачи (в `shortfall.reason` — его код: `not_found`, `no_items`, …).
+- `done.detail`: `have` — сколько запрошенного стало в карманах; `from` — откуда что взято, по
+  источникам `inventory` (было), `storage`, `crafted`, `smelted`, `mined` (пустые опущены; `crafted` и
+  `mined` включают промежуточное); `shortfall:[{item, missing, reason, via?}]` — чего не хватило:
+  `reason` — `no_source` (предмет ничем не получить), `no_furnace`, `no_fuel`, `cycle`/`too_deep`
+  (рецепты зациклены или слишком глубоки), `too_complex` (план разросся: больше 2000 разборов рецептов)
+  или код отказа шага; `via` — предмет-«бутылочное горлышко»
+  дерева, если он не тот, что просили.
+- Всё есть — `done` без `shortfall`. Часть есть, части нет — `done` с `shortfall`. Не прибавилось
+  ничего из запрошенного — `failed{no_items}` с той же `detail`. Полный инвентарь — `no_space`.
+- Прогресс — `job_progress{done, total}` по запрошенному; во время плавки задача держит «пульс».
+  Отмена снимает дочерний шаг; сырьё, уже лежащее в печи, остаётся в ней.
+- Неизвестный предмет — `bad_args`; `radius` вне 1..128 — `limit`.
+
+### `auto_supply` у `place`, `insert`, `build_blueprint`, `build_ghosts`
+Флаг `auto_supply?=false`. Включён — нехватка предметов не ведёт сразу к `no_items`: помощник сначала
+достаёт недостающее, как `get_items` (склад → крафт → плавка → руками), и продолжает.
+- `place` и `insert`: нет предмета (или не хватает у `insert`) на старте — снабжение, потом обычный ход.
+  Не вышло или добыто не всё (снабжение кончилось с `shortfall`) — `failed{no_items}` с
+  `detail.supply` (итог снабжения: `have`, `from`, `shortfall`); у `insert` в `detail` остаётся и
+  `missing`.
+- `build_ghosts`, `build_blueprint`: стройка кончилась `no_items` из-за нехватки предметов
+  (`missing`) — недостающее достаётся, и стройка идёт дальше (до 3 снабжений за задачу; недобор —
+  повтора нет). Нет личных дронов при `mode:"robots"` — тоже `no_items`, но это не нехватка
+  предметов: снабжение не запускается. Не вышло — прежний `failed{no_items}` стройки (`built`,
+  `left`, `missing`) плюс `detail.supply`.
+Без флага поведение прежнее: сбор остаётся решением агента.
 
 ### `pickup`
 Ровно одно из `target` и `area`.

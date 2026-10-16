@@ -21,13 +21,15 @@
 --     reflex_done{type, outcome, detail:{pos, legs, reason?}} в конце.
 --     reason: no_safe_point │ cancelled (задачу сняли — агент решил иначе) │ still_threatened │
 --     no_helper │ код ошибки ходьбы (path_failed, stuck, …).
---     Ревизия 3.11 — возврат к делу: resume?=true, resume_health?=0.8 (0..1). Перед отступлением
+--     Возврат к делу: resume?=true, resume_health?=0.8 (0..1). Перед отступлением
 --     мод запоминает задачи, которые оно снимет (активную и очередь, без задач рефлексов, не больше
 --     RESUME_MAX; у mine — остаток count). Отступление удалось (outcome ok), врага ближе radius нет,
 --     здоровье ≥ resume_health, а агент за это время ничего не поставил — мод ставит их снова и шлёт
 --     громкое reflex_resumed{type:"flee", jobs:[{job, do}]}. Не дождался за RESUME_WAIT или вернулся
 --     уже RESUME_LIMIT раз за RESUME_WINDOW — reflex_resumed{jobs:[], reason:"timeout"│"too_often"}.
 --     Агент сам что-то поставил — возврат молча отменяется (решил агент).
+--     hold хозяина («стоп», docs/EVENTS.md «Слово хозяина»): отступление идёт всё равно (задача ходьбы
+--     помечена ctx.owner_hold_ok), а возврат к делу — нет: reflex_resumed{jobs:[], reason:"owner_hold"}.
 --   watch { radius?=32 (4..32), every_s?=10 (1..600) }
 --     Шумное saw_enemy{name, pos, dist} о ближайшем враге (включая гнёзда), не чаще раза в every_s.
 local util = require("scripts.core.util")
@@ -226,7 +228,7 @@ local function start_leg(id, entity, st, p, threat, tick, legs, tried, resume)
       local since = events.last_seq()
       local ok, res = pcall(jobs.op_act,
         { ["do"] = "walk", args = { to = spot, radius = M.GOAL_RADIUS }, replace = true },
-        { helper_id = id, request_id = M.REQ, entity = entity, tick = tick })
+        { helper_id = id, request_id = M.REQ, entity = entity, tick = tick, owner_hold_ok = true })
       if not ok then
         local code = err.normalize(res)
         return false, code
@@ -391,6 +393,10 @@ local function resume_check(id, entity, st, tick)
   end
   if C.health(entity) < (p.resume_health or 0.8) then return end
   if C.enemies(entity, p.radius)[1] ~= nil then return end
+  if jobs.held(id) ~= nil then
+    st.resume = nil
+    return resumed(id, {}, "owner_hold") -- хозяин сказал «стоп»: к делу без его слова не возвращаемся
+  end
   local recent = {}
   for _, t in ipairs(st.resumes or {}) do
     if tick - t < M.RESUME_WINDOW then recent[#recent + 1] = t end

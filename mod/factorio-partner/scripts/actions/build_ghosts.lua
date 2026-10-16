@@ -2,7 +2,9 @@
 -- Контракт: docs/ACTIONS.md («build_ghosts»), PROTOCOL.md §6.5 (blocked = ghost_revive false),
 -- §7 (резерв области на время задачи).
 --
--- args: area │ radius = 64 (квадрат вокруг помощника на старте), mode = "auto"│"hand"│"robots".
+-- args: area │ radius = 64 (квадрат вокруг помощника на старте), mode = "auto"│"hand"│"robots",
+--       auto_supply = false (предметы кончились — добыть недостающее как `get_items` и продолжить,
+--       не больше 3 раз за задачу; не вышло — прежний failed{no_items} с detail.supply).
 -- done.detail: {built, tiles_built, left, removed, not_removed, blocked:[{name,pos,reason}],
 --               blocked_total, missing} (ACTIONS.md). Причины в blocked: obstacle (мешает помеченное,
 --               которое разобрать не вышло), tile (плитку под призраком положить не удалось), liquid
@@ -29,6 +31,7 @@
 -- Вся логика — scripts/lib/build.lua (общая с build_blueprint).
 local B = require("scripts.lib.build")
 local util = require("scripts.core.util")
+local G = require("scripts.lib.getitems")
 
 local M = {}
 M.name = "build_ghosts"
@@ -36,6 +39,7 @@ M.schema = {
   area = { type = "area" },
   radius = { type = "number", min = 1, max = 64 },
   mode = { type = "enum", values = { "auto", "hand", "robots" }, default = "auto" },
+  auto_supply = { type = "bool", default = false },
 }
 M.DEFAULT_RADIUS = 64
 
@@ -58,10 +62,18 @@ function M.start(task, ctx)
 end
 
 function M.tick(task, ctx)
-  return B.ghosts_tick(task, ctx)
+  local pre = G.pre_tick(task, ctx)
+  if pre == nil then return nil end
+  if pre ~= false then return G.build_failed(task, pre) end
+  local r = B.ghosts_tick(task, ctx)
+  if r ~= nil and r.status == "failed" and r.code == "no_items" and G.start_for_build(task, ctx, r) then
+    return nil
+  end
+  return r
 end
 
 function M.stop(task, ctx)
+  G.stop(task, ctx)
   B.ghosts_stop(task, ctx)
 end
 

@@ -59,6 +59,13 @@ function M.queue_of(helper, create)
   return q
 end
 
+--- hold хозяина у помощника (запись storage.owner_hold[id] = {kind, tick, seq}) или nil.
+--- Рефлексы, которые сами что-то делают руками помощника (ammo, upkeep), при hold молчат.
+function M.held(helper)
+  local all = storage.owner_hold
+  return all and all[helper] or nil
+end
+
 --- Активная задача помощника (task) или nil. Для чтения (state, helper_list).
 function M.active(helper)
   local q = J().by_helper[helper]
@@ -116,9 +123,13 @@ local function safe_stop(task, ctx, res)
   if not ok then log("[factorio-partner] stop " .. tostring(task["do"]) .. " failed: " .. err.clean_text(err.is(e) and e.text or e)) end
 end
 
+-- Задачи домашних дел (рефлекс upkeep) завершаются тихо: агента будит только отказ.
+local QUIET_DONE = { ["reflex:upkeep"] = true }
+
 local function emit_result(task, res)
   if res.status == "done" then
-    events.emit(task.helper, "job_done", { job = task.job, ["do"] = task["do"], detail = res.detail })
+    events.emit(task.helper, "job_done", { job = task.job, ["do"] = task["do"], detail = res.detail },
+      QUIET_DONE[task.req] and { loud = false } or nil)
   else
     events.emit(task.helper, "job_failed", {
       job = task.job, ["do"] = task["do"], code = res.code, text = res.text, detail = res.detail,
@@ -294,6 +305,13 @@ function M.op_act(args, ctx)
     err.raise("bad_args", "args.replace: wait never replaces the queue")
   end
   local helper = ctx.helper_id
+  -- hold хозяина (scripts/core/owner_words.lua): новые задачи не берутся, пока он не скажет продолжать.
+  -- Пропускается только то, что вызывающий код пометил ctx.owner_hold_ok (отступление flee): это поле
+  -- ставит только код мода, из запроса по RCON оно не приходит.
+  local hold = M.held(helper)
+  if hold ~= nil and ctx.owner_hold_ok ~= true then
+    err.raise("owner_hold", "the owner said " .. tostring(hold.kind) .. "; wait for his next word")
+  end
   local q = M.queue_of(helper, true)
   if a.replace then
     M.fail_all(helper, "cancelled", "replaced by job from " .. tostring(ctx.request_id), ctx.entity)

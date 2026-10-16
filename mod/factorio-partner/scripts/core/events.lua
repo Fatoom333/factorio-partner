@@ -5,6 +5,7 @@
 local util = require("scripts.core.util")
 local owner = require("scripts.core.owner")
 local schema = require("scripts.core.schema")
+local err = require("scripts.core.err")
 
 local M = {}
 
@@ -23,6 +24,7 @@ M.LOUD = {
   job_done = true, job_failed = true, attacked = true, health_low = true,
   died = true, respawned = true, reflex_done = true, inventory_full = true, helper_lost = true,
   craft_done = true, reflex_resumed = true, ammo_low = true,
+  owner_stop = true, owner_resume = true,
 }
 
 local function storage_events() return storage.events end
@@ -173,6 +175,11 @@ function M.gps_tags(text)
   return out
 end
 
+-- Разбор слов хозяина: модули кладут сюда функцию по имени (scripts/core/owner_words.lua).
+-- hook(data) -> extra|nil, after|nil: extra — поля, дописываемые в player_said; after(seq) зовётся
+-- после emit с номером player_said. Хуки зовутся только для сообщений хозяина, под pcall.
+M.chat_hooks = {}
+
 function M.on_console_chat(e)
   if e.player_index == nil then return end -- сервер/RCON
   local p = game.get_player(e.player_index)
@@ -188,7 +195,25 @@ function M.on_console_chat(e)
       data.selected = { name = sel.name, pos = util.pos(sel.position), unit_number = sel.unit_number }
     end
   end
-  M.emit(nil, "player_said", data)
+  local afters = {}
+  if is_owner then
+    local names = {}
+    for name in pairs(M.chat_hooks) do names[#names + 1] = name end
+    table.sort(names)
+    for _, name in ipairs(names) do
+      local ok, extra, after = pcall(M.chat_hooks[name], data)
+      if ok then
+        for k, v in pairs(extra or {}) do data[k] = v end
+        if after ~= nil then afters[#afters + 1] = after end
+      else
+        err.count_module_error()
+      end
+    end
+  end
+  local seq = M.emit(nil, "player_said", data)
+  for _, after in ipairs(afters) do
+    if not pcall(after, seq) then err.count_module_error() end
+  end
 end
 
 return M

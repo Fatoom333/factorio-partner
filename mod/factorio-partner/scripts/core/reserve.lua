@@ -67,9 +67,41 @@ function M.reserved_by_others(helper, name)
   return n
 end
 
+--- Занятые печи (и прочие машины-«рабочие места»): storage.reservations.machines = {[unit_number] = helper}.
+--- Кто из других помощников занял машину (id или nil).
+function M.machine_holder(helper, unit_number)
+  local m = R().machines
+  local other = m and m[unit_number]
+  if other ~= nil and other ~= helper then return other end
+  return nil
+end
+
+--- Занять машину; занята другим → false.
+function M.hold_machine(helper, unit_number)
+  if M.machine_holder(helper, unit_number) ~= nil then return false end
+  local r = R()
+  r.machines = r.machines or {}
+  r.machines[unit_number] = helper
+  return true
+end
+
+function M.release_machine(helper, unit_number)
+  local m = R().machines
+  if m and m[unit_number] == helper then m[unit_number] = nil end
+end
+
+function M.release_machines(helper)
+  local m = R().machines
+  if not m then return end
+  for u, who in pairs(m) do
+    if who == helper then m[u] = nil end
+  end
+end
+
 function M.release_all(helper)
   M.release_area(helper)
   M.release_items(helper)
+  M.release_machines(helper)
 end
 
 return M

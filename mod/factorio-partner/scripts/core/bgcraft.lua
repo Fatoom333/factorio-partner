@@ -19,6 +19,11 @@ function M.add(id, rec)
   list[#list + 1] = rec
 end
 
+--- Забыть фоновые крафты помощника без craft_done (крафт сняли — «стоп» хозяина).
+function M.clear(id)
+  if storage.bg_crafts ~= nil then storage.bg_crafts[id] = nil end
+end
+
 local function count(h, name)
   local inv = h.get_main_inventory()
   return inv and inv.get_item_count(name) or 0

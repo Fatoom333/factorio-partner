@@ -1,6 +1,7 @@
 -- Действие `insert`. Контракт: docs/ACTIONS.md, PROTOCOL.md §6.
 --
--- args: target, items. Кладёт предметы из инвентаря помощника в цель (сундук, печь, машину…):
+-- args: target, items, auto_supply? = false (не хватает предметов у помощника — сначала добыть их
+-- как `get_items`, а не failed{no_items}). Кладёт предметы из инвентаря помощника в цель (сундук, печь, машину…):
 -- сам подходит на reach_distance, переносит только в досягаемости. Предметы с данными — только
 -- целым стаком (transfer_stack) и только в настоящий главный инвентарь цели (сундук, багажник,
 -- вагон; у машин без него — bad_args), стак больше заявки не делится (остаётся в left);
@@ -10,12 +11,14 @@
 -- done.detail = {inserted: items, left?: items, reason?} — left: не влезло в цель (осталось у
 -- помощника); reason="whole_stacks_only" — часть left это неделимый стак больше заявки.
 local inv = require("scripts.lib.inventory")
+local G = require("scripts.lib.getitems")
 
 local M = {}
 M.name = "insert"
 M.schema = {
   target = { type = "target", required = true },
   items = { type = "items", required = true, min_kinds = 1 },
+  auto_supply = { type = "bool", default = false },
 }
 
 local function missing_of(h, items)
@@ -43,7 +46,10 @@ function M.start(task, ctx)
   end
   local missing = missing_of(ctx.entity, a.items)
   if next(missing) ~= nil then
-    return inv.failed("no_items", "helper does not have the items", { missing = missing })
+    if not a.auto_supply then
+      return inv.failed("no_items", "helper does not have the items", { missing = missing })
+    end
+    G.begin(task, ctx, a.items, {})
   end
   return nil
 end
@@ -51,6 +57,12 @@ end
 function M.tick(task, ctx)
   local h = ctx.entity
   local t = task.target
+  local pre = G.pre_tick(task, ctx)
+  if pre == nil then return nil end
+  if pre ~= false then
+    inv.stop_approach(task, ctx)
+    return G.failed_with(pre, { missing = missing_of(h, task.args.items) })
+  end
   if t == nil or not t.valid then
     inv.stop_approach(task, ctx)
     return inv.failed("not_found", "target disappeared")
@@ -62,7 +74,7 @@ function M.tick(task, ctx)
   -- в досягаемости: перепроверить наличие (могло измениться, пока шли)
   local missing = missing_of(h, task.args.items)
   if next(missing) ~= nil then
-    return inv.failed("no_items", "helper does not have the items", { missing = missing })
+    return inv.failed("no_items", "helper does not have the items", G.with_supply(task, { missing = missing }))
   end
   local main = h.get_main_inventory()
   local inserted, left, split = {}, {}, false
@@ -82,6 +94,7 @@ function M.tick(task, ctx)
 end
 
 function M.stop(task, ctx)
+  G.stop(task, ctx)
   inv.stop_approach(task, ctx)
 end
 
