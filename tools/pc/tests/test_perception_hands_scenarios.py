@@ -139,8 +139,8 @@ def test_get_items_storage_then_craft(fake_rcon):
     w = World()
     res = run("hands_get_items", w, fake_rcon)
     assert res["ok"] is True, res.get("reasons") or res.get("error")
-    assert w.acts[0] == {"items": {"iron-plate": 20}}
-    assert w.acts[1] == {"items": {"iron-gear-wheel": 5}}
+    assert w.acts[0]["items"] == {"iron-plate": 20} and isinstance(w.acts[0].get("radius"), int)
+    assert w.acts[1]["items"] == {"iron-gear-wheel": 5} and isinstance(w.acts[1].get("radius"), int)
     assert res["storage"]["after"] - res["storage"]["before"] == 20
     assert res["craft"]["from"].get("crafted")
 

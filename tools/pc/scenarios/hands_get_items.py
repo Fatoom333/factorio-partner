@@ -35,8 +35,9 @@ CRAFT_CANDIDATES = (("iron-gear-wheel", "iron-plate", 2, 5), ("pipe", "iron-plat
                     ("copper-cable", "copper-plate", 1, 6))
 
 
-def _ask(client, item, target, key, result):
-    r = P.act(client, "get_items", {"items": {item: target}})
+def _ask(client, item, target, key, result, radius=64):
+    # радиус — тот, в котором stock нашёл запасы (get_items по умолчанию смотрит в 64)
+    r = P.act(client, "get_items", {"items": {item: target}, "radius": radius})
     result[key] = P.brief(r)
     return r, P.detail_of(r)
 
@@ -57,13 +58,13 @@ def run(client) -> dict:
     reasons = []
 
     # 1. со склада
-    total, _radius = P._stock_total(client, STORAGE_CANDIDATES, result)
+    total, radius = P._stock_total(client, STORAGE_CANDIDATES, result)
     item = next((i for i in STORAGE_CANDIDATES if total.get(i, 0) >= COUNT and P.helper_count(client, i) == 0), None)
     if item is None:
         return P.setup_failed(result, "на видимых складах нет предмета из STORAGE_CANDIDATES "
                                       f"в количестве {COUNT}, которого не было бы у помощника: {total}")
     before = P.helper_count(client, item)
-    r, d = _ask(client, item, before + COUNT, "storage_call", result)
+    r, d = _ask(client, item, before + COUNT, "storage_call", result, radius)
     _check(r, d, item, before + COUNT, reasons, "storage")
     if ((d.get("from") or {}).get("storage") or {}).get(item, 0) <= 0:
         reasons.append(f"storage: detail.from.storage не содержит {item}: {d.get('from')}")
@@ -73,7 +74,7 @@ def run(client) -> dict:
         reasons.append(f"storage: в инвентаре {item} прибавилось {after - before} < {COUNT}")
 
     # 2. руками из сырья
-    raw_total, _radius = P._stock_total(client, [c[1] for c in CRAFT_CANDIDATES], result)
+    raw_total, raw_radius = P._stock_total(client, [c[1] for c in CRAFT_CANDIDATES], result)
     pick = None
     for name, raw, per, n in CRAFT_CANDIDATES:
         if P.helper_count(client, name) == 0 and P.helper_count(client, raw) + raw_total.get(raw, 0) >= per * n:
@@ -85,7 +86,7 @@ def run(client) -> dict:
                                                       "или готовое уже лежит у помощника"})
         return result
     name, n = pick
-    r, d = _ask(client, name, n, "craft_call", result)
+    r, d = _ask(client, name, n, "craft_call", result, raw_radius)
     _check(r, d, name, n, reasons, "craft")
     src = d.get("from") or {}
     have = P.helper_count(client, name)
