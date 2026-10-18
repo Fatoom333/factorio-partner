@@ -332,6 +332,14 @@ local function stack_of(st)
   return st.name, st.count or 1, st.quality or "normal"
 end
 
+--- Как движок: неизвестное или пустое имя предмета — ошибка «Unknown item name: X».
+local function check_item(name)
+  if type(name) ~= "string" or prototypes.item[name] == nil then
+    error("Unknown item name: " .. (type(name) == "string" and name or tostring(name)), 3)
+  end
+end
+S.check_item = check_item
+
 local function inv_key(name, quality)
   if quality == nil or quality == "normal" then return name end
   return name .. "@" .. (type(quality) == "table" and quality.name or quality)
@@ -345,11 +353,13 @@ function Inventory.get_item_count(self, item)
   end
   local name, quality = item, "normal"
   if type(item) == "table" then name, quality = item.name, item.quality or "normal" end
+  check_item(name)
   return self.contents[inv_key(name, quality)] or 0
 end
 
 function Inventory.insert(self, st)
   local name, count, quality = stack_of(st)
+  check_item(name)
   local total = self:get_item_count()
   local room = math.max(0, (self.cap or math.huge) - total)
   local n = math.min(count, room)
@@ -361,12 +371,14 @@ function Inventory.insert(self, st)
 end
 
 function Inventory.can_insert(self, st)
-  local _, count = stack_of(st)
+  local name, count = stack_of(st)
+  check_item(name)
   return (self.cap or math.huge) - self:get_item_count() >= 1 and count > 0
 end
 
 function Inventory.remove_item(self, st)
   local name, count, quality = stack_of(st)
+  check_item(name)
   local k = inv_key(name, quality)
   local have = self.contents[k] or 0
   local n = math.min(have, count)

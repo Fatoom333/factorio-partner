@@ -146,6 +146,7 @@ function Inv.get_item_count(self, item)
   local name, quality
   if item ~= nil then
     if type(item) == "table" then name, quality = item.name, q_of(item.quality) else name = item end
+    require("stubs").check_item(name)
   end
   local n = 0
   for _, s in ipairs(self._slots) do
@@ -175,7 +176,7 @@ end
 
 function Inv.insert(self, st)
   local name, count, quality = ident(st)
-  if prototypes.item[name] == nil then error("Unknown item name: " .. tostring(name), 2) end
+  require("stubs").check_item(name)
   local size = stack_size(name)
   local left = count
   for _, s in ipairs(self._slots) do
@@ -202,6 +203,7 @@ end
 
 function Inv.can_insert(self, st)
   local name, _, quality = ident(st)
+  require("stubs").check_item(name)
   for _, s in ipairs(self._slots) do
     local d = sd(s)
     if d.name == nil then return true end
@@ -212,6 +214,7 @@ end
 
 function Inv.remove(self, st)
   local name, count, quality = ident(st)
+  require("stubs").check_item(name)
   local left = count
   for i = #self._slots, 1, -1 do
     if left <= 0 then break end

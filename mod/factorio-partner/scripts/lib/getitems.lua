@@ -746,15 +746,15 @@ local function note_from(g, step, res)
 end
 
 local function step_gain(c, ctx)
-  local after = inv.count(ctx.entity.get_main_inventory(), c.step.item or "")
+  local main = ctx.entity.get_main_inventory()
   if c.step.kind == "collect" then
     local n = 0
     for name in pairs(c.step.items) do
-      n = n + math.max(0, inv.count(ctx.entity.get_main_inventory(), name) - (c.before[name] or 0))
+      n = n + math.max(0, inv.count(main, name) - (c.before[name] or 0))
     end
     return n
   end
-  return math.max(0, after - (c.before[c.step.item] or 0))
+  return math.max(0, inv.count(main, c.step.item) - (c.before[c.step.item] or 0))
 end
 
 -- ------------------------------------------------------------------ итог

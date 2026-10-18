@@ -4,7 +4,7 @@
 1. `hello`, `helper_spawn`.
 2. `status {radius:64}` с опросом до INDEX_WAIT_S, пока `index_ready` не станет true (индекс построек
    на сейве без него заполняется раскруткой по тикам).
-3. Разбор по STATE.md («status»): `machines.seen/running/stopped/hidden/ignored` — числа; `causes` —
+3. Разбор по STATE.md («status»): `machines.seen/running/stopped/hidden` — числа (необязательные счётчики — если есть); `causes` —
    словарь «разряд → число»; `stopped` — список групп `{name, reason, cause, pos, dist}` с известным
    разрядом; `helper.queue`; `radius` вне предела — `limit` или `bad_args`.
 В радиусе нет ни одной машины хозяина — сценарий пишет причину (kind=setup).
@@ -65,8 +65,12 @@ def run(client) -> dict:
     if not ready:
         reasons.append(f"index_ready не стал true за {INDEX_WAIT_S:.0f} с")
     machines = as_dict(data.get("machines")) or {}
-    for key in ("seen", "running", "stopped", "hidden", "ignored"):
+    for key in ("seen", "running", "stopped", "hidden"):
         if not _is_int(machines.get(key)):
+            reasons.append(f"machines.{key} не число: {machines.get(key)!r}")
+    # необязательные счётчики мод опускает, когда они равны нулю
+    for key in ("ignored", "unknown", "slow", "waiting"):
+        if key in machines and not _is_int(machines.get(key)):
             reasons.append(f"machines.{key} не число: {machines.get(key)!r}")
     causes = as_dict(data.get("causes"))
     if not isinstance(causes, dict) or not all(_is_int(v) for v in causes.values()):

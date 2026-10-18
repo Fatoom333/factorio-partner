@@ -108,6 +108,19 @@ S.suite("hands_get_items", {
       S.eq(C.counts(chest_inv(ch)), { ["iron-plate"] = 30, coal = 3 })
       S.eq(storage.reservations.items.h1, nil, "резерв склада снят")
   end },
+  { "склад с большими запасами: сталь и шестерни из нескольких сундуков (как на живом стенде)", function()
+      local W = prepare()
+      prototypes.item["steel-plate"] = { name = "steel-plate", type = "item", stack_size = 100 }
+      for i = 1, 3 do C.chest({ x = 4.5 + i, y = 0.5 }, { ["steel-plate"] = 1000, ["iron-plate"] = 1000 }, { size = 48 }) end
+      local d, kind = C.wait(get{ items = { ["steel-plate"] = 20 } })
+      S.eq(kind, "job_done", S.dump(d))
+      S.eq(d.detail.have, { ["steel-plate"] = 20 })
+      S.eq(d.detail.from, { storage = { ["steel-plate"] = 20 } })
+      S.eq(C.counts(W.main), { ["steel-plate"] = 20 })
+      d, kind = C.wait(get{ items = { ["iron-gear-wheel"] = 5 } })
+      S.eq(kind, "job_done", S.dump(d))
+      S.eq(d.detail.from, { storage = { ["iron-plate"] = 10 }, crafted = { ["iron-gear-wheel"] = 5 } })
+  end },
   { "крафт с промежуточными: шестерни и трубы, потом сборка", function()
       local W = prepare{ items = { ["iron-plate"] = 12 } }
       local d, kind = C.wait(get{ items = { ["gear-box"] = 2 } })
