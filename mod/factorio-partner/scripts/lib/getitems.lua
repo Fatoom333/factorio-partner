@@ -300,24 +300,45 @@ end
 
 -- ------------------------------------------------------------------ план
 
-local function list_copy(l)
-  local out = {}
-  for i, v in ipairs(l) do out[i] = v end
-  return out
+-- Пробы способов идут прямо в S с журналом записей: перед пробой запоминается отметка, после неё
+-- записи откатываются назад (undo), а лучшая проба переносится «разностью» (capture/apply). Склад и
+-- карманы целиком не копируются: цена пробы — число тронутых позиций, а не размер склада.
+-- M.stats.journal — сколько записей прошло через журнал (откат и перенос тоже считаются).
+M.stats = { journal = 0 }
+
+--- Записать t[k] = v с пометкой в журнал S.
+local function setv(S, t, k, v)
+  local n = S.nlog + 1
+  S.nlog = n
+  S.lt[n], S.lk[n], S.lo[n] = t, k, t[k]
+  t[k] = v
+  M.stats.journal = M.stats.journal + 1
 end
 
-local function copy_state(S)
-  return {
-    h = S.h, ctx = S.ctx, idx = S.idx, blocked = S.blocked, reasons = S.reasons, radius = S.radius,
-    mineable = S.mineable, furn = S.furn, fueled = S.fueled, budget = S.budget, choice = S.choice,
-    pocket = util.copy(S.pocket), stock = util.copy(S.stock), collect = util.copy(S.collect),
-    steps = list_copy(S.steps), short = list_copy(S.short), visiting = util.copy(S.visiting),
-  }
+--- Откатить записи журнала до отметки mark (S.nlog в тот момент).
+local function undo(S, mark)
+  local lt, lk, lo = S.lt, S.lk, S.lo
+  for i = S.nlog, mark + 1, -1 do
+    lt[i][lk[i]] = lo[i]
+    lt[i], lk[i], lo[i] = nil, nil, nil
+    M.stats.journal = M.stats.journal + 1
+  end
+  S.nlog = mark
 end
 
-local function adopt(S, S2)
-  S.pocket, S.stock, S.collect, S.steps, S.short, S.visiting =
-    S2.pocket, S2.stock, S2.collect, S2.steps, S2.short, S2.visiting
+--- Итог записей после отметки mark как разность {t, k, v}: что стало в каждой тронутой позиции.
+local function capture(S, mark)
+  local d = { n = 0, t = {}, k = {}, v = {} }
+  for i = mark + 1, S.nlog do
+    local t, k = S.lt[i], S.lk[i]
+    d.n = d.n + 1
+    d.t[d.n], d.k[d.n], d.v[d.n] = t, k, t[k]
+  end
+  return d
+end
+
+local function apply(S, d)
+  for i = 1, d.n do setv(S, d.t[i], d.k[i], d.v[i]) end
 end
 
 local function short_sum(S)
@@ -327,7 +348,7 @@ local function short_sum(S)
 end
 
 local function add_short(S, item, n, reason)
-  S.short[#S.short + 1] = { item = item, missing = n, reason = reason }
+  setv(S, S.short, #S.short + 1, { item = item, missing = n, reason = reason })
 end
 
 local function can_mine(S, item)
@@ -352,10 +373,10 @@ end
 
 local resolve
 
---- Один способ получить n штук item; пишет в S (клон). → причина отказа │ nil.
+--- Один способ получить n штук item; пишет в S через журнал (вызывающий откатывает). → причина отказа │ nil.
 local function via(S, item, n, depth, m)
   if m.kind == "mine" then
-    S.steps[#S.steps + 1] = { kind = "mine", item = item, count = n, key = "mine:" .. item }
+    setv(S, S.steps, #S.steps + 1, { kind = "mine", item = item, count = n, key = "mine:" .. item })
     return nil
   end
   local rec = m.rec
@@ -381,9 +402,9 @@ local function via(S, item, n, depth, m)
     end
   end
   for _, i in ipairs(rec.ingr) do resolve(S, i.name, i.amount * crafts, depth + 1) end
-  S.steps[#S.steps + 1] = { kind = m.kind, item = item, recipe = rec.name, count = crafts, yield = rec.yield,
-    key = m.kind .. ":" .. rec.name }
-  S.pocket[item] = (S.pocket[item] or 0) + crafts * rec.yield - n
+  setv(S, S.steps, #S.steps + 1, { kind = m.kind, item = item, recipe = rec.name, count = crafts, yield = rec.yield,
+    key = m.kind .. ":" .. rec.name })
+  setv(S, S.pocket, item, (S.pocket[item] or 0) + crafts * rec.yield - n)
   return nil
 end
 
@@ -391,12 +412,12 @@ end
 resolve = function(S, item, n, depth)
   if n <= 0 then return end
   local use = math.min(n, S.pocket[item] or 0)
-  if use > 0 then S.pocket[item] = S.pocket[item] - use n = n - use end
+  if use > 0 then setv(S, S.pocket, item, S.pocket[item] - use) n = n - use end
   if n <= 0 then return end
   local st = math.min(n, S.stock[item] or 0)
   if st > 0 then
-    S.stock[item] = S.stock[item] - st
-    S.collect[item] = (S.collect[item] or 0) + st
+    setv(S, S.stock, item, S.stock[item] - st)
+    setv(S, S.collect, item, (S.collect[item] or 0) + st)
     n = n - st
   end
   if n <= 0 then return end
@@ -404,7 +425,7 @@ resolve = function(S, item, n, depth)
   if S.budget.n > S.budget.max then add_short(S, item, n, "too_complex") return end
   if depth > M.MAX_DEPTH then add_short(S, item, n, "too_deep") return end
   if S.visiting[item] then add_short(S, item, n, "cycle") return end
-  S.visiting[item] = true
+  setv(S, S.visiting, item, true)
 
   local methods = {}
   for _, rec in ipairs(S.idx[item] or {}) do
@@ -419,7 +440,7 @@ resolve = function(S, item, n, depth)
     end
   end
 
-  local best, best_short, best_key, last_reason
+  local best_delta, best_short, best_key, last_reason, applied
   local base = short_sum(S)
   for _, m in ipairs(methods) do
     local blocked = S.blocked[m.key]
@@ -428,23 +449,31 @@ resolve = function(S, item, n, depth)
     elseif m.kind == "mine" and not can_mine(S, item) then
       last_reason = last_reason or "no_source"
     else
-      local S2 = copy_state(S)
-      local why = via(S2, item, n, depth, m)
+      local mark = S.nlog
+      local why = via(S, item, n, depth, m)
       if why then
+        undo(S, mark)
         last_reason = why
       else
-        local sh = short_sum(S2) - base
-        if best == nil or sh < best_short then best, best_short, best_key = S2, sh, m.key end
-        if sh == 0 then break end
+        local sh = short_sum(S) - base
+        if sh == 0 then
+          -- без нехватки: лучше не бывает, проба остаётся записанной в S
+          best_key, applied = m.key, true
+          break
+        end
+        if best_key == nil or sh < best_short then
+          best_delta, best_short, best_key = capture(S, mark), sh, m.key
+        end
+        undo(S, mark)
       end
     end
   end
-  S.visiting[item] = nil
-  if best then
-    best.visiting[item] = nil
+  if best_key then
+    if not applied then apply(S, best_delta) end
+    setv(S, S.visiting, item, nil)
     S.choice[item] = best_key
-    adopt(S, best)
   else
+    setv(S, S.visiting, item, nil)
     add_short(S, item, n, last_reason or "no_source")
   end
 end
@@ -457,7 +486,7 @@ local function make_plan(g, task, ctx)
     h = h, ctx = ctx, idx = idx_of(g, ctx), blocked = g.blocked, reasons = g.reasons, radius = g.radius,
     mineable = g.mineable, furn = {}, fueled = g.fueled, budget = { n = 0, max = M.MAX_CALLS }, choice = {},
     pocket = inv.counts(main), stock = {}, collect = {},
-    steps = {}, short = {}, visiting = {},
+    steps = {}, short = {}, visiting = {}, nlog = 0, lt = {}, lk = {}, lo = {},
   }
   if not g.blocked.collect then
     local scan = stock.scan(h.surface, h.force, util.xy(h.position), g.radius, nil, ctx.helper_id)

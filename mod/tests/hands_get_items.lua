@@ -305,6 +305,37 @@ S.suite("hands_get_items", {
       G.MAX_CALLS = old
       S.eq(d.detail.shortfall[1].reason, "too_complex", S.dump(d))
   end },
+  { "перебор рецептов не копирует склад: записей журнала не зависит от размера склада", function()
+      local function run_plan(junk)
+        local W = prepare()
+        local R = game.forces.player.recipes
+        for k = 1, 6 do
+          for j = 1, 4 do
+            local name = "chain" .. k .. "-v" .. j
+            R[name] = { name = name, enabled = true, hidden = false, category = "crafting", energy = 0.5, valid = true,
+              ingredients = { { type = "item", name = "chain" .. (k - 1), amount = 2 } },
+              products = { { type = "item", name = "chain" .. k, amount = 1 } } }
+          end
+        end
+        for k = 0, 6 do prototypes.item["chain" .. k] = { name = "chain" .. k, type = "item", stack_size = 50 } end
+        local items = {}
+        for k = 1, junk do
+          prototypes.item["junk" .. k] = { name = "junk" .. k, type = "item", stack_size = 50 }
+          items["junk" .. k] = 1
+        end
+        C.chest({ x = 6.5, y = 0.5 }, items, { size = junk + 1 })
+        local G = require("scripts.lib.getitems")
+        G.stats.journal = 0
+        local d, kind = C.wait(get{ items = { chain6 = 1 } })
+        S.eq({ kind, d.code }, { "job_failed", "no_items" }, S.dump(d))
+        return G.stats.journal
+      end
+      local small = run_plan(5)
+      local big = run_plan(400)
+      S.ok(small > 0, "журнал работал")
+      -- склад в 80 раз больше, а работы перебора столько же: полной копии нет
+      S.eq(big, small, "журнал " .. small .. " против " .. big)
+  end },
   { "плавка несколькими печами сразу", function()
       local W = prepare{ items = { ["iron-ore"] = 20, coal = 4 } }
       local a, b = furnace({ x = 6.5, y = 0.5 }), furnace({ x = 6.5, y = 4.5 })

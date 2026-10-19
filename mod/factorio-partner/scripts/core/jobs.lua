@@ -14,6 +14,15 @@
 --
 -- «Застрял»: 60 с без прогресса -> failed{code="stuck"}. Прогресс — любое из: сдвиг тела ≥ 0.1,
 -- изменение числа предметов в основном инвентаре, очереди крафта, task.progress, task.progress_tick.
+--
+-- Необязательные функции модуля (ядро зовёт их, если они есть):
+--   M.check_args(args, ctx) -> args   — проверка, которую не выразить схемой (после schema.validate);
+--   M.emit_result(task, res)          — своё событие итога вместо job_done/job_failed (plan -> plan_done);
+--   M.resume_args(task) -> args|nil   — аргументы, с которыми задачу продолжают с места (возврат flee);
+--   M.at_boundary(task) -> bool       — cancel{at_boundary}: true — модуль сам закончит задачу на границе шага.
+-- stop получает третьим аргументом итог задачи (res), если он известен.
+-- Преемник: task.after = номер задачи, сразу за которой эта стоит в очереди (args.after у plan).
+-- Предшественник закончился отказом — его преемники снимаются (cancelled).
 local err = require("scripts.core.err")
 local util = require("scripts.core.util")
 local schema = require("scripts.core.schema")
@@ -28,6 +37,7 @@ M.MAX_QUEUE = 32               -- ждущих задач на помощник�
 M.STUCK_TICKS = 60 * 60        -- 60 с без прогресса
 M.CHECK_EVERY = 60             -- проверка прогресса раз в секунду
 M.PROGRESS_EVERY = 5 * 60      -- job_progress не чаще раза в 5 с
+M.RECENT = 8                   -- итогов последних задач помнится на помощника (для after)
 
 M.actions = {}                 -- name -> модуль действия (не в storage)
 
@@ -90,7 +100,7 @@ end
 
 -- ------------------------------------------------------------------ завершение
 
-local function normalize_result(res)
+function M.normalize_result(res)
   if type(res) ~= "table" then
     return { status = "failed", code = "internal", text = "action returned a non-table result", detail = {} }
   end
@@ -105,13 +115,14 @@ local function normalize_result(res)
   end
   return out
 end
+local normalize_result = M.normalize_result
 
 --- stop может вернуть таблицу простых полей — они дописываются в detail итога (то, что известно
 --- только после уборки: например, сколько своих пометок к сносу снято). Поля итога не затираются.
 local function safe_stop(task, ctx, res)
   local mod = M.actions[task["do"]]
   if not mod then return end
-  local ok, e = pcall(mod.stop, task, ctx)
+  local ok, e = pcall(mod.stop, task, ctx, res)
   if not ok then err.count_module_error() end
   if ok and res ~= nil and type(e) == "table" then
     local extra = util.plain(e, 2)
@@ -122,11 +133,20 @@ local function safe_stop(task, ctx, res)
   end
   if not ok then log("[factorio-partner] stop " .. tostring(task["do"]) .. " failed: " .. err.clean_text(err.is(e) and e.text or e)) end
 end
+--- Для контейнеров задач (plan): остановить вложенную задачу так же, как ядро — свою.
+M.stop_task = safe_stop
 
 -- Задачи домашних дел (рефлекс upkeep) завершаются тихо: агента будит только отказ.
 local QUIET_DONE = { ["reflex:upkeep"] = true }
 
 local function emit_result(task, res)
+  local mod = M.actions[task["do"]]
+  if mod ~= nil and mod.emit_result ~= nil then
+    local ok, e = pcall(mod.emit_result, task, res)
+    if ok then return end
+    err.count_module_error()
+    log("[factorio-partner] emit_result " .. tostring(task["do"]) .. " failed: " .. err.clean_text(err.is(e) and e.text or e))
+  end
   if res.status == "done" then
     events.emit(task.helper, "job_done", { job = task.job, ["do"] = task["do"], detail = res.detail },
       QUIET_DONE[task.req] and { loud = false } or nil)
@@ -139,6 +159,37 @@ end
 
 --- Завершить активную задачу q.active результатом res (уже нормализован или сырой).
 --- stop вызывается для любого failed (отмена, сбой, застревание, failed от модуля).
+local function fail_result(code, text)
+  return { status = "failed", code = code, text = text, detail = {} }
+end
+
+local function remember(q, job, ok)
+  local r = q.recent
+  if r == nil then
+    r = {}
+    q.recent = r
+  end
+  r[#r + 1] = { job = job, ok = ok }
+  while #r > M.RECENT do table.remove(r, 1) end
+end
+
+--- Снять из очереди преемников задачи job (и их преемников): предшественник не доделан.
+local function drop_successors(q, job)
+  local gone = { [job] = true }
+  local i = 1
+  while i <= #q.queue do
+    local t = q.queue[i]
+    if t.after ~= nil and gone[t.after] then
+      table.remove(q.queue, i)
+      gone[t.job] = true
+      remember(q, t.job, false)
+      emit_result(t, normalize_result(fail_result("cancelled", "predecessor job " .. tostring(t.after) .. " failed")))
+    else
+      i = i + 1
+    end
+  end
+end
+
 local function finish_active(q, res, ctx)
   local task = q.active
   if task == nil then return end
@@ -146,11 +197,9 @@ local function finish_active(q, res, ctx)
   q.active = nil
   if res.status == "failed" then safe_stop(task, ctx, res) end
   reserve.release_area(task.helper)
+  remember(q, task.job, res.status == "done")
   emit_result(task, res)
-end
-
-local function fail_result(code, text)
-  return { status = "failed", code = code, text = text, detail = {} }
+  if res.status == "failed" then drop_successors(q, task.job) end
 end
 
 --- Снять все задачи помощника: активную (с stop) и очередь; каждой job_failed{code}.
@@ -159,15 +208,17 @@ function M.fail_all(helper, code, text, entity)
   local q = J().by_helper[helper]
   local done = {}
   if q == nil then return done end
+  -- очередь снимается до активной: её преемники получают тот же код, а не «predecessor failed»
+  local queue = q.queue
+  q.queue = {}
   if q.active then
     local ctx = M.make_ctx(helper, entity, game.tick)
     done[#done + 1] = q.active.job
     finish_active(q, fail_result(code, text), ctx)
   end
-  local queue = q.queue
-  q.queue = {}
   for _, task in ipairs(queue) do
     done[#done + 1] = task.job
+    remember(q, task.job, false)
     emit_result(task, normalize_result(fail_result(code, text)))
   end
   return done
@@ -207,7 +258,7 @@ end
 local function maybe_progress(task, tick)
   local p = task.progress
   if type(p) ~= "table" then return end
-  local key = tostring(p.done) .. "/" .. tostring(p.total)
+  local key = tostring(p.done) .. "/" .. tostring(p.total) .. "/" .. tostring(p.step or "")
   if key == task._progress_key then return end
   local last = task._progress_tick
   if last ~= nil and tick - last < M.PROGRESS_EVERY then return end
@@ -301,8 +352,15 @@ function M.op_act(args, ctx)
   local targs = a.args
   if targs ~= nil and type(targs) ~= "table" then err.raise("bad_args", "args.args: expected object") end
   targs = schema.validate(mod.schema or {}, targs or {}, "args.args")
+  if mod.check_args ~= nil then targs = mod.check_args(targs, ctx) end
   if a.replace and name == "wait" then
     err.raise("bad_args", "args.replace: wait never replaces the queue")
+  end
+  -- преемник: args.after (у plan) — номер задачи, за которой встать; в args он не остаётся
+  local after = targs.after
+  targs.after = nil
+  if after ~= nil and a.replace then
+    err.raise("bad_args", "args.replace: a successor (args.after) never replaces the queue")
   end
   local helper = ctx.helper_id
   -- hold хозяина (scripts/core/owner_words.lua): новые задачи не берутся, пока он не скажет продолжать.
@@ -318,20 +376,54 @@ function M.op_act(args, ctx)
   elseif #q.queue >= M.MAX_QUEUE then
     err.raise("limit", "queue is full (" .. M.MAX_QUEUE .. ")")
   end
-  local queued_before = (q.active and 1 or 0) + #q.queue
+  local pos = #q.queue + 1
+  if after ~= nil then pos = M.successor_pos(q, after) end
+  local queued_before = (q.active and 1 or 0) + pos - 1
   local jobs = J()
   local task = {
     job = jobs.next_job, helper = helper, ["do"] = name, args = targs, req = ctx.request_id,
-    created_tick = game.tick,
+    created_tick = game.tick, after = after,
   }
   jobs.next_job = jobs.next_job + 1
-  q.queue[#q.queue + 1] = task
+  table.insert(q.queue, pos, task)
   return { job = task.job, queued_before = queued_before }
+end
+
+--- Место преемника задачи job в очереди q: сразу за ней (и за её прежними преемниками).
+--- job активна или недавно закончилась удачно → начало очереди; закончилась отказом → not_found
+--- (предшественник не доделан, преемнику не с чего начинать); неизвестна → not_found.
+function M.successor_pos(q, job)
+  local pos
+  if q.active ~= nil and q.active.job == job then
+    pos = 1
+  else
+    for i, t in ipairs(q.queue) do
+      if t.job == job then pos = i + 1 break end
+    end
+  end
+  if pos == nil then
+    local recent = q.recent or {}
+    for i = #recent, 1, -1 do
+      if recent[i].job == job then
+        if not recent[i].ok then
+          err.raise("not_found", "args.args.after: job " .. job .. " failed; its successor is not queued")
+        end
+        pos = 1
+        break
+      end
+    end
+  end
+  if pos == nil then
+    err.raise("not_found", "args.args.after: job " .. job .. " is not active, queued or recently finished")
+  end
+  while q.queue[pos] ~= nil and q.queue[pos].after == job do pos = pos + 1 end
+  return pos
 end
 
 local CANCEL_SCHEMA = {
   job = { type = "int", min = 1 },
   all = { type = "bool" },
+  at_boundary = { type = "bool", default = false },
 }
 
 function M.op_cancel(args, ctx)
@@ -342,6 +434,13 @@ function M.op_cancel(args, ctx)
   end
   if a.job == nil then err.raise("bad_args", "args: job or all=true required") end
   local q = M.queue_of(helper, false)
+  if a.at_boundary and q and q.active and q.active.job == a.job then
+    -- контейнер шагов (plan) доделывает текущий шаг и заканчивается сам; прочие задачи — как обычно
+    local mod = M.actions[q.active["do"]]
+    if mod ~= nil and mod.at_boundary ~= nil and mod.at_boundary(q.active) then
+      return { cancelled = { a.job }, at_boundary = true }
+    end
+  end
   if q and q.active and q.active.job == a.job then
     finish_active(q, fail_result("cancelled", "cancelled"), M.make_ctx(helper, ctx.entity, game.tick))
     return { cancelled = { a.job } }
@@ -350,7 +449,9 @@ function M.op_cancel(args, ctx)
     for i, task in ipairs(q.queue) do
       if task.job == a.job then
         table.remove(q.queue, i)
+        remember(q, task.job, false)
         emit_result(task, normalize_result(fail_result("cancelled", "cancelled")))
+        drop_successors(q, task.job)
         return { cancelled = { a.job } }
       end
     end
@@ -374,7 +475,7 @@ function M.op_jobs(args, ctx)
     out.active = { job = t.job, ["do"] = t["do"], since = t.started_tick, progress = progress_of(t), req = t.req }
   end
   for _, t in ipairs(q.queue) do
-    out.queue[#out.queue + 1] = { job = t.job, ["do"] = t["do"], req = t.req }
+    out.queue[#out.queue + 1] = { job = t.job, ["do"] = t["do"], req = t.req, after = t.after }
   end
   return out
 end

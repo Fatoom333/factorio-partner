@@ -31,6 +31,7 @@
 |---|---|---|
 | `job_done` | `{job, do, detail}` | ядро задач |
 | `job_failed` | `{job, do, code, text, detail}` | ядро задач |
+| `plan_done` | `{job, do:"plan", status, code?, text?, at?, steps, done, failed, skipped, marks, from_step?, failures?, last?, inventory_delta?}` — итог плана («plan_done») | действие `plan` |
 | `attacked` | `{by, damage, health}` — только **первое** за эпизод | рефлексы |
 | `health_low` | `{health, max}` — здоровье < 40 % | рефлексы |
 | `died` | `{pos, corpse?:pos}` | рефлексы |
@@ -64,6 +65,23 @@
 всех снятых задач), `helper_remove`, `replace` и `cancel` → `cancelled`, 60 с без прогресса →
 `stuck`. `job_progress` — шумный прогресс долгой задачи (`task.progress`, например
 `{built, left}` у стройки) не чаще раза в 5 с.
+
+### `plan_done`
+Итог плана (ACTIONS.md «plan») — одно громкое событие вместо `job_done` / `job_failed`:
+- `status` — `done`: план дошёл до конца (с `on_fail:"continue"` — даже если шаги отказали);
+  `failed`: план оборван — тогда `code` и `text` (у отказа шага — код шага и `step N (do): текст`;
+  отмена, `replace`, «стоп» хозяина, отступление → `cancelled`; `stuck`, `no_helper`, `owner_hold`), `at`
+  — номер шага, на котором оборван.
+- `steps` — шагов в плане; `done`, `failed`, `skipped` — сколько шагов сделано, отказало, не начато.
+- `marks` — строка по одному знаку на шаг: `d` сделан, `f` отказ (оборванный шаг — тоже `f` с кодом
+  обрыва), `s` не начат, `-` до `from_step`.
+- `failures` — до 10 отказов `[{step, do, code, text, detail?}]` (счётчик `failed` — все).
+- `last` — `{step, do, detail}` последнего удачного шага.
+- `inventory_delta` — `{item: ±n}`: что прибавилось и убыло в основном инвентаре за план (до 20 видов,
+  больше — `delta_truncated:true`).
+- Событие держится в 4000 байт: большой `detail` шага (> 400 байт) становится `{truncated:true}`;
+  если и так много — `detail` шагов убираются, затем лишние `failures`.
+- Ждущий план, снятый до старта, — `plan_done{status:"failed", code:"cancelled"}`, все шаги `s`.
 
 ### `arrived`, `stuck`
 `arrived{job, pos}` — ходьба дошла (`walk`, `approach`). `stuck` шлёт модуль пути при **каждом**
@@ -238,7 +256,7 @@
 - После удачного отступления новое — не раньше чем через 1 с, после неудачи — через 10 с.
 - **Возврат к делу** (`resume`, по умолчанию включён). Перед отступлением мод запоминает задачи,
   которые оно снимет (активную и очередь, без задач рефлексов, не больше 4; у `mine` по `resource` /
-  `item` — остаток `count`). Отступление удалось, врага ближе `radius` нет, здоровье ≥ `resume_health`
+  `item` — остаток `count`; план `plan` — с текущего шага, `from_step`). Отступление удалось, врага ближе `radius` нет, здоровье ≥ `resume_health`
   и агент за это время ничего не поставил — мод ставит их снова (`req` `resume:flee`) и шлёт громкое
   `reflex_resumed{type:"flee", jobs:[{job, do}]}`. Агент поставил своё — возврат молча отменяется.
   `jobs:[]` с `reason`: `timeout` — здоровье и тишина не дождались 120 с; `too_often` — уже 3 возврата

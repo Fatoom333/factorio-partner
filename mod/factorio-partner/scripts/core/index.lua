@@ -26,8 +26,9 @@
 --
 -- Бюджет: раскрутка — не больше BOOT_CHUNKS чанков и BOOT_ENTITIES найденных построек за тик;
 -- список открытых чанков поверхности тоже собирается порциями (не больше LIST_CHUNKS чанков за
--- тик: итератор get_chunks в сейв не положить, поэтому порция пропускает уже просмотренные по
--- счётчику). Пока раскрутка идёт, `ready` = false, читающие это видят и пишут в ответе.
+-- тик: итератор get_chunks в сейв не положить, поэтому он держится в кэше модуля и идёт дальше
+-- без прохода с начала; после загрузки сейва его один раз проматывают по счётчику).
+-- Пока раскрутка идёт, `ready` = false, читающие это видят и пишут в ответе.
 local owner = require("scripts.core.owner")
 
 local M = {}
@@ -280,6 +281,40 @@ local function surface_names()
   return names
 end
 
+-- Итератор get_chunks текущей раскрутки: кэш модуля, не storage. {name, index, skip, it, pos}:
+-- pos — сколько чанков он уже отдал; совпало с b.skip — продолжаем, нет — собираем заново.
+-- Только в одиночной игре: в сетевой у присоединившегося клиента кэша нет, и если между тиками
+-- появились новые чанки, его заново созданный итератор отдал бы их в другом порядке, чем старый
+-- итератор хоста, — разные b.list, рассинхрон. Поэтому в сетевой игре итератор каждую порцию
+-- создаётся заново и проматывается на b.skip у всех участников одинаково.
+local LIVE = nil
+
+--- Счётчики для проверки сложности: сколько раз дёрнули итератор get_chunks и сколько раз его создали.
+M.stats = { steps = 0, opened = 0 }
+
+local function next_chunk(it)
+  M.stats.steps = M.stats.steps + 1
+  return it.it()
+end
+
+--- Итератор чанков поверхности, стоящий после skip чанков.
+local function chunk_iter(surface, name, skip)
+  local cache = not game.is_multiplayer()
+  if not cache then LIVE = nil end
+  if cache and skip > 0 and LIVE ~= nil and LIVE.name == name and LIVE.index == surface.index
+      and LIVE.pos == skip then
+    return LIVE
+  end
+  local it = { name = name, index = surface.index, it = surface.get_chunks(), pos = 0 }
+  M.stats.opened = M.stats.opened + 1
+  for _ = 1, skip do
+    if next_chunk(it) == nil then break end
+  end
+  it.pos = skip
+  if cache then LIVE = it end
+  return it
+end
+
 local function boot_step(d)
   local b = d.boot
   if b == nil then
@@ -297,22 +332,26 @@ local function boot_step(d)
     elseif b.list == nil then
       b.list, b.ci, b.skip = {}, nil, 0
     elseif b.ci == nil then
-      -- список открытых чанков поверхности — порцией за тик: итератор в сейв не положить, поэтому
-      -- уже просмотренные b.skip чанков пропускаются счётчиком (без обращений к API)
-      local seen, took, finished = 0, 0, true
-      for chunk in surface.get_chunks() do
-        seen = seen + 1
-        if seen > b.skip then
-          if took >= M.LIST_CHUNKS then finished = false break end
-          took = took + 1
-          if force.is_chunk_charted(surface, { x = chunk.x, y = chunk.y }) then
-            b.list[#b.list + 1] = chunk.x
-            b.list[#b.list + 1] = chunk.y
-          end
+      -- список открытых чанков поверхности — порцией за тик. Итератор живёт в кэше модуля (не в
+      -- storage) и идёт дальше с того места, где остановился; после загрузки сейва кэша нет, и
+      -- итератор один раз проматывается на b.skip чанков (счётчик в storage), дальше снова без прохода
+      local it = chunk_iter(surface, b.surfaces[b.si], b.skip)
+      local took, finished = 0, false
+      while took < M.LIST_CHUNKS do
+        local chunk = next_chunk(it)
+        if chunk == nil then finished = true break end
+        took = took + 1
+        if force.is_chunk_charted(surface, { x = chunk.x, y = chunk.y }) then
+          b.list[#b.list + 1] = chunk.x
+          b.list[#b.list + 1] = chunk.y
         end
       end
       b.skip = b.skip + took
-      if finished then b.ci = 1 end
+      it.pos = b.skip
+      if finished then
+        b.ci = 1
+        LIVE = nil
+      end
       return
     elseif b.ci > #b.list then
       b.si, b.list, b.ci, b.skip = b.si + 1, nil, nil, nil
@@ -338,6 +377,7 @@ function M.step()
   local d = data()
   if d.ready then return end
   local ok, e = pcall(boot_step, d)
+  if not ok then LIVE = nil end
   d.error = (not ok) and tostring(e) or nil
 end
 
@@ -345,6 +385,7 @@ end
 function M.rescan()
   local d = data()
   d.ready, d.boot = false, nil
+  LIVE = nil
 end
 
 -- ---------------------------------------------------------------- события

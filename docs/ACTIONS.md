@@ -27,6 +27,7 @@
 | `plan_mining` | `resource?:string, area│near:pos, layout?="simple", direction?, miner?, belt?, pole?, pipe?, options?:object, dry_run?:bool` | `{ghosts:int, drills:int, tiles:int, skipped:int, area, need: items, layout, chosen:{miner, belt│chest, pole, pipe?}, warnings:[...], dry_run?}` |
 | `plan_belt` | `from:pos│"patch"│"resume", to:pos, belt?, lanes?=1 (1..4), underground?="auto", start_direction?, dry_run?:bool` | `{ghosts:int, length:int, undergrounds:int, turns:int, need: items, area, path:[pos…] (углы, ≤ 40), warnings:[...], lanes, chosen}` |
 | `wait` | `seconds:1..600` | `{}` — пауза в очереди, никогда не заменяет её |
+| `plan` | `steps:[{do, args?, on_fail?}]` (1..200) │ `blob`, `on_fail?="stop"`, `from_step?=1`, `after?:job` | итог — одно событие `plan_done` вместо `job_done` / `job_failed` |
 
 Подробности каждого действия — в его разделе ниже.
 
@@ -621,6 +622,43 @@ skipped_total, tiles_skipped, on_liquid, liquids?, to_remove, to_remove_total, m
 Пауза в очереди на `seconds` (1..600) секунд; держит «пульс», `stuck` не получает. Никогда не
 заменяет очередь: `act{do:"wait", replace:true}` → `bad_args`. `done{}`.
 
+## `plan`
+Длинный план: до 200 обычных действий одной задачей очереди. Шаги исполняются по очереди без хода
+агента; следующий шаг начинается на тике после конца предыдущего. Итог — одно громкое событие
+`plan_done` с итогами всех шагов ([EVENTS.md](EVENTS.md#plan_done)); `job_done` / `job_failed` у
+плана нет.
+- **Шаг** — `{do, args?, on_fail?}`: любое действие из таблицы, кроме самого `plan`, с теми же
+  аргументами и проверками, что у отдельного `act`. Ошибка в любом шаге → `bad_args` / `limit` на
+  постановке, с путём шага в тексте (`args.args.steps[3].args.count: …`); ничего не встаёт.
+- **Откуда шаги:** `steps` прямо в аргументах (всё `act.args` ≤ 4 КБ — это примерно 60–100 коротких
+  шагов) или `blob` — id из `blob_put` с JSON-массивом тех же шагов (для длинных планов, до 200
+  шагов). Нужно ровно одно из двух.
+- **Отказ шага:** `on_fail:"stop"` (по умолчанию) — план кончается с кодом шага, остаток
+  пропускается; `"continue"` — отказ записывается, план идёт дальше. У шага может быть своё
+  `on_fail`, оно сильнее правила плана. Ошибка Lua в шаге — отказ шага с `internal`.
+- **`from_step`** — начать с этого шага (шаги до него не исполняются, в `marks` — `-`).
+- **Преемник `after:job`** — план встаёт в очередь сразу за задачей `job` (и за её прежними
+  преемниками), а не в конец; так следующий план ждёт за текущим, не мешая очереди. `job` активна или
+  ждёт → за ней; недавно закончилась удачно → в начало очереди; закончилась отказом или неизвестна →
+  `not_found`. Предшественник закончился отказом или снят — его преемники снимаются тоже
+  (`plan_done{code:"cancelled"}`, текст `predecessor job N failed`). С `replace:true` → `bad_args`.
+- **Обрыв сразу:** `cancel{job}` / `cancel{all}`, `replace:true`, слово хозяина «стоп» / «иди
+  сюда» (снимает все задачи, ставит hold), отступление `flee`, 60 с без прогресса (`stuck`),
+  смерть или пропажа тела (`no_helper`). Текущий шаг останавливается, как остановилась бы отдельная
+  задача (его `stop`), остаток не исполняется.
+- **Обрыв на границе шага:** `cancel{job, at_boundary:true}` (инструмент
+  `partner_cancel{job, at_boundary:true}`) —
+  текущий шаг доделывается, следующий не начинается; ответ `{cancelled:[job], at_boundary:true}`,
+  итог `plan_done{code:"cancelled"}`. Для ждущей задачи и для действий кроме `plan` — как обычный
+  `cancel`.
+- **Hold хозяина** на границе шага (если план всё же идёт) — план кончается с `owner_hold`.
+- **Отступление `flee`** снимает план (`plan_done{code:"cancelled"}`), а возврат к делу ставит его
+  снова с текущего шага (`from_step`), а не с начала; у текущего шага `mine` по `resource` / `item`
+  — с остатком `count` (EVENTS.md «flee»).
+- **Прогресс:** `jobs` и `job_progress` показывают `{done: шагов позади, total, step, steps, do}`.
+  «Застрял» считается по плану целиком: смена шага, прогресс шага и его «пульс» — прогресс плана.
+- Сохранение и загрузка посреди плана безопасны: план продолжается с того же шага.
+
 ## Для разработчиков модулей
 
 ### Интерфейс модуля действия
@@ -651,6 +689,11 @@ return M                          --   и снять своё: mining_state, cra
   `max`), `object` (+`fields`), `any`; **объединение** — `type = {"pos", "string"}` с
   `values = {"player"}` (для `pos│"player"`); поля `required`, `default`.
 - Своё состояние задачи — в `task` (переживает сохранение). Не хранить в `task` функции.
+- Необязательные функции модуля (их зовёт ядро, если они есть; так устроен `plan`):
+  `M.check_args(args, ctx) → args` — проверка после схемы; `M.emit_result(task, res)` — своё событие
+  итога вместо `job_done` / `job_failed`; `M.resume_args(task) → args|nil` — с чем продолжить задачу
+  после отступления; `M.at_boundary(task) → bool` — `cancel{at_boundary}`. `stop` получает третьим
+  аргументом итог задачи. Контейнер шагов останавливает вложенную задачу через `jobs.stop_task`.
 - Чтобы узнать задачу помощника, другие модули зовут `jobs.active(helper)` и `jobs.queue_len(helper)`
   из `scripts.core.jobs` (только чтение), а не разбирают `storage.jobs`.
 

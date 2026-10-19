@@ -49,7 +49,7 @@ TOOLS = {
     "brief": "op_brief", "state": "op_state", "map": "op_map", "resources": "op_resources",
     "stock": "op_stock", "status": "op_status", "find": "op_find", "access": "op_access", "ghosts": "op_ghosts", "rates": "op_rates",
     "recipes": "op_recipes", "act": "op_act", "cancel": "op_cancel", "wait": "op_wait",
-    "reflex": "op_reflex", "say": "op_say", "plan": "op_plan",
+    "reflex": "op_reflex", "say": "op_say", "plan": "op_plan", "hold": "op_hold",
 }
 ADMIN = {"hello": "admin_hello", "spawn": "admin_spawn", "remove": "admin_remove", "limit": "admin_limit"}
 CALL_MARGIN_S = 15.0          # запас к самому долгому вызову (partner_wait ≤ 55 с)

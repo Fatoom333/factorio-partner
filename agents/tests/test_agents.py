@@ -36,9 +36,11 @@ def test_whitelist_matches_server_and_contract():
     in_server, admin = lint.server_tools()
     in_docs = set(lint.mcp_tools())
     assert admin and not (short & admin)
-    assert short == in_docs                       # ровно таблица docs/MCP.md
+    # ровно таблица docs/MCP.md без инструментов режима ролей
+    assert short == in_docs - lint.MULTI_ROLE_TOOLS
+    assert lint.MULTI_ROLE_TOOLS <= in_docs and lint.MULTI_ROLE_TOOLS <= in_server
     assert lint.PENDING_TOOLS == set()            # сервер ни в чём не отстаёт
-    assert short == in_server                     # белый список агента = инструменты сервера
+    assert short == in_server - lint.MULTI_ROLE_TOOLS   # белый список агента = инструменты сервера
     assert "partner_access" in in_server
     assert "partner_supply" in short and "partner_supply" in in_server
 
@@ -361,3 +363,18 @@ def test_workflow_script_rules(tmp_path):
                    encoding="utf-8")
     problems = lint.lint_files([bad])
     assert any("partner" in p for p in problems) and any("Date.now" in p for p in problems)
+
+
+def test_role_agents_are_checked_against_role_rights(tmp_path):
+    rights = lint.role_rights()
+    assert set(rights) == {"voice", "pilot", "strategist"}
+    for path in lint.role_files():
+        assert path.is_file() and lint.lint_role(path, lint.ROLE_FILES[path.name]) == []
+    voice = (lint.AGENT_FILE.parent / "partner-voice.md").read_text(encoding="utf-8")
+    bad = tmp_path / "partner-voice.md"
+    bad.write_text(voice.replace("mcp__partner__partner_wait",
+                                 "mcp__partner__partner_wait, mcp__partner__partner_act"), encoding="utf-8")
+    assert any("partner_act вне прав роли voice" in p for p in lint.lint_role(bad, "voice"))
+    bad.write_text(voice.replace("mcp__partner__partner_wait",
+                                 "mcp__partner__partner_wait, mcp__partner__ledger_apply"), encoding="utf-8")
+    assert any("ledger_apply" in p for p in lint.lint_role(bad, "voice"))

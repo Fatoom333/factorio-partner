@@ -212,6 +212,35 @@ SIDE = enum("north", "east", "south", "west")
 # plan_belt.underground (ACTIONS.md): only through obstacles, never, or wherever it is shorter
 UNDERGROUND = enum("auto", "never", "prefer")
 
+PLAN_STEPS_MAX = 200               # ACTIONS.md plan: steps 1..200 (inline ones also fit act.args ≤ 4 KB)
+
+
+def plan_steps(field: str, v: Any) -> list:
+    """``plan.steps``: [{do, args?, on_fail?}], each step checked as its own ``act`` (no nested plan)."""
+    if not isinstance(v, list) or not v:
+        raise bad(field, "must be a non-empty list of steps")
+    if len(v) > PLAN_STEPS_MAX:
+        raise PartnerError("limit", f"{field}: at most {PLAN_STEPS_MAX} steps")
+    out = []
+    for i, s in enumerate(v, 1):
+        f = f"{field}[{i}]"
+        if not isinstance(s, dict):
+            raise bad(f, "must be an object {do, args?, on_fail?}")
+        for k in s:
+            if k not in ("do", "args", "on_fail"):
+                raise bad(f"{f}.{k}", "unknown field; allowed: do, args, on_fail")
+        if s.get("do") == "plan":
+            raise bad(f"{f}.do", "a plan cannot hold a plan")
+        try:
+            step = {"do": s.get("do"), "args": check_act(s.get("do"), s.get("args"))}
+        except PartnerError as e:
+            raise PartnerError(e.code, f"{f}.{e.text}" if e.text else f) from None
+        if "on_fail" in s:
+            step["on_fail"] = enum("stop", "continue")(f"{f}.on_fail", s["on_fail"])
+        out.append(step)
+    return out
+
+
 # do ->(fields, required, groups of mutually exclusive fields with "exactly one" flag)
 ACTIONS: dict[str, tuple[dict[str, Validator], tuple[str, ...], tuple[tuple[tuple[str, ...], bool], ...]]] = {
     "walk": ({"to": pos_or_player, "radius": REACH}, ("to",), ()),
@@ -258,6 +287,11 @@ ACTIONS: dict[str, tuple[dict[str, Validator], tuple[str, ...], tuple[tuple[tupl
                    "underground": UNDERGROUND, "start_direction": SIDE, "dry_run": boolean},
                   ("from",), ()),   # `to` is required too, except with from="resume" (check_act)
     "wait": ({"seconds": integer(1, 600)}, ("seconds",), ()),
+    # a long plan: up to 200 ordinary steps in one job; one plan_done at the end. `blob` — the
+    # steps as a JSON list sent with blob_put; `after` — queue right behind that job (a successor)
+    "plan": ({"steps": plan_steps, "blob": ident, "on_fail": enum("stop", "continue"),
+              "from_step": integer(1, PLAN_STEPS_MAX), "after": integer(1)},
+             (), ((("steps", "blob"), True),)),
 }
 
 
@@ -365,3 +399,22 @@ def check_names(field: str, v: Any, max_len: int = 100) -> list | None:
     if v is None:
         return None
     return name_list(max_len)(field, v)
+
+
+ORDER_SIZES = ("small", "large")     # MCP.md partner_order: small — the pilot, large — the strategist
+ORDER_TEXT_MAX = 300
+
+
+def check_order_text(v: Any) -> str:
+    """``text`` of ``partner_order``: one line, ≤ 300 characters. « » become ``"`` and «хозяин:»
+    becomes «хозяин -», so that the voice's wording never passes itself off as the owner's own
+    words (those come with the order separately, as ``owner_said``)."""
+    if not isinstance(v, str):
+        raise bad("text", "must be a string")
+    t = " ".join(v.split())
+    if not t:
+        raise bad("text", "must not be empty")
+    if len(t) > ORDER_TEXT_MAX:
+        raise PartnerError("limit", f"text: at most {ORDER_TEXT_MAX} characters")
+    t = t.replace("«", '"').replace("»", '"')
+    return re.sub(r"(?i)хозяин\s*:", "хозяин -", t)

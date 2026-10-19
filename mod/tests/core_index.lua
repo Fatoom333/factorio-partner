@@ -187,6 +187,80 @@ S.suite("core_index", {
       S.eq(index.counts().total, 6)
   end },
 
+  { "раскрутка: список чанков без прохода с начала — вызовов итератора порядка n, не n^2/порция", function()
+      local index = setup()
+      index.LIST_CHUNKS = 10
+      local n, calls = 200, 0
+      rawset(S.nauvis, "get_chunks", function()
+        local i = 0
+        return function()
+          calls = calls + 1
+          if i >= n then return nil end
+          i = i + 1
+          return { x = i - 1, y = 0 }
+        end
+      end)
+      for i = 0, n - 1, 20 do make("assembling-machine-1", i * 32 + 5, 5, { built = false }) end
+      S.tick(400)
+      S.eq(index.ready(), true)
+      S.eq(index.counts().total, 10, "все машины найдены")
+      -- 200 чанков порциями по 10: 20 порций; с проходом с начала было бы около 2000 вызовов
+      S.ok(calls <= n + 2, "вызовов итератора " .. calls)
+      S.eq(index.stats.opened, 1, "итератор создан один раз")
+  end },
+
+  { "раскрутка в сетевой игре: итератор без кэша модуля, каждая порция с проматыванием по счётчику", function()
+      local index = setup()
+      index.LIST_CHUNKS = 10
+      local n = 50
+      rawset(game, "is_multiplayer", function() return true end)
+      rawset(S.nauvis, "get_chunks", function()
+        local i = 0
+        return function()
+          if i >= n then return nil end
+          i = i + 1
+          return { x = i - 1, y = 0 }
+        end
+      end)
+      for i = 0, n - 1, 10 do make("assembling-machine-1", i * 32 + 5, 5, { built = false }) end
+      S.tick(200)
+      rawset(game, "is_multiplayer", function() return false end)
+      S.eq(index.ready(), true)
+      S.eq(index.counts().total, 5, "все машины найдены")
+      S.ok(index.stats.opened >= 5, "итератор создаётся на каждую порцию: " .. index.stats.opened)
+  end },
+
+  { "раскрутка: после загрузки сейва посреди списка итератор один раз проматывается по счётчику", function()
+      local index = setup()
+      index.LIST_CHUNKS = 10
+      local n, calls = 50, 0
+      local function install()
+        rawset(S.nauvis, "get_chunks", function()
+          local i = 0
+          return function()
+            calls = calls + 1
+            if i >= n then return nil end
+            i = i + 1
+            return { x = i - 1, y = 0 }
+          end
+        end)
+      end
+      install()
+      for i = 0, n - 1, 5 do make("assembling-machine-1", i * 32 + 5, 5, { built = false }) end
+      S.tick(3) -- поверхности, затем две порции по 10
+      local skip = storage.index.boot.skip
+      S.ok(skip > 0 and skip < n and storage.index.boot.ci == nil, "список ещё собирается: " .. skip)
+      S.eq(calls, skip)
+      S.reload()
+      install()
+      index = require("scripts.core.index")
+      S.tick(300)
+      S.eq(index.ready(), true)
+      S.eq(index.counts().total, 10)
+      -- до загрузки skip, перемотка skip, оставшиеся n - skip и один пустой шаг: проход с начала один раз
+      S.ok(calls <= skip + skip + (n - skip) + 2, "вызовов итератора " .. calls)
+  end },
+
   { "телепорт: позиция записи сверяется при выдаче, запись перекладывается в чанк", function()
       local index = setup()
       local e = make("assembling-machine-1", 10, 0)

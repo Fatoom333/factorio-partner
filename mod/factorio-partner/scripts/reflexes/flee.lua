@@ -23,7 +23,7 @@
 --     no_helper │ код ошибки ходьбы (path_failed, stuck, …).
 --     Возврат к делу: resume?=true, resume_health?=0.8 (0..1). Перед отступлением
 --     мод запоминает задачи, которые оно снимет (активную и очередь, без задач рефлексов, не больше
---     RESUME_MAX; у mine — остаток count). Отступление удалось (outcome ok), врага ближе radius нет,
+--     RESUME_MAX; у mine — остаток count; план plan — с текущего шага, M.resume_args модуля). Отступление удалось (outcome ok), врага ближе radius нет,
 --     здоровье ≥ resume_health, а агент за это время ничего не поставил — мод ставит их снова и шлёт
 --     громкое reflex_resumed{type:"flee", jobs:[{job, do}]}. Не дождался за RESUME_WAIT или вернулся
 --     уже RESUME_LIMIT раз за RESUME_WINDOW — reflex_resumed{jobs:[], reason:"timeout"│"too_often"}.
@@ -205,7 +205,13 @@ local function snapshot(id)
   for _, t in ipairs(list) do
     if #out >= M.RESUME_MAX then break end
     local req = t.req
-    if not (type(req) == "string" and req:sub(1, 7) == "reflex:") and type(t.args) == "table" then
+    local mod = jobs.actions[t["do"]]
+    if not (type(req) == "string" and req:sub(1, 7) == "reflex:") and type(t.args) == "table"
+        and mod ~= nil and mod.resume_args ~= nil then
+      -- план (actions/plan.lua) продолжается с текущего шага, а не с начала
+      local ok, args = pcall(mod.resume_args, t)
+      if ok and type(args) == "table" then out[#out + 1] = { ["do"] = t["do"], args = args } end
+    elseif not (type(req) == "string" and req:sub(1, 7) == "reflex:") and type(t.args) == "table" then
       local args = util.copy(t.args)
       local done = t.progress and t.progress.done
       if t["do"] == "mine" and type(args.count) == "number" and (args.resource or args.item)

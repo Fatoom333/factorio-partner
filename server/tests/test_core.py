@@ -544,6 +544,45 @@ async def test_repeated_failure_reset_and_cancelled(core, fake):
     await core.op_act("h1", KEY, "wait", args)        # done reset the counter
 
 
+async def test_repeated_failure_of_a_plan(core, fake):
+    await core.op_state("h1", KEY)
+    args = {"steps": [{"do": "walk", "args": {"to": {"x": 100, "y": 100}}}]}
+    for _ in range(3):
+        r = await core.op_act("h1", KEY, "plan", args)
+        fake.mod.emit("plan_done", {"job": r["job"], "do": "plan", "status": "failed", "code": "path_failed"})
+        await core.op_wait("h1", KEY, timeout=1)
+    assert (await code_of(core.op_act("h1", KEY, "plan", args))).code == "repeated_failure"
+
+
+async def test_plan_done_resets_and_cancel_is_not_a_failure(core, fake):
+    await core.op_state("h1", KEY)
+    args = {"steps": [{"do": "wait", "args": {"seconds": 5}}]}
+    for status, code in (("failed", "stuck"), ("failed", "stuck"), ("failed", "cancelled"),
+                         ("done", None), ("failed", "stuck"), ("failed", "stuck")):
+        r = await core.op_act("h1", KEY, "plan", args)
+        data = {"job": r["job"], "do": "plan", "status": status}
+        if code:
+            data["code"] = code
+        fake.mod.emit("plan_done", data)
+        await core.op_wait("h1", KEY, timeout=1)
+    await core.op_act("h1", KEY, "plan", args)        # done reset the counter
+
+
+async def test_plan_step_with_a_forge_plan_uploads_blob(cfg, fake, home, monkeypatch):
+    (home / "plans").mkdir()
+    (home / "plans" / "mine-1.txt").write_text(BP, encoding="utf-8")
+    name = install_forge(monkeypatch, "fake_forge_load_steps", load_plan=file_load_plan)
+    c = Core(cfg, make_bridge(cfg), poll_interval=0.01, forge_module=name)
+    await c.op_act("h1", KEY, "plan", {"steps": [
+        {"do": "walk", "args": {"to": {"x": 5, "y": 5}}},
+        {"do": "build_blueprint", "args": {"plan": "mine-1", "anchor": {"x": 5, "y": 5}}}]})
+    steps = last_env(fake, "act")["args"]["args"]["steps"]
+    bp = steps[1]["args"]
+    assert "plan" not in bp and fake.mod.blob_text(bp["blob"]) == BP
+    assert steps[0] == {"do": "walk", "args": {"to": {"x": 5, "y": 5}}}
+    await c.close()
+
+
 # ---------------------------------------------------------------- plan (forge)
 
 async def test_plan_without_forge(core):

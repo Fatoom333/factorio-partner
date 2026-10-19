@@ -12,6 +12,7 @@ local ACTIONS = {
   "plan_mining",
   "plan_belt",
   "get_items",
+  "plan",
 }
 for _, name in ipairs(ACTIONS) do
   core.register_action(require("scripts.actions." .. name))

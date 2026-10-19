@@ -9,6 +9,7 @@ Never logged or returned: helper keys, the RCON password, blueprint strings.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import hmac
 import importlib
 import json
@@ -20,9 +21,11 @@ import time
 from collections import OrderedDict
 from typing import Any, Awaitable, Callable
 
+from . import roles as R
 from . import validate as V
 from .bridge import HELPER_RE, Bridge
 from . import savenotes
+from .poller import EventPoller
 from .brief import build_brief
 from .config import Config
 from .errors import (ACCESS_DENIED, GAME_PAUSED, REPEATED_FAILURE, RESPONSE_TOO_LARGE,
@@ -40,6 +43,11 @@ NOISY_KEEP = 6
 LOUD_MAX = 40
 RULE_SAID_MAX_AGE = 10 * 60 * 60   # ticks: the owner's message that asked for a rule (partner_notes)
 RULE_CONFIRM_MAX_AGE = 2 * 60 * 60  # ticks: the rule question waits this long for the owner
+ORDER_SAID_MAX_AGE = 10 * 60 * 60  # ticks: the owner's message behind partner_order
+INBOX_MAX = 20                  # open orders per helper; more -> limit (the voice tells the owner)
+ORDER_MEMORY = 4096             # said_seq already turned into orders (a message is one order)
+ORDER_ACK_MAX = 20
+PENDING_MAX = 64                # server-made notices queued per (helper, role)
 YES_RE = re.compile(r"^\s*(да|ага|подтверждаю|yes|y|ok|ок|\+)\s*[.!]*\s*$", re.IGNORECASE)
 BLOB_PART = 3500
 BLOB_MAX = 1024 * 1024
@@ -68,7 +76,11 @@ HINTS = {
     "partner_lookup": "pass a smaller limit",
     "partner_state": "",
     "partner_wait": "",     # never too large: _fit_wait cuts the page and sets more=true
+    "partner_inbox": "",
 }
+
+# role of the key of the call being served (set by Core._tool for the duration of the call)
+_ROLE: contextvars.ContextVar[str | None] = contextvars.ContextVar("fp_role", default=None)
 
 
 def _canon(v: Any) -> str:
@@ -102,9 +114,15 @@ class Core:
         self.forge_module = forge_module
         self.start_seq: int | None = None
         self._start_lock = asyncio.Lock()
-        self.cursors: dict[str, int] = {}
-        self.pending: dict[str, list[dict]] = {}
-        self._wait_locks: dict[str, asyncio.Lock] = {}
+        # cursors, server-made notices and wait locks are per (helper, role): the voice, the pilot
+        # and the strategist of a helper wait at once and never take each other's events
+        self.cursors: dict[tuple[str, str], int] = {}
+        self.pending: dict[tuple[str, str], list[dict]] = {}
+        self._wait_locks: dict[tuple[str, str], asyncio.Lock] = {}
+        self.poller = EventPoller(self._poll_fetch, clock, fresh=poll_interval * 0.8, limit=EVENTS_LIMIT)
+        self.orders: dict[str, list[dict]] = {}
+        self._order_used: OrderedDict[int, None] = OrderedDict()
+        self._order_n = 0
         self.job_sig: OrderedDict[tuple[str, int], str] = OrderedDict()
         self.fail_counts: dict[tuple[str, str], int] = {}
         self.bridge.on_reload(self._on_reload)
@@ -118,27 +136,35 @@ class Core:
         return data if isinstance(data, dict) else {}
 
     def check_access(self, helper: Any, key: Any) -> str:
-        """Constant-time key check; every failure is the same ``access denied``."""
+        """Constant-time key check; every failure is the same ``access denied``.
+
+        Returns the role of the key (roles.py): every role key of the helper is compared, with no
+        early exit, so the time does not tell which role a wrong key came close to."""
         ok_shape = (isinstance(helper, str) and HELPER_RE.match(helper) is not None
                     and isinstance(key, str) and MIN_KEY <= len(key) <= MAX_KEY)
-        expected = ""
+        keys: dict[str, str] = {}
         if ok_shape:
-            v = self._load_keys().get(helper)
-            if isinstance(v, str) and len(v) >= MIN_KEY:
-                expected = v
-        given = key.encode("utf-8", "replace") if isinstance(key, str) else b""
-        match = hmac.compare_digest(expected.encode("utf-8") or b"\0" * MIN_KEY, given[:MAX_KEY * 4])
-        if not (ok_shape and expected and match):
+            keys = R.keys_of(self._load_keys().get(helper), MIN_KEY)
+        given = key.encode("utf-8", "replace")[:MAX_KEY * 4] if isinstance(key, str) else b""
+        role = None
+        for r in R.ROLES:
+            expected = keys.get(r, "")
+            match = hmac.compare_digest(expected.encode("utf-8") or b"\0" * MIN_KEY, given)
+            if match and expected and role is None:
+                role = r
+        if not (ok_shape and role):
             log.info("access denied for helper %s",
                      helper if isinstance(helper, str) and HELPER_RE.match(helper) else "?")
             raise PartnerError(ACCESS_DENIED)
-        return helper
+        return role
 
     # ================================================================ logging
-    def _log_call(self, helper: str, tool: str, args: dict, code: str, started: float) -> None:
+    def _log_call(self, helper: str, tool: str, args: dict, code: str, started: float,
+                  role: str | None = None) -> None:
         rec = {
             "t": time.strftime("%Y-%m-%dT%H:%M:%S"),
             "tool": tool,
+            "role": role,
             "args": _redact(args),
             "code": code,
             "ms": round((time.monotonic() - started) * 1000),
@@ -157,11 +183,16 @@ class Core:
     async def _tool(self, tool: str, helper: Any, key: Any, args: dict,
                     fn: Callable[[str], Awaitable[dict]]) -> dict:
         started = time.monotonic()
-        self.check_access(helper, key)
+        got = self.check_access(helper, key)
+        # check_access raises on every failure; a stand-in that returns the helper id (the old
+        # contract) means a key of the old form, i.e. the pilot
+        role = got if got in R.ROLES else R.PILOT
         code = "ok"
+        token = _ROLE.set(role)
         try:
+            R.require(role, tool, args)     # before any argument check or mod call
             await self._ensure_started()
-            self._cursor(helper)        # register the helper: reload notices reach it
+            self._cursor((helper, role))    # register the role: reload notices and orders reach it
             result = await fn(helper)
             size = _json_size(result)
             if size > MAX_RESPONSE:
@@ -177,7 +208,12 @@ class Core:
             log.exception("tool %s failed", tool)
             raise PartnerError("internal", "server error (see server.log)") from None
         finally:
-            self._log_call(helper, tool, args, code, started)
+            _ROLE.reset(token)
+            self._log_call(helper, tool, args, code, started, role)
+
+    @staticmethod
+    def _role() -> str:
+        return _ROLE.get() or R.PILOT
 
     # ================================================================ events bookkeeping
     async def _ensure_started(self) -> None:
@@ -197,20 +233,40 @@ class Core:
         self.start_seq = new
         ev = {"seq": new, "tick": tick, "helper": None, "kind": "game_reloaded",
               "data": {"tick": tick}, "loud": True}
-        for h in list(self.cursors):
-            self.cursors[h] = new
-            self.pending.setdefault(h, []).append(dict(ev))
+        self.poller.reset()
+        for k in list(self.cursors):
+            self.cursors[k] = new
+            self._notice(k, dict(ev))
         self.job_sig.clear()
         self.fail_counts.clear()
+        # orders belong to the timeline that was left: drop them; the mod's seq start over from the
+        # loaded save, so the used seq of the old timeline would refuse new messages of the owner
+        self.orders.clear()
+        self._order_used.clear()
 
-    def _cursor(self, helper: str) -> int:
-        if helper not in self.cursors:
-            self.cursors[helper] = self.start_seq or 0
-        return self.cursors[helper]
+    def _cursor(self, key: tuple[str, str]) -> int:
+        if key not in self.cursors:
+            self.cursors[key] = self.start_seq or 0
+        return self.cursors[key]
+
+    def _notice(self, key: tuple[str, str], ev: dict) -> None:
+        """Queue a server-made event for one (helper, role); the oldest go past PENDING_MAX."""
+        q = self.pending.setdefault(key, [])
+        q.append(ev)
+        if len(q) > PENDING_MAX:
+            del q[:len(q) - PENDING_MAX]
+
+    async def _poll_fetch(self, helper: str, since: int, limit: int, budget: float | None) -> dict:
+        return await self._mod("events", {"since": since, "helper": helper, "limit": limit},
+                               None, channel="poll", budget=budget)
 
     def _note_event(self, helper: str, ev: dict) -> None:
-        """Track consecutive job_failed per (do, args) for ``repeated_failure``."""
+        """Track consecutive job_failed per (do, args) for ``repeated_failure``; a plan ends with
+        ``plan_done`` instead: ``status:"failed"`` counts as a failure of the whole plan."""
         kind = ev.get("kind")
+        if kind == "plan_done":
+            st = (ev.get("data") or {}).get("status") if isinstance(ev.get("data"), dict) else None
+            kind = "job_failed" if st == "failed" else "job_done" if st == "done" else None
         if kind not in ("job_done", "job_failed") or ev.get("helper") not in (helper, None):
             return
         data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
@@ -264,7 +320,7 @@ class Core:
     async def op_brief(self, helper, key) -> dict:
         async def run(h):
             notes = await self._forge_notes()
-            out = dict(build_brief(self.cfg, notes), helper=h)
+            out = dict(build_brief(self.cfg, notes), helper=h, role=self._role())
             # the owner's standing rules and the helper's memo for this save
             profile = notes.get("profile") if isinstance(notes, dict) else None
             save = savenotes.save_name(self.cfg, profile)
@@ -608,12 +664,12 @@ class Core:
                 raise PartnerError(REPEATED_FAILURE,
                                    f"{do} with these args failed {FAIL_LIMIT} times in a row; "
                                    "change the plan or ask the owner")
-            mod_args = clean
-            if do == "build_blueprint" and "plan" in clean:
-                bp = await self._load_plan(clean["plan"])
-                blob = await self._upload_blob(bp)
-                mod_args = {k: v for k, v in clean.items() if k != "plan"}
-                mod_args["blob"] = blob
+            mod_args = await self._plan_to_blob(do, clean)
+            if do == "plan" and "steps" in clean:
+                # steps go to the mod as their own acts: a build_blueprint step with a forge plan id
+                # gets the same blob upload as a single act
+                mod_args = dict(clean, steps=[dict(st, args=await self._plan_to_blob(st["do"], st["args"]))
+                                              for st in clean["steps"]])
             data = await self._mod("act", {"do": do, "args": mod_args, "replace": rep}, h,
                                    mutating=True)
             job = data.get("job")
@@ -624,16 +680,31 @@ class Core:
             return self._stamp(data)
         return await self._tool("partner_act", helper, key, a, run)
 
-    async def op_cancel(self, helper, key, job=None, all=False) -> dict:  # noqa: A002
-        a = {"job": job, "all": all}
+    async def _plan_to_blob(self, do: str, clean: dict) -> dict:
+        """``build_blueprint{plan}`` -> the same args with ``blob``: the forge plan is uploaded."""
+        if do != "build_blueprint" or "plan" not in clean:
+            return clean
+        bp = await self._load_plan(clean["plan"])
+        blob = await self._upload_blob(bp)
+        out = {k: v for k, v in clean.items() if k != "plan"}
+        out["blob"] = blob
+        return out
+
+    async def op_cancel(self, helper, key, job=None, all=False, at_boundary=False) -> dict:  # noqa: A002
+        a = {"job": job, "all": all, "at_boundary": at_boundary}
 
         async def run(h):
+            boundary = V.boolean("at_boundary", at_boundary)
             if V.boolean("all", all):
                 if job is not None:
                     raise V.bad("args", "use only one of job / all")
+                if boundary:
+                    raise V.bad("at_boundary", "only with job")
                 args = {"all": True}
             elif job is not None:
                 args = {"job": V.integer(1, 2**53)("job", job)}
+                if boundary:
+                    args["at_boundary"] = True
             else:
                 raise V.bad("args", "pass job or all=true")
             return self._stamp(await self._mod("cancel", args, h, mutating=True))
@@ -688,6 +759,97 @@ class Core:
             return await self._mod("say", {"text": V.check_say(text)}, h, mutating=True)
         return await self._tool("partner_say", helper, key, a, run)
 
+    async def op_order(self, helper, key, said_seq=None, text=None, size=None, urgent=False) -> dict:
+        """``partner_order`` — the voice files an order of the owner into the helper's inbox.
+
+        Only with ``said_seq`` of a real message of the owner: the server reads that event from the
+        mod itself (``player_said``, ``owner:true``, no ``auto_reply`` — the mod has not handled it as
+        a word, not older than 10 minutes). One message is one order: a seq used once is refused.
+        ``text`` is the voice's short wording; the owner's own words come with the order as
+        ``owner_said``, read from the event, not from the caller.
+        """
+        a = {"said_seq": said_seq, "text": text, "size": size, "urgent": urgent}
+
+        async def run(h):
+            seq = V.integer(1, 2**53)("said_seq", said_seq)
+            sz = V.enum(*V.ORDER_SIZES)("size", size)
+            urg = V.boolean("urgent", urgent)
+            t = V.check_order_text(text)
+            if seq <= (self.start_seq or 0):
+                # the message came before this server started or before the save was loaded: whether
+                # it already became an order is unknown (the used seq live in this process only)
+                raise PartnerError("bad_args", "said_seq: the message came before the server started or "
+                                               "the save was loaded; ask the owner again")
+            if seq in self._order_used:
+                raise PartnerError("bad_args", "said_seq: this message of the owner is already an order")
+            if len(self.orders.get(h, ())) >= INBOX_MAX:
+                raise PartnerError("limit", f"the inbox holds {INBOX_MAX} open orders; tell the owner "
+                                            "it is full")
+            words, tick = await self._order_said(h, seq)
+            if seq <= (self.start_seq or 0):  # the save was reloaded while reading the message
+                raise PartnerError("bad_args", "said_seq: the save was loaded; ask the owner again")
+            if seq in self._order_used:       # a parallel call with the same seq got there first
+                raise PartnerError("bad_args", "said_seq: this message of the owner is already an order")
+            if len(self.orders.get(h, ())) >= INBOX_MAX:
+                raise PartnerError("limit", f"the inbox holds {INBOX_MAX} open orders; tell the owner "
+                                            "it is full")
+            self._order_used[seq] = None
+            while len(self._order_used) > ORDER_MEMORY:
+                self._order_used.popitem(last=False)
+            self._order_n += 1
+            order = {"id": f"o{self._order_n}", "said_seq": seq, "tick": tick, "size": sz,
+                     "urgent": urg, "text": t, "owner_said": words}
+            self.orders.setdefault(h, []).append(order)
+            ev = {"seq": self.bridge.last_seq, "tick": self.bridge.last_tick, "helper": h,
+                  "kind": "order", "data": dict(order), "loud": True}
+            for role in (R.PILOT, R.STRATEGIST):
+                if (h, role) in self.cursors:     # roles that have called the server get woken
+                    self._notice((h, role), dict(ev))
+            return {"order": order, "open": len(self.orders[h])}
+        return await self._tool("partner_order", helper, key, a, run)
+
+    async def _order_said(self, helper: str, said_seq: int) -> tuple[str, int | None]:
+        """The owner's message behind an order, read from the mod: (his text, its tick)."""
+        data = await self._mod("events", {"since": said_seq - 1, "helper": helper, "limit": 1}, None)
+        evs = data.get("events") if isinstance(data, dict) else None
+        ev = evs[0] if isinstance(evs, list) and evs else None
+        d = ev.get("data") if isinstance(ev, dict) else None
+        if not (isinstance(ev, dict) and ev.get("seq") == said_seq and ev.get("kind") == "player_said"
+                and isinstance(d, dict) and d.get("owner") is True and isinstance(d.get("text"), str)):
+            raise PartnerError("bad_args", "said_seq: not a message of the owner (player_said, owner:true)")
+        if d.get("auto_reply") is True:
+            raise PartnerError("bad_args", "said_seq: the mod already answered this message as a word "
+                                           "(auto_reply): it is not an order")
+        now = data.get("tick") if _is_int(data.get("tick")) else self.bridge.last_tick
+        if _is_int(now) and _is_int(ev.get("tick")) and now - ev["tick"] > ORDER_SAID_MAX_AGE:
+            raise PartnerError("bad_args", "said_seq: the owner's message is older than 10 minutes")
+        return d["text"][:500], ev.get("tick") if _is_int(ev.get("tick")) else None
+
+    async def op_inbox(self, helper, key, ack=None) -> dict:
+        """``partner_inbox`` — the owner's open orders of this helper (oldest first); ``ack`` —
+        ids of orders that are done or taken over: they leave the inbox."""
+        a = {"ack": ack}
+
+        async def run(h):
+            box = self.orders.setdefault(h, [])
+            acked: list[str] = []
+            if ack is not None:
+                if (not isinstance(ack, list) or not ack or len(ack) > ORDER_ACK_MAX
+                        or not all(isinstance(x, str) for x in ack)):
+                    raise V.bad("ack", f"must be a list of 1..{ORDER_ACK_MAX} order ids")
+                known = {o["id"] for o in box}
+                unknown = [x for x in ack if x not in known]
+                if unknown:
+                    raise V.bad("ack", "no open order " + ", ".join(x[:20] for x in unknown[:5]))
+                want = set(ack)
+                acked = [o["id"] for o in box if o["id"] in want]
+                box[:] = [o for o in box if o["id"] not in want]
+            out: dict = {"orders": [dict(o) for o in box]}
+            if acked:
+                out["acked"] = acked
+            return self._stamp(out)
+        return await self._tool("partner_inbox", helper, key, a, run)
+
     async def op_wait(self, helper, key, timeout=30, quiet=True, since=None) -> dict:
         a = {"timeout": timeout, "quiet": quiet, "since": since}
 
@@ -695,32 +857,36 @@ class Core:
             t = V.number(0, WAIT_MAX)("timeout", timeout)
             q = V.boolean("quiet", quiet)
             s = None if since is None else V.integer(0, 2**53)("since", since)
-            lock = self._wait_locks.setdefault(h, asyncio.Lock())
+            k = (h, self._role())
+            # one wait at a time per (helper, role); the roles of a helper wait side by side
+            lock = self._wait_locks.setdefault(k, asyncio.Lock())
             async with lock:
-                return await self._wait(h, t, q, s)
+                return await self._wait(k, t, q, s)
         return await self._tool("partner_wait", helper, key, a, run)
 
-    async def _wait(self, helper: str, timeout: float, quiet: bool, since: int | None) -> dict:
-        """Poll ``events`` until something worth waking for, or ``timeout``.
+    async def _wait(self, k: tuple[str, str], timeout: float, quiet: bool, since: int | None) -> dict:
+        """Poll ``events`` (through the shared poller) until something worth waking for, or ``timeout``.
 
-        The helper's cursor (EVENTS.md: last seq HANDED to the agent) moves only at the very end,
-        after the answer has been cut to fit ``MAX_RESPONSE``: anything not handed over stays in
-        the mod's buffer (or in ``pending``) for the next call. On any exception the cursor is
-        untouched and reload notices go back to ``pending``.
+        ``k`` is (helper, role). The cursor (EVENTS.md: last seq HANDED to the agent) moves only at
+        the very end, after the answer has been cut to fit ``MAX_RESPONSE``: anything not handed
+        over stays in the mod's buffer (or in ``pending``) for the next call. On any exception the
+        cursor is untouched and server-made notices go back to ``pending``. Events this role does
+        not take (roles.keep) are passed over: the cursor moves past them.
         """
+        helper, role = k
         if since is None:
-            cursor = self._cursor(helper)
+            cursor = self._cursor(k)
         elif since == 0:
             resp = await self.bridge.request("hello", channel="poll")
-            cursor = resp.get("seq") if _is_int(resp.get("seq")) else self._cursor(helper)
+            cursor = resp.get("seq") if _is_int(resp.get("seq")) else self._cursor(k)
         else:
             cursor = since
-        self.cursors.setdefault(helper, cursor)
+        self.cursors.setdefault(k, cursor)
         start_cursor = cursor
         deadline = self.clock() + timeout
         # items in arrival order: (event, origin) — origin "notice" (server-made, from pending)
         # or "mod" (from the mod's buffer)
-        items: list[tuple[dict, str]] = [(ev, "notice") for ev in self.pending.pop(helper, [])]
+        items: list[tuple[dict, str]] = [(ev, "notice") for ev in self.pending.pop(k, [])]
         n_loud = len(items)
         n_noisy = 0
         lost = False
@@ -729,6 +895,7 @@ class Core:
         reloaded = False
         reloads = self.bridge.reloads
         first = True
+        ticket = self.poller.ticket()
         try:
             while True:
                 left = deadline - self.clock()
@@ -736,20 +903,21 @@ class Core:
                 # its RCON budget is what is left (at least a short minimum); the first poll gets
                 # a normal budget so that timeout=0 still works on a slow tick
                 budget = max(left, FIRST_POLL_BUDGET if first else LAST_POLL_MIN)
+                # the first poll takes only a page fetched after the call began; later ones may
+                # share a page another role of this helper fetched a moment ago
+                data = await self.poller.events(helper, cursor, EVENTS_LIMIT, budget,
+                                                after=ticket if first else None)
                 first = False
-                data = await self._mod("events",
-                                       {"since": cursor, "helper": helper, "limit": EVENTS_LIMIT},
-                                       None, channel="poll", budget=budget)
                 if self.bridge.reloads != reloads:
                     # the save was reloaded while waiting: _on_reload reset the cursor and queued
-                    # game_reloaded for known helpers. Events collected in this call before the
+                    # game_reloaded for known roles. Events collected in this call before the
                     # reload belong to the abandoned timeline (their jobs no longer exist): drop
                     # them so the notice is never the part cut off by the size limit.
                     items = [it for it in items if it[1] == "notice"]
                     reloads = self.bridge.reloads
                     reloaded = True
-                    notices = self.pending.pop(helper, [])
-                    cursor = self.cursors.get(helper, self.start_seq or 0)
+                    notices = self.pending.pop(k, [])
+                    cursor = self.cursors.get(k, self.start_seq or 0)
                     if not any(e.get("kind") == "game_reloaded" for e in notices):
                         notices.append({"seq": cursor, "tick": self.bridge.last_tick, "helper": None,
                                         "kind": "game_reloaded",
@@ -758,7 +926,7 @@ class Core:
                     break
                 evs = _as_list(data.get("events"))
                 lost = lost or bool(data.get("lost"))
-                full = len(evs) >= EVENTS_LIMIT
+                full = bool(data.get("more")) or len(evs) >= EVENTS_LIMIT
                 before = cursor
                 stopped_early = False
                 for ev in evs:
@@ -767,8 +935,11 @@ class Core:
                     if ev["seq"] <= cursor:
                         continue
                     cursor = ev["seq"]
+                    how = R.keep(role, ev)
+                    if how is None:
+                        continue        # not this role's event: passed over
                     items.append((_fit_null(ev), "mod"))
-                    if ev.get("loud"):
+                    if how == "wake":
                         n_loud += 1
                         if n_loud >= LOUD_MAX:
                             stopped_early = True
@@ -777,8 +948,8 @@ class Core:
                         n_noisy += 1
                         if n_noisy > NOISY_KEEP:
                             # drop the oldest noisy event: noise is a sample, not a record
-                            i = next(k for k, (e, o) in enumerate(items)
-                                     if o == "mod" and not e.get("loud"))
+                            i = next(j for j, (e, o) in enumerate(items)
+                                     if o == "mod" and R.keep(role, e) == "noise")
                             del items[i]
                             n_noisy -= 1
                 if not full and not stopped_early and _is_int(data.get("seq")) and data["seq"] > cursor:
@@ -796,26 +967,31 @@ class Core:
                 more = False
                 await self.sleep(min(self.poll_interval, left))
         except BaseException:
-            # nothing was handed over: the cursor stays, reload notices are kept for next time
+            # nothing was handed over: the cursor stays, server-made notices are kept for next time
             notices = [ev for ev, o in items if o == "notice"]
             if notices:
-                self.pending[helper] = notices + self.pending.get(helper, [])
+                self.pending[k] = notices + self.pending.get(k, [])
             raise
 
-        out = self._fit_wait(helper, items, cursor, start_cursor, reloaded, timed_out, lost, more)
-        self.cursors[helper] = out["seq"]
+        out = self._fit_wait(k, items, cursor, start_cursor, reloaded, timed_out, lost, more)
+        self.cursors[k] = out["seq"]
         return out
 
-    def _fit_wait(self, helper: str, items: list[tuple[dict, str]], cursor: int, start_cursor: int,
-                  reloaded: bool, timed_out: bool, lost: bool, more: bool) -> dict:
+    def _fit_wait(self, k: tuple[str, str], items: list[tuple[dict, str]], cursor: int,
+                  start_cursor: int, reloaded: bool, timed_out: bool, lost: bool, more: bool) -> dict:
         """Build the wait answer, cutting it to ``MAX_RESPONSE``; the cursor covers only what
         is handed over. Cut-off notices go back to ``pending``."""
+        helper, role = k
+        inbox = len(self.orders.get(helper, ())) if R.allowed(role, "partner_inbox", {"ack": []}) else 0
+
         def build(evs: list[dict], seq: int, more_: bool) -> dict:
             o = {"seq": seq, "tick": self.bridge.last_tick, "events": evs, "timed_out": timed_out}
             if lost:
                 o["lost"] = True
             if more_:
                 o["more"] = True
+            if inbox:
+                o["inbox"] = inbox      # open orders of the owner (partner_inbox)
             if self.bridge.paused:
                 o["warning"] = GAME_PAUSED
             return o
@@ -837,10 +1013,12 @@ class Core:
             out = build([kept[0][0]], out["seq"], out.get("more", False))
         notices = [e for e, o in reversed(cut) if o == "notice"]
         if notices:
-            self.pending[helper] = notices + self.pending.get(helper, [])
-        for ev, o in kept:
-            if o == "mod":
-                self._note_event(helper, ev)
+            self.pending[k] = notices + self.pending.get(k, [])
+        if role == R.PILOT:
+            # repeated_failure counts only the failures handed to the role that acts
+            for ev, o in kept:
+                if o == "mod":
+                    self._note_event(helper, ev)
         return out
 
     async def op_plan(self, helper, key, task="mining", resource=None, patch=None, options=None) -> dict:

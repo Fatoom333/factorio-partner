@@ -151,6 +151,27 @@ def test_weak_or_broken_keys_are_replaced_and_other_entries_kept(tmp_path):
     assert len(launch.ensure_keys(f, ["h1"])["h1"]) >= 32
 
 
+def test_keys_of_roles_are_kept(tmp_path):
+    f = tmp_path / "helpers.json"
+    roles = {"pilot": "p" * 40, "voice": "v" * 40, "strategist": "s" * 40, "note": "x"}
+    f.write_text(json.dumps({"h1": roles}), encoding="utf-8")
+    before = f.stat().st_mtime_ns
+    assert launch.ensure_keys(f, ["h1"]) == {"h1": "p" * 40}
+    assert json.loads(f.read_text(encoding="utf-8"))["h1"] == roles
+    assert f.stat().st_mtime_ns == before            # nothing to add: the file is not rewritten
+    # missing, short and shared keys of roles are replaced; good ones stay
+    f.write_text(json.dumps({"h1": {"pilot": "k" * 40, "voice": "k" * 40, "strategist": "short"}}),
+                 encoding="utf-8")
+    keys = launch.ensure_keys(f, ["h1"])
+    entry = json.loads(f.read_text(encoding="utf-8"))["h1"]
+    assert keys["h1"] == entry["pilot"] and set(entry) == {"pilot", "voice", "strategist"}
+    assert len(set(entry.values())) == 3 and all(len(k) >= 32 for k in entry.values())
+    f.write_text(json.dumps({"h1": {"voice": "v" * 40}}), encoding="utf-8")
+    keys = launch.ensure_keys(f, ["h1"])
+    entry = json.loads(f.read_text(encoding="utf-8"))["h1"]
+    assert entry["voice"] == "v" * 40 and keys["h1"] == entry["pilot"] != entry["strategist"]
+
+
 def test_style_is_installed_once(tmp_path):
     home = tmp_path / "home"
     assert launch.install_style(home) is True

@@ -144,8 +144,33 @@ def _write_private(path: Path, text: str) -> None:
         pass
 
 
+ROLES = ("pilot", "voice", "strategist")   # server/factorio_partner/roles.py, docs/MCP.md «Роли»
+
+
+def _role_entry(entry: dict) -> tuple[dict, bool]:
+    """Запись с ключами ролей: годные (≥ MIN_KEY, у ролей помощника разные) остаются, остальные
+    роли получают новые ключи. Чужие поля записи не трогаются. -> (запись, изменилась ли)."""
+    out = dict(entry)
+    good = {r: k for r in ROLES if isinstance(k := entry.get(r), str) and len(k) >= MIN_KEY}
+    counts: dict[str, int] = {}
+    for k in good.values():
+        counts[k] = counts.get(k, 0) + 1
+    good = {r: k for r, k in good.items() if counts[k] == 1}
+    changed = False
+    for r in ROLES:
+        if r not in good:
+            k = secrets.token_urlsafe(32)
+            while k in good.values():
+                k = secrets.token_urlsafe(32)
+            out[r] = good[r] = k
+            changed = True
+    return out, changed
+
+
 def ensure_keys(helpers_file: Path, ids: list[str]) -> dict[str, str]:
-    """Ключи для ``ids``: годные существующие остаются, недостающие создаются. Чужие записи целы."""
+    """Ключи пилотов для ``ids``: годные существующие остаются, недостающие создаются. Чужие записи
+    целы. Запись старого вида — строка (ключ пилота); запись-словарь с ключами ролей сохраняется и
+    дополняется недостающими ролями."""
     try:
         data = json.loads(helpers_file.read_text(encoding="utf-8-sig"))
     except (OSError, ValueError):
@@ -153,14 +178,22 @@ def ensure_keys(helpers_file: Path, ids: list[str]) -> dict[str, str]:
     if not isinstance(data, dict):
         data = {}
     changed = False
+    out: dict[str, str] = {}
     for hid in ids:
-        key = data.get(hid)
-        if not (isinstance(key, str) and len(key) >= MIN_KEY):
-            data[hid] = secrets.token_urlsafe(32)
+        entry = data.get(hid)
+        if isinstance(entry, dict):
+            entry, more = _role_entry(entry)
+            data[hid] = entry
+            changed |= more
+            out[hid] = entry["pilot"]
+            continue
+        if not (isinstance(entry, str) and len(entry) >= MIN_KEY):
+            entry = data[hid] = secrets.token_urlsafe(32)
             changed = True
+        out[hid] = entry
     if changed or not helpers_file.exists():
         _write_private(helpers_file, json.dumps(data, ensure_ascii=False, indent=1) + "\n")
-    return {hid: data[hid] for hid in ids}
+    return out
 
 
 def install_style(home: Path, source: Path = STYLE_SOURCE) -> bool:

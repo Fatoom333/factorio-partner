@@ -273,7 +273,7 @@ local ACTION_RU = {
   insert = "кладу в ящик", extract = "беру из ящика", collect = "собираю", pickup = "подбираю",
   place = "ставлю", rotate = "поворачиваю", set_recipe = "меняю рецепт", build_blueprint = "строю по чертежу",
   build_ghosts = "строю по призракам", deconstruct = "разбираю", plan_mining = "размечаю добычу",
-  plan_belt = "прокладываю ленту", wait = "жду",
+  plan_belt = "прокладываю ленту", wait = "жду", get_items = "достаю предметы", plan = "выполняю план",
 }
 
 local function say(id, entity, text)
@@ -289,7 +289,11 @@ function M.status_text(id)
   if t ~= nil then
     local s = ACTION_RU[t["do"]] or tostring(t["do"])
     local p = t.progress
-    if type(p) == "table" and type(p.done) == "number" and type(p.total) == "number" then
+    if t["do"] == "plan" and type(p) == "table" and type(p.step) == "number" and type(p.steps) == "number" then
+      -- у плана — номер шага и что делает этот шаг
+      s = s .. ", шаг " .. tostring(math.floor(p.step)) .. " из " .. tostring(math.floor(p.steps))
+      if type(p["do"]) == "string" then s = s .. ": " .. (ACTION_RU[p["do"]] or p["do"]) end
+    elseif type(p) == "table" and type(p.done) == "number" and type(p.total) == "number" then
       s = s .. " (" .. tostring(math.floor(p.done)) .. "/" .. tostring(math.floor(p.total)) .. ")"
     end
     parts[#parts + 1] = "Сейчас: " .. s .. "."

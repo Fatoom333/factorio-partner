@@ -28,7 +28,8 @@ Pos = dict[str, float]
 Area = dict[str, dict[str, float]]
 
 INSTRUCTIONS = ("Управление помощником (вторым персонажем) в Factorio через мод factorio-partner. "
-                "Каждому инструменту нужны helper и key. Первым вызови partner_brief.")
+                "Каждому инструменту нужны helper и key. Ключ задаёт роль (voice, pilot, strategist; "
+                "её называет partner_brief): вызов вне прав роли — not_allowed. Первым вызови partner_brief.")
 
 
 async def _run(coro):
@@ -235,9 +236,11 @@ def build_server(core: Core, admin: bool = False) -> FastMCP:
     @mcp.tool()
     async def partner_cancel(helper: Helper, key: Key,
                              job: int | None = None,
-                             all: bool = False) -> dict:  # noqa: A002
-        """Отменить задачу по номеру или все (all=true)."""
-        return await _run(core.op_cancel(helper, key, job, all))
+                             all: bool = False,  # noqa: A002
+                             at_boundary: bool = False) -> dict:
+        """Отменить задачу по номеру или все (all=true). at_boundary=true (только с job): план
+        доделывает текущий шаг и заканчивается."""
+        return await _run(core.op_cancel(helper, key, job, all, at_boundary))
 
     @mcp.tool()
     async def partner_wait(helper: Helper, key: Key,
@@ -262,6 +265,30 @@ def build_server(core: Core, admin: bool = False) -> FastMCP:
         («Claude: », у второго и дальше — «Claude h2: »), своё имя в текст не добавляй. Место —
         меткой [gps=x,y,планета]: она кликается."""
         return await _run(core.op_say(helper, key, text))
+
+    @mcp.tool()
+    async def partner_order(helper: Helper, key: Key,
+                            said_seq: Annotated[int, Field(
+                                description="seq сообщения хозяина (player_said, owner:true, без auto_reply), где он это поручил")],
+                            text: Annotated[str, Field(description="поручение своими словами, одной строкой ≤ 300 символов")],
+                            size: Annotated[Literal["small", "large"], Field(
+                                description="small — одно-два действия (пилот сам); large — стройка, проект (стратег)")],
+                            urgent: bool = False) -> dict:
+        """(голос) Положить поручение хозяина во входящие помощника. Только со ссылкой на его
+        настоящее сообщение: сервер сам читает это событие у мода (хозяин, не старше 10 минут, мод не
+        ответил на него как на слово); одно сообщение — одно поручение. Слова хозяина приходят в
+        поручении полем owner_said. Ответ {order:{id, said_seq, tick, size, urgent, text, owner_said},
+        open}."""
+        return await _run(core.op_order(helper, key, said_seq, text, size, urgent))
+
+    @mcp.tool()
+    async def partner_inbox(helper: Helper, key: Key,
+                            ack: Annotated[list[str] | None, Field(
+                                description="id выполненных или взятых в работу поручений: уйдут из входящих")] = None) -> dict:
+        """Входящие поручения хозяина этого помощника, старые первыми: {orders:[{id, said_seq, tick,
+        size, urgent, text, owner_said}], acked?}. Верь owner_said (его слова), text — пересказ голоса.
+        ack — убрать сделанные (пилот и стратег)."""
+        return await _run(core.op_inbox(helper, key, ack))
 
     @mcp.tool()
     async def partner_plan(helper: Helper, key: Key, task: Literal["mining"] = "mining",

@@ -22,6 +22,12 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 AGENT_FILE = ROOT / ".claude" / "agents" / "partner.md"
+# агенты ролей одного помощника (docs/MCP.md «Роли»): файл -> роль
+ROLE_FILES = {"partner-voice.md": "voice", "partner-pilot.md": "pilot", "partner-strategist.md": "strategist"}
+ROLE_MODELS = {"sonnet", "haiku"}
+# без чего роль не делает свою работу: голос подаёт поручения, пилот и стратег снимают их из входящих
+ROLE_NEEDS = {"voice": ("partner_order", "partner_say"), "pilot": ("partner_act", "partner_inbox"),
+              "strategist": ("partner_inbox", "partner_plan")}
 AGENTS_DIR = ROOT / "agents"
 SERVER_FILE = ROOT / "server" / "factorio_partner" / "server.py"
 DOCS = ROOT / "docs"
@@ -30,6 +36,9 @@ TOOL_PREFIX = "mcp__partner__"
 # инструменты из docs/MCP.md, которые сервер ещё не отдаёт (если такие бывают).
 # Сейчас пусто: всё, что есть в таблице MCP.md, сервер уже отдаёт.
 PENDING_TOOLS: set[str] = set()
+# инструменты только для режима нескольких ролей: одиночному агенту partner (ключ старого вида —
+# пилот без голоса и стратега) они не нужны — поручений ему никто не кладёт
+MULTI_ROLE_TOOLS = {"partner_order", "partner_inbox"}
 # аргументы partner_plan описаны в MCP.md отдельным разделом, а не в таблице
 PLAN_ARGS = {"task", "resource", "patch", "options"}
 # MCP.md: для build_blueprint вместо blob можно plan; mirror — аргумент мода, которым применяется
@@ -169,6 +178,21 @@ def reflex_types(docs: Path = DOCS) -> dict[str, dict[str, tuple[float, float] |
                 params[m.group(1)] = (float(m.group(2)), float(m.group(3))) if m.group(2) else None
         out[cells[0].strip("`")] = params
     return out
+
+
+def role_rights() -> dict[str, frozenset[str]]:
+    """Права ролей из server/factorio_partner/roles.py (модуль без зависимостей, кроме errors)."""
+    sys.path.insert(0, str(SERVER_FILE.parent.parent))
+    try:
+        from factorio_partner import roles  # noqa: PLC0415
+    finally:
+        sys.path.pop(0)
+    return dict(roles.ALLOWED)
+
+
+def tool_allowed(name: str, rights: frozenset[str]) -> bool:
+    """Роль может вызвать инструмент хотя бы в одной форме (сам инструмент или «инструмент.форма»)."""
+    return name in rights or any(c.startswith(name + ".") for c in rights)
 
 
 # ---------------------------------------------------------------- агент
@@ -372,8 +396,13 @@ def lint_agent(agent_file: Path = AGENT_FILE, server_file: Path = SERVER_FILE, d
             problems.append(f"tools: {name} нет ни в сервере, ни среди добавляемых по docs/MCP.md")
         elif name not in tools:
             problems.append(f"tools: {name} нет в таблице инструментов docs/MCP.md")
-    for name in sorted(set(tools) - short):
+    for name in sorted(set(tools) - short - MULTI_ROLE_TOOLS):
         problems.append(f"tools: в белом списке нет инструмента {name} из docs/MCP.md")
+    for name in sorted(short & MULTI_ROLE_TOOLS):
+        problems.append(f"tools: {name} — инструмент режима ролей, одиночному агенту не нужен")
+    pilot = role_rights().get("pilot", frozenset())
+    for name in sorted(n for n in short if n in tools and not tool_allowed(n, pilot)):
+        problems.append(f"tools: {name} вне прав пилота (server/factorio_partner/roles.py)")
 
     for code in error_codes(docs):
         if f"`{code}`" not in body:
@@ -406,6 +435,58 @@ def lint_agent(agent_file: Path = AGENT_FILE, server_file: Path = SERVER_FILE, d
     return problems
 
 
+def lint_role(path: Path, role: str, server_file: Path = SERVER_FILE, docs: Path = DOCS) -> list[str]:
+    """Агент роли: frontmatter, белый список — инструменты сервера и docs/MCP.md в правах роли
+    (roles.ALLOWED), вызовы в блоках call — только из этого списка."""
+    name = path.name
+    try:
+        meta, body = parse_agent(path.read_text(encoding="utf-8").replace("\r\n", "\n"))
+    except (OSError, ValueError) as e:
+        return [f"{name}: {e}"]
+    problems: list[str] = []
+    if meta.get("name") != path.stem:
+        problems.append(f"{name}: frontmatter: name должен быть {path.stem}")
+    if meta.get("model") not in ROLE_MODELS:
+        problems.append(f"{name}: frontmatter: model — одна из " + ", ".join(sorted(ROLE_MODELS)))
+    if len(meta.get("description", "")) < 20:
+        problems.append(f"{name}: frontmatter: нужно описание (description)")
+    unknown = set(meta) - {"name", "description", "model", "tools"}
+    if unknown:
+        problems.append(f"{name}: frontmatter: лишние ключи: " + ", ".join(sorted(unknown)))
+    in_server, admin = server_tools(server_file)
+    tools = mcp_tools(docs)
+    rights = role_rights().get(role, frozenset())
+    listed = agent_tools(meta)
+    if not listed:
+        problems.append(f"{name}: frontmatter: пустой белый список tools")
+    if len(set(listed)) != len(listed):
+        problems.append(f"{name}: frontmatter: инструмент в tools повторяется")
+    short: set[str] = set()
+    for full in listed:
+        if not full.startswith(TOOL_PREFIX) or "*" in full:
+            problems.append(f"{name}: tools: {full} — разрешены только явные имена {TOOL_PREFIX}<инструмент>")
+            continue
+        tool = full[len(TOOL_PREFIX):]
+        short.add(tool)
+        if tool in admin or not tool.startswith("partner_"):
+            problems.append(f"{name}: tools: {tool} — служебный или несуществующий инструмент")
+        elif tool not in in_server or tool not in tools:
+            problems.append(f"{name}: tools: {tool} нет в сервере или в таблице docs/MCP.md")
+        elif not tool_allowed(tool, rights):
+            problems.append(f"{name}: tools: {tool} вне прав роли {role} (server/factorio_partner/roles.py)")
+    for tool in ("partner_brief", "partner_wait", *ROLE_NEEDS.get(role, ())):
+        if tool not in short:
+            problems.append(f"{name}: tools: нет {tool} — без него роль {role} не работает")
+    acts, reflexes = actions(docs), reflex_types(docs)
+    for tool, raw in call_blocks(body):
+        problems += [f"{name}: {p}" for p in check_call(tool, raw, short, tools, acts, reflexes)]
+    return problems
+
+
+def role_files() -> list[Path]:
+    return [AGENT_FILE.parent / f for f in ROLE_FILES]
+
+
 # ---------------------------------------------------------------- прочее
 def lint_files(paths: list[Path]) -> list[str]:
     """Личные пути и адреса; консольные команды в коде; обязательные части сценария запуска."""
@@ -432,7 +513,7 @@ def lint_files(paths: list[Path]) -> list[str]:
 
 def repo_files() -> list[Path]:
     files = [p for p in AGENTS_DIR.rglob("*") if p.is_file() and "__pycache__" not in p.parts]
-    return sorted(files) + [AGENT_FILE]
+    return sorted(files) + [AGENT_FILE] + [p for p in role_files() if p.is_file()]
 
 
 def lint_all() -> list[str]:
@@ -451,7 +532,13 @@ def lint_all() -> list[str]:
         order += check_lookup_example(lookup.read_text(encoding="utf-8").replace("\r\n", "\n"), lookup.name)
     else:
         order.append("examples/lookup-research.md: нет примера справки")
-    return lint_agent(extra_md=examples) + order + lint_files(repo_files())
+    roles = []
+    for path in role_files():
+        if path.is_file():
+            roles += lint_role(path, ROLE_FILES[path.name])
+        else:
+            roles.append(f"{path.name}: нет файла агента роли")
+    return lint_agent(extra_md=examples) + order + roles + lint_files(repo_files())
 
 
 def main() -> int:

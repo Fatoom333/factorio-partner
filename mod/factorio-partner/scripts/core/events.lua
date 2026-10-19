@@ -24,7 +24,7 @@ M.LOUD = {
   job_done = true, job_failed = true, attacked = true, health_low = true,
   died = true, respawned = true, reflex_done = true, inventory_full = true, helper_lost = true,
   craft_done = true, reflex_resumed = true, ammo_low = true,
-  owner_stop = true, owner_resume = true,
+  owner_stop = true, owner_resume = true, plan_done = true,
 }
 
 local function storage_events() return storage.events end
