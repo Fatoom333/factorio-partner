@@ -1106,6 +1106,11 @@ class Core:
                 raise PartnerError("limit", f"the inbox holds {INBOX_MAX} open orders; tell the owner "
                                             "it is full")
             if qid is not None:
+                q = next((x for x in L.open_questions(self.ledger().data(), side) if x["id"] == qid), None)
+                if q is None:
+                    raise PartnerError("not_found", f"answer_to: no open question {qid}")
+                if _is_int(q.get("tick")) and _is_int(tick) and tick < q["tick"]:
+                    raise PartnerError("bad_args", f"answer_to: the owner's message came before question {qid}")
                 # closed before anything is filed: a question answered twice is refused here
                 oid = f"o{self._order_n + 1}"
                 self.ledger().mutate(lambda d: L.answer(d, side, qid, oid, words))

@@ -152,7 +152,7 @@ async def test_take_with_a_question_of_another_order_is_refused(core, fake):
     await answer(core, fake, q["id"])
     second = await big_order(core, fake, "принеси схем")
     e = await refused(put(core, TAKE, order=second["id"], approved=q["id"]))
-    assert f"задан про поручение {first['id']}" in e.text
+    assert f"не про поручение {second['id']}" in e.text
 
 
 async def test_a_question_asked_before_the_order_is_not_its_leave(core, fake, monkeypatch):
@@ -172,7 +172,16 @@ async def test_the_owners_no_is_no_leave(core, fake):
     q = await ask(core, order=o["id"])
     await answer(core, fake, q["id"], "нет, не трогай")
     e = await refused(put(core, TAKE, order=o["id"], approved=q["id"]))
-    assert "отказом" in e.text
+    assert "не явное «да»" in e.text
+
+
+async def test_an_unclear_answer_is_no_leave(core, fake):
+    # «посмотрим», «потом» — не «да»: разрешает только явное согласие
+    o = await big_order(core, fake)
+    q = await ask(core, order=o["id"])
+    await answer(core, fake, q["id"], "посмотрим потом")
+    e = await refused(put(core, TAKE, order=o["id"], approved=q["id"]))
+    assert "не явное «да»" in e.text
 
 
 async def test_answered_leave_is_put_and_sent(core, fake, body):
@@ -189,13 +198,14 @@ async def test_answered_leave_is_put_and_sent(core, fake, body):
     assert core.ledger().get("h1", p["id"])["status"] == "running"
 
 
-async def test_a_question_after_the_order_is_its_leave(core, fake, body):
+async def test_a_question_without_order_is_no_leave(core, fake, body):
+    # вопрос без order разрешения не даёт, даже заданный после поручения
     o = await big_order(core, fake)
-    q = await ask(core)                                   # no order named, asked after it
+    q = await ask(core)
     await answer(core, fake, q["id"])
-    p = await put(core, [{"do": "get_items", "args": {"items": {"electronic-circuit": 60}, "from_lines": True}}],
-                  order=o["id"], approved=q["id"])
-    assert p["status"] == "queued"
+    e = await refused(put(core, [{"do": "get_items", "args": {"items": {"electronic-circuit": 60}, "from_lines": True}}],
+                          order=o["id"], approved=q["id"]))
+    assert "не про поручение" in e.text
 
 
 async def test_leave_is_checked_again_when_the_package_goes(core, fake, body):

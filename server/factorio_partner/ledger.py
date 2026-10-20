@@ -348,6 +348,20 @@ _NO_PHRASES = ("не надо", "не бери", "не трогай", "не см
                "не разрешаю", "не забирай")
 
 
+_YES_START = ("да", "ага", "ок", "ok", "okay", "yes", "можно", "бери", "забирай", "разрешаю", "конечно",
+              "давай", "+", "угу")
+
+
+def said_yes(text: Any) -> bool:
+    """The owner's answer opens with an explicit «да» (allow-list): only that gives leave."""
+    if not isinstance(text, str):
+        return False
+    t = " ".join(text.lower().replace("ё", "е").split())
+    words = [w.strip(".,!?:;—-«»\"'()") for w in t.split()]
+    words = [w for w in words if w]
+    return bool(words) and words[0] in _YES_START
+
+
 def said_no(text: Any) -> bool:
     """The owner's answer reads as a refusal («нет», «не бери», «нельзя»): no leave, whatever the
     strategist thinks it means."""
@@ -363,8 +377,8 @@ def said_no(text: Any) -> bool:
 
 def leave_problem(data: dict, scope: str, pkg: dict, order_tick: Any) -> str | None:
     """Why the package may not take from the owner (None — it may): ``approved`` names a question of
-    the strategist (of ``scope``) the owner answered, about the package's ``order`` — the question
-    names that order, or was asked after it came (``order_tick``) — and the answer is not «нет»."""
+    the strategist (of ``scope``) the owner answered, asked with the package's ``order``, and the
+    answer opens with an explicit «да» (said_yes) and is no refusal."""
     qid, oid = pkg.get("approved"), pkg.get("order")
     if not isinstance(qid, str) or not isinstance(oid, str):
         return "approved: a step takes from the owner — the package needs order and approved (q<N>)"
@@ -374,12 +388,10 @@ def leave_problem(data: dict, scope: str, pkg: dict, order_tick: Any) -> str | N
     if q.get("status") != "answered":
         return (f"approved: на вопрос {qid} хозяин ещё не ответил ({q.get('status')}); дождись ответа "
                 "(поручение с answer_to)")
-    if q.get("order") is not None:
-        if q["order"] != oid:
-            return f"approved: вопрос {qid} задан про поручение {q['order']}, а пакет — для {oid}"
-    elif not (isinstance(order_tick, int) and isinstance(q.get("tick"), int) and q["tick"] >= order_tick):
-        return (f"approved: вопрос {qid} не про поручение {oid} (задан раньше него или без order); "
-                f"спроси заново: partner_ledger{{action:\"ask\", order:\"{oid}\"}}")
-    if said_no(q.get("said")):
-        return f"approved: хозяин ответил на {qid} отказом: забирать нельзя"
+    if q.get("order") != oid:
+        return (f"approved: вопрос {qid} не про поручение {oid}; разрешение даёт только вопрос с order: "
+                f"partner_ledger{{action:\"ask\", order:\"{oid}\"}}")
+    if said_no(q.get("said")) or not said_yes(q.get("said")):
+        return (f"approved: ответ хозяина на {qid} — не явное «да» ({q.get('said')!r}): забирать нельзя; "
+                "спроси заново")
     return None
