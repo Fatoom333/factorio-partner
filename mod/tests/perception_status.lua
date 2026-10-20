@@ -7,6 +7,7 @@ local STATUSES = {
   full_output = 8, waiting_for_space_in_destination = 9, no_minable_resources = 10, disabled = 11,
   marked_for_deconstruction = 12, missing_science_packs = 13, brand_new_status = 14,
   no_research_in_progress = 15, waiting_to_launch_rocket = 16, launching_rocket = 17,
+  item_ingredient_shortage = 18, fluid_ingredient_shortage = 19,
 }
 
 local function setup()
@@ -26,7 +27,16 @@ end
 local function machine(name, x, y, status, recipe, o)
   o = o or {}
   local fields = { status = status and defines.entity_status[status] or nil }
-  if recipe then fields.get_recipe = function() return { name = recipe } end end
+  if recipe then
+    local r = { name = recipe, ingredients = o.ingredients }
+    fields.get_recipe = function() return r end
+  end
+  if o.prev then fields.previous_recipe = { name = o.prev }; fields.get_recipe = function() return nil end end
+  if o.inv then
+    local key = o.inv_key or "assembling_machine_input"
+    fields.inventories = { [defines.inventory[key]] = S.inventory{ size = 6, contents = o.inv } }
+  end
+  if o.fluids then fields.fluidbox = o.fluids end
   return S.nauvis.create_entity{
     name = name, position = { x = x, y = y }, force = o.force or "player", raise_built = true, fields = fields,
   }
@@ -124,6 +134,55 @@ S.suite("perception_status", {
       S.eq(d.truncated, true)
       S.eq(d.machines.stopped, 5)
       S.eq(d.causes.power, 5)
+  end },
+
+  { "input: missing называет, какого ингредиента не хватает (processing-unit без зелёных схем)", function()
+      setup()
+      local unit = {
+        { type = "item", name = "electronic-circuit", amount = 20 },
+        { type = "item", name = "advanced-circuit", amount = 2 },
+        { type = "fluid", name = "sulfuric-acid", amount = 5 },
+      }
+      local fl = { { name = "sulfuric-acid", amount = 50 } }
+      machine("assembling-machine-1", 10, 0, "item_ingredient_shortage", "processing-unit",
+        { ingredients = unit, inv = { ["advanced-circuit"] = 10 }, fluids = fl })
+      machine("assembling-machine-1", 12, 0, "item_ingredient_shortage", "processing-unit",
+        { ingredients = unit, inv = { ["advanced-circuit"] = 4 }, fluids = fl })
+      local d = status()
+      S.eq(#d.stopped, 1)
+      local g = d.stopped[1]
+      S.eq(g.cause, "input")
+      S.eq(g.count, 2)
+      S.eq(g.checked, 2)
+      S.eq(g.missing, { { name = "electronic-circuit", type = "item", have = 0, need = 20 } },
+        "красных и кислоты хватает, зелёных нет: " .. S.dump(g))
+      S.eq(g.ok, { "advanced-circuit", "sulfuric-acid" })
+  end },
+
+  { "input: не хватает жидкости; печь без руды берёт состав из previous_recipe; хватает всего — missing пуст", function()
+      setup()
+      local acid = { { type = "item", name = "sulfur", amount = 1 }, { type = "fluid", name = "water", amount = 30 } }
+      machine("assembling-machine-1", 10, 0, "fluid_ingredient_shortage", "sulfuric-acid",
+        { ingredients = acid, inv = { sulfur = 3 }, fluids = { { name = "water", amount = 10 } } })
+      S.add_prototype("recipe", { name = "iron-plate", ingredients = { { type = "item", name = "iron-ore", amount = 1 } } })
+      machine("stone-furnace", 14, 0, "no_ingredients", nil, { prev = "iron-plate", inv = {}, inv_key = "furnace_source" })
+      machine("assembling-machine-1", 18, 0, "no_ingredients", "iron-gear-wheel",
+        { ingredients = { { type = "item", name = "iron-plate", amount = 2 } }, inv = { ["iron-plate"] = 9 } })
+      machine("assembling-machine-1", 22, 0, "no_ingredients")
+      local by = {}
+      for _, r in ipairs(status().stopped) do by[r.name .. ":" .. (r.recipe or "-")] = r end
+      local a = by["assembling-machine-1:sulfuric-acid"]
+      S.eq(a.missing, { { name = "water", type = "fluid", have = 10, need = 30 } })
+      S.eq(a.ok, { "sulfur" })
+      local f = by["stone-furnace:-"]
+      S.eq(f.missing, { { name = "iron-ore", type = "item", have = 0, need = 1 } }, "печь без руды")
+      S.eq(f.ok, {})
+      local full = by["assembling-machine-1:iron-gear-wheel"]
+      S.eq(full.missing, {}, "всего хватает: причина не во входе")
+      S.eq(full.ok, { "iron-plate" })
+      local none = by["assembling-machine-1:-"]
+      S.eq(none.missing, nil, "машина без рецепта: нечего проверять")
+      S.eq(none.checked, nil)
   end },
 
   { "ответ про помощника; сериализуем; границы аргументов", function()
