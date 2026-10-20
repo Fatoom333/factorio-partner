@@ -265,7 +265,7 @@ order?}`:
 | `partner_act` | `do, args, replace=false` | op `act`; `do` из белого списка ACTIONS.md, в том числе `build_layout` и `connect_entities` (ниже «partner_act») |
 | `partner_cancel` | `job?, all?, at_boundary?=false` | op `cancel` (ровно одно из `job` / `all`); `at_boundary:true` — только с `job`: план доделывает текущий шаг и заканчивается (ACTIONS.md «plan») |
 | `partner_hold` | `release?=false, said_seq?` | op `owner_hold`: без `release` — прочитать hold хозяина у помощника; `release:true` + `said_seq` (новое поручение хозяина, `player_said` `owner:true`) — снять его; правила снятия — EVENTS.md «Слово хозяина» |
-| `partner_wait` | `timeout=30 (≤55), quiet=true, since?` | ожидание (EVENTS.md), курсор на сервере — свой у каждой роли (раздел «Роли») |
+| `partner_wait` | `timeout=30 (≤55), quiet=true, since?` | ожидание (EVENTS.md), курсор на сервере — свой у каждой роли (раздел «Роли») ; поймав сообщение хозяина, ждёт ещё, пока он не замолчит на 2,5 с (`FP_CHAT_SETTLE`, 0..10, всего не дольше 6 с): несколько строк подряд и метка на карте приходят одним ответом |
 | `partner_reflex` | `set?: list` (≤ 16 рефлексов, всё ≤ 4 КБ) | op `reflexes`: полная замена набора, `[]` снимает все; без `set` — прочитать текущий набор (типы — EVENTS.md) |
 | `partner_say` | `text ≤ 200` | op `say` (префикс с именем помощника ставит мод, PROTOCOL §4) |
 | `partner_order` | `said_seq, text ≤ 300, size:"small"│"large", urgent?=false, answer_to?` | голос: поручение хозяина во входящие помощника, только по его настоящему сообщению (раздел «Роли») |

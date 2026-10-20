@@ -45,6 +45,10 @@ POLL_INTERVAL = 0.5
 EVENTS_LIMIT = 200
 NOISY_KEEP = 6
 LOUD_MAX = 40
+# the owner often sends several chat lines in a row (text, then a map ping): a wait that caught his
+# message keeps listening until he is quiet for CHAT_SETTLE seconds, at most CHAT_SETTLE_MAX in all
+CHAT_SETTLE = 2.5
+CHAT_SETTLE_MAX = 6.0
 RULE_SAID_MAX_AGE = 10 * 60 * 60   # ticks: the owner's message that asked for a rule (partner_notes)
 RULE_CONFIRM_MAX_AGE = 2 * 60 * 60  # ticks: the rule question waits this long for the owner
 ORDER_SAID_MAX_AGE = 10 * 60 * 60  # ticks: the owner's message behind partner_order
@@ -105,6 +109,20 @@ def _is_int(v: Any) -> bool:
     return isinstance(v, int) and not isinstance(v, bool)
 
 
+def _env_seconds(name: str, default: float) -> float:
+    """A pause in seconds from the environment (0..10); a bad value is a start error."""
+    raw = os.environ.get(name)
+    if raw is None or raw == "":
+        return default
+    try:
+        v = float(raw)
+    except ValueError:
+        raise ValueError(f"{name}: a number of seconds is expected, got {raw!r}") from None
+    if not 0 <= v <= 10:
+        raise ValueError(f"{name}: 0..10 seconds, got {v}")
+    return v
+
+
 class Core:
     def __init__(self, cfg: Config, bridge: Bridge | None = None, *,
                  poll_interval: float = POLL_INTERVAL,
@@ -118,6 +136,7 @@ class Core:
         self._budget_told: set[str] = set()     # helpers whose voice got budget_low in this spell
         self.bridge = bridge if bridge is not None else Bridge(cfg)
         self.poll_interval = poll_interval
+        self.chat_settle = _env_seconds("FP_CHAT_SETTLE", CHAT_SETTLE)
         self.clock = clock
         self.sleep = sleep
         self.forge_module = forge_module
@@ -1132,6 +1151,7 @@ class Core:
         reloaded = False
         reloads = self.bridge.reloads
         first = True
+        said_first = said_last = None     # clock of the owner's first and last chat line caught here
         ticket = self.poller.ticket()
         try:
             while True:
@@ -1184,6 +1204,9 @@ class Core:
                     items.append((_fit_null(ev), "mod"))
                     if how == "wake":
                         n_loud += 1
+                        if ev.get("kind") == "player_said" and isinstance(ev.get("data"), dict)                                 and ev["data"].get("owner") is True:
+                            said_last = self.clock()
+                            said_first = said_first if said_first is not None else said_last
                         if n_loud >= LOUD_MAX:
                             stopped_early = True
                             break
@@ -1200,6 +1223,15 @@ class Core:
                 if stopped_early or (full and cursor > before):
                     more = True
                 if n_loud or (not quiet and n_noisy) or stopped_early:
+                    now = self.clock()
+                    if (said_last is not None and not stopped_early and not (full and cursor > before)
+                            and now - said_last < self.chat_settle
+                            and now - said_first < min(CHAT_SETTLE_MAX, self.chat_settle * 3)
+                            and deadline - now > 0):
+                        # the owner may still be typing: give his next line a moment to arrive
+                        await self.sleep(min(self.poll_interval, self.chat_settle - (now - said_last),
+                                             deadline - now))
+                        continue
                     break
                 left = deadline - self.clock()
                 if left <= 0:

@@ -963,3 +963,28 @@ async def test_plan_mining_still_calls_forge_without_block(cfg, monkeypatch):
         monkeypatch, "fake_forge_old", plan=plan))
     assert (await c.op_plan("h1", KEY, "mining", resource={"name": "iron-ore"}))["plan"] == "p1"
     await c.close()
+
+
+async def test_wait_lets_the_owner_finish_typing(core, fake):
+    # «вот тут» и следом метка на карте: один ответ голосу на оба сообщения
+    core.chat_settle = 0.3
+    await core.op_state("h1", KEY)
+    fake.mod.emit("player_said", {"owner": True, "text": "поставь печь вот тут"})
+
+    async def ping():
+        await asyncio.sleep(0.15)
+        fake.mod.emit("player_said", {"owner": True, "text": "[gps=10,20]"})
+    t = asyncio.create_task(ping())
+    r = await core.op_wait("h1", KEY, timeout=5)
+    await t
+    assert [e["data"]["text"] for e in r["events"]] == ["поставь печь вот тут", "[gps=10,20]"]
+
+
+async def test_wait_settle_does_not_hold_other_events(core, fake):
+    core.chat_settle = 0.3
+    await core.op_state("h1", KEY)
+    fake.mod.emit("job_done", {"job": 1, "do": "walk", "detail": {}})
+    t0 = asyncio.get_running_loop().time()
+    r = await core.op_wait("h1", KEY, timeout=5)
+    assert [e["kind"] for e in r["events"]] == ["job_done"]
+    assert asyncio.get_running_loop().time() - t0 < 0.25     # not a chat line: no pause
