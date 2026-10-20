@@ -17,7 +17,9 @@
 --     retries,            -- повторы после try_again_later / потерянного запроса (≤ MAX_RETRIES)
 --     replans,            -- перепланирования из-за застревания (≤ MAX_REPLANS)
 --     detours,            -- обходы игрока (≤ MAX_DETOURS)
---     extends,            -- маршрут кончился далеко от цели → новый запрос (≤ MAX_EXTENDS)
+--     extends,            -- маршрут кончился далеко от цели → новый запрос (≤ MAX_EXTENDS подряд)
+--     partial,            -- последний маршрут кончается далеко от точки запроса (req_at, req_radius)
+--     seg, seg_k, seg_total, -- отрезок к дальней цели {goal, k}, номер поворота, попыток всего
 --     best_dist, last_move_tick, last_pos,
 --     noted,              -- шумное stuck об этом перепланировании уже отправлено (сброс — когда пришёл маршрут)
 --     center, centered,   -- шаг на центр свободной клетки (state "center") и что он уже был
@@ -44,6 +46,10 @@ M.DETOUR_RADIUS = 1.5       -- «игрок на пути» — другой п�
 M.MAX_EXTENDS = 3           -- маршрут кончился далеко от цели → новый запрос
 M.FINAL_SLACK = 3           -- конец маршрута ближе distance+3 — доходим по прямой
 M.GOAL_TOL = 1.0            -- цель сдвинулась больше → перестроить маршрут (follow)
+-- Дальняя цель, которая движется (follow за хозяином в сотне клеток): перестраивать маршрут из-за
+-- каждой клетки её сдвига незачем — новый считается долго, а старый и так ведёт в ту сторону.
+-- Порог сдвига — не меньше GOAL_REL от расстояния до цели.
+M.GOAL_REL = 0.1
 M.REPLAN_MIN_TICKS = 30     -- не чаще раза в 30 тиков из-за сдвига цели
 M.PLAN_TIMEOUT = 1800       -- ответ на запрос не пришёл за 30 с → запрос считается потерянным
 M.REQUEST_TTL = 36000       -- записи запросов старше 10 мин удаляются (on_nth)
@@ -101,6 +107,21 @@ M.PROGRESS_MOVE = 0.3
 M.CENTER_RADIUS = 2
 M.CENTER_MIN = 0.15   -- центр ближе — тело и так на нём
 M.CENTER_TICKS = 120
+-- Дальняя цель по отрезкам. Цель дальше LONG_DIST, а пути к ней нет (или маршруты раз за разом
+-- кончаются далеко от неё — MAX_EXTENDS): движок пути на Вулканусе не находит обход лавы и обрывов
+-- на всю длину (у запроса с прямым расстоянием до 100 клеток есть предел шагов поиска). Тогда тело
+-- идёт отрезками: промежуточная точка в SEG_LEN клетках (не меньше SEG_MIN, не дальше половины
+-- пути) по направлению к цели, потом с поворотом SEG_ANGLES (обход лавы сбоку), — ближайшее
+-- свободное место у неё (SEG_SNAP); первая, к которой нашёлся путь, — отрезок. Дошли — путь к
+-- настоящей цели заново (снова парой); не дошли и туда — следующий отрезок с нового места. Всего
+-- не больше MAX_SEGMENTS попыток на задачу; ни одна точка не подошла — как «пути нет».
+M.LONG_DIST = 40
+M.SEG_LEN = 48
+M.SEG_MIN = 16
+M.SEG_SNAP = 8
+M.SEG_RADIUS = 2
+M.SEG_ANGLES = { 0, 35, -35, 70, -70, 105, -105 }
+M.MAX_SEGMENTS = 40
 
 local floor, abs, max, sqrt = math.floor, math.abs, math.max, math.sqrt
 local TAN_22_5 = 0.41421356237
@@ -190,6 +211,9 @@ end
 local function request(task, ctx, st, goal, req_goal, keep_walking)
   local e = ctx.entity
   forget_request(st)
+  -- запрос не к точке отрезка — отрезок кончился (выбирание, обход игрока, новый путь к цели)
+  if st.seg ~= nil and util.dist(st.seg.goal, req_goal) > 1e-6 then st.seg = nil end
+  local radius = st.seg ~= nil and M.SEG_RADIUS or max(1, st.distance - 0.3)
   local proto = e.prototype
   local id = e.surface.request_path{
     bounding_box = st.tight and proto.collision_box or M.wide_box(proto),
@@ -197,14 +221,18 @@ local function request(task, ctx, st, goal, req_goal, keep_walking)
     start = util.xy(e.position),
     goal = { x = req_goal.x, y = req_goal.y },
     force = e.force,
-    radius = max(1, st.distance - 0.3),
+    radius = radius,
     entity_to_ignore = e,
     can_open_gates = false,
     pathfind_flags = { cache = false, prefer_straight_paths = true, low_priority = false },
   }
   reqs()[id] = { helper = task.helper, job = task.job, tick = ctx.tick }
   st.path_id = id
-  if not st.tight and not st.paired and st.unstick == nil then
+  st.req_at = { x = req_goal.x, y = req_goal.y }
+  st.req_radius = radius
+  local from = util.xy(e.position)
+  st.req_from = { x = from.x, y = from.y }
+  if not st.tight and not st.paired and st.unstick == nil and st.seg == nil then
     -- первый запрос задачи — парой с тонким (см. THIN_GAIN)
     st.paired = true
     local alt = e.surface.request_path{
@@ -213,7 +241,7 @@ local function request(task, ctx, st, goal, req_goal, keep_walking)
       start = util.xy(e.position),
       goal = { x = req_goal.x, y = req_goal.y },
       force = e.force,
-      radius = max(1, st.distance - 0.3),
+      radius = radius,
       entity_to_ignore = e,
       can_open_gates = false,
       pathfind_flags = { cache = false, prefer_straight_paths = true, low_priority = false },
@@ -374,11 +402,73 @@ local function free_tile_center(e, pos)
   return c
 end
 
+--- Свободное для тела место у точки p (не дальше SEG_SNAP) или nil.
+local function free_near(e, p)
+  local ok, c = pcall(function()
+    return e.surface.find_non_colliding_position(e.name, p, M.SEG_SNAP, 0.5)
+  end)
+  if not ok or c == nil then return nil end
+  c = util.xy(c)
+  if type(c.x) ~= "number" or type(c.y) ~= "number" then return nil end
+  return c
+end
+
+--- Следующий отрезок к дальней цели (см. LONG_DIST). → true (запрос к точке отрезка ушёл) │ false.
+local function next_segment(task, ctx, st, pos, goal)
+  if task.req == "reflex:flee" or goal == nil then return false end
+  local d = util.dist(pos, goal)
+  if d <= M.LONG_DIST then return false end
+  local e = ctx.entity
+  local len = math.min(M.SEG_LEN, max(M.SEG_MIN, d * 0.5))
+  local ux, uy = (goal.x - pos.x) / d, (goal.y - pos.y) / d
+  while (st.seg_k or 0) < #M.SEG_ANGLES do
+    st.seg_k = (st.seg_k or 0) + 1
+    st.seg_total = (st.seg_total or 0) + 1
+    if st.seg_total > M.MAX_SEGMENTS then return false end
+    local a = math.rad(M.SEG_ANGLES[st.seg_k])
+    local c, s = math.cos(a), math.sin(a)
+    local q = free_near(e, { x = pos.x + (ux * c - uy * s) * len, y = pos.y + (ux * s + uy * c) * len })
+    if q ~= nil and charted(e, q) and util.dist(pos, q) >= M.SEG_MIN / 2 then
+      forget_request(st)
+      st.tight, st.thin, st.unstick = nil, nil, nil
+      st.seg = { goal = { x = q.x, y = q.y }, k = st.seg_k }
+      st.req_goal = st.seg.goal
+      request(task, ctx, st, goal, st.seg.goal, false)
+      st.last_move_tick = ctx.tick
+      return true
+    end
+  end
+  return false
+end
+
+--- Номер точки нового маршрута, с которой идти. Маршрут считался от места, где тело стояло в
+--- момент запроса, а оно с тех пор шло по старому: возвращаться к его началу — ходить взад-вперёд
+--- (живой прогон, follow на Вулканусе). Берётся ближайшая к телу точка среди тех, до которых по
+--- маршруту от места запроса не дальше, чем тело от него отошло (с запасом START_SLACK): так не
+--- «перепрыгнуть» через стену к дальнему колену того же маршрута.
+M.START_SLACK = 1.5
+local function start_index(st, pos, wps)
+  local from = st.req_from
+  if from == nil then return 1 end
+  local reach = util.dist(pos, from) * 1.5 + M.START_SLACK
+  local best, bd = 1, util.dist(pos, wps[1])
+  local acc = util.dist(from, wps[1])
+  for k = 2, #wps do
+    acc = acc + util.dist(wps[k - 1], wps[k])
+    if acc > reach then break end
+    local dk = util.dist(pos, wps[k])
+    if dk < bd then best, bd = k, dk end
+  end
+  return best
+end
+
 local function no_path(task, ctx, st, pos)
   -- рефлекс бегства (req "reflex:…") сам переберёт другие точки отхода: гулять рядом с врагом незачем
   if st.start_escaped or task.req == "reflex:flee" then
     return give_up(task, ctx, "path_failed", "no path to the goal", pos)
   end
+  -- дальняя цель: отрезками в её сторону (обход лавы и обрывов)
+  if next_segment(task, ctx, st, pos, st.goal) then return nil end
   if not st.centered then
     st.centered = true
     local c = free_tile_center(ctx.entity, pos)
@@ -458,6 +548,11 @@ local function poll_request(task, ctx, st, pos)
     return nil
   end
   if r.failed or type(r.waypoints) ~= "table" or r.waypoints[1] == nil then
+    if st.seg ~= nil then
+      -- к этой точке отрезка пути нет — следующая точка (или «пути нет»)
+      st.seg = nil
+      return no_path(task, ctx, st, pos)
+    end
     if not st.tight and st.unstick == nil and not st.thin then
       -- широкий не нашёлся: тонким — сначала только отойти от препятствия
       st.tight = true
@@ -496,8 +591,13 @@ local function poll_request(task, ctx, st, pos)
       end
     end
   end
+  -- маршрут кончается далеко от точки запроса — частичный: идём по нему (он ведёт ближе), но
+  -- успехом не считаем (MAX_EXTENDS); полный маршрут сбрасывает счёт
+  local last = r.waypoints[#r.waypoints]
+  st.partial = st.req_at ~= nil and util.dist(last, st.req_at) > (st.req_radius or 1) + M.FINAL_SLACK
+  if not st.partial then st.extends = 0 end
   st.waypoints = r.waypoints
-  st.i = 1
+  st.i = start_index(st, pos, r.waypoints)
   st.state = "walking"
   st.retries = 0
   st.noted = nil -- маршрут пришёл: перепланирование закончено
@@ -549,7 +649,7 @@ function M.step(task, ctx, goal_pos, distance)
   -- цель сдвинулась (follow, approach к игроку)
   if util.dist(goal, st.goal) > 1e-6 then
     if not charted(e, goal) then return give_up(task, ctx, "not_charted", "goal is in uncharted chunks", pos) end
-    if util.dist(goal, st.goal) > M.GOAL_TOL then st.goal_moved = true end
+    if util.dist(goal, st.goal) > max(M.GOAL_TOL, M.GOAL_REL * d) then st.goal_moved = true end
     st.prog_tick = tick -- цель движется: продвижение к ней не мерим
   end
 
@@ -631,7 +731,8 @@ function M.step(task, ctx, goal_pos, distance)
     request(task, ctx, st, goal, goal, false)
     return nil
   end
-  if st.goal_moved and st.path_id == nil and tick - (st.plan_tick or 0) >= M.REPLAN_MIN_TICKS then
+  -- на отрезке к дальней цели за её сдвигом не гонимся: отрезок дойдёт, и путь посчитается заново
+  if st.goal_moved and st.path_id == nil and st.seg == nil and tick - (st.plan_tick or 0) >= M.REPLAN_MIN_TICKS then
     st.req_goal = nil
     request(task, ctx, st, goal, goal, true)
   end
@@ -688,9 +789,23 @@ function M.step(task, ctx, goal_pos, distance)
       if d <= eff + M.FINAL_SLACK then
         st.state = "final"
       elseif st.path_id == nil then
-        st.extends = st.extends + 1
-        if st.extends > M.MAX_EXTENDS then
-          return give_up(task, ctx, "path_failed", "path ends too far from the goal", pos)
+        if st.seg ~= nil then
+          -- отрезок к дальней цели пройден: путь к ней заново, отсюда (снова парой)
+          st.seg, st.seg_k = nil, nil
+          st.paired = nil
+          st.extends = 0
+          st.req_goal = nil
+          request(task, ctx, st, goal, goal, false)
+          return nil
+        end
+        -- цель ушла, пока шли (follow), — просто новый маршрут; кончился далеко от неподвижной
+        -- цели или был частичным — это неудача маршрута
+        if st.partial or util.dist(goal, st.goal) <= M.GOAL_TOL then
+          st.extends = st.extends + 1
+          if st.extends > M.MAX_EXTENDS then
+            if next_segment(task, ctx, st, pos, goal) then return nil end
+            return give_up(task, ctx, "path_failed", "path ends too far from the goal", pos)
+          end
         end
         st.req_goal = nil
         request(task, ctx, st, goal, goal, false)

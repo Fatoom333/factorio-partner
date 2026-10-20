@@ -7,6 +7,7 @@ local core_owner = require("scripts.core.owner")
 local jobs = require("scripts.core.jobs")
 local metrics = require("scripts.core.metrics")
 local vis = require("scripts.core.vis")
+local armor_lib = require("scripts.lib.armor")
 -- Реестр помощников ядра: нужен только для поля `state.body`; без него — запасное значение.
 local registry_ok, core_registry = pcall(require, "scripts.core.registry")
 if not registry_ok then core_registry = nil end
@@ -487,6 +488,7 @@ local function state_op(args, ctx)
     inv = C.inv_counts(main),
     inv_free = (main and main.valid) and main.count_empty_stacks() or 0,
     armor = armor,
+    armor_grid = armor and (armor_lib.summary(e) or {}).grid or nil,
     robots = robots(e),
     job = job,
     queue = queue,

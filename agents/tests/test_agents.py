@@ -37,10 +37,11 @@ def test_whitelist_matches_server_and_contract():
     in_docs = set(lint.mcp_tools())
     assert admin and not (short & admin)
     # ровно таблица docs/MCP.md без инструментов режима ролей
-    assert short == in_docs - lint.MULTI_ROLE_TOOLS
+    assert short == in_docs - lint.MULTI_ROLE_TOOLS - lint.HOST_TOOLS
+    assert lint.HOST_TOOLS <= in_docs and lint.HOST_TOOLS <= in_server
     assert lint.MULTI_ROLE_TOOLS <= in_docs and lint.MULTI_ROLE_TOOLS <= in_server
     assert lint.PENDING_TOOLS == set()            # сервер ни в чём не отстаёт
-    assert short == in_server - lint.MULTI_ROLE_TOOLS   # белый список агента = инструменты сервера
+    assert short == in_server - lint.MULTI_ROLE_TOOLS - lint.HOST_TOOLS   # белый список агента = инструменты сервера
     assert "partner_access" in in_server
     assert "partner_supply" in short and "partner_supply" in in_server
 
@@ -48,7 +49,7 @@ def test_whitelist_matches_server_and_contract():
 def test_contract_parsers_see_the_tables():
     acts = lint.actions()
     assert {"walk", "collect", "build_ghosts", "build_blueprint", "plan_mining", "wait"} <= set(acts)
-    assert acts["collect"] == {"items", "center", "near", "radius"}
+    assert acts["collect"] == {"items", "center", "near", "radius", "from_lines"}
     assert {"blob", "plan", "anchor", "direction", "force", "dry_run", "mode", "rotate", "search",
             "partial", "mirror", "auto_supply"} == acts["build_blueprint"]
     assert acts["plan_belt"] == {"from", "to", "belt", "lanes", "underground", "start_direction", "dry_run"}

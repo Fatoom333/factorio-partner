@@ -14,9 +14,13 @@
 4. пишет в ``FP_HOME/launch/`` конфигурацию MCP-сервера ``partner`` и файл сессии с первыми
    сообщениями агентам.
 
-Режим ролей (``--roles``): каждый помощник получает три агента — голос (``partner-voice``), пилот
-(``partner-pilot``) и стратег (``partner-strategist``), каждому свой ключ и своё первое сообщение
-(``--pilot-model`` — модель пилотов, ``sonnet`` или ``haiku``). Без ``--roles`` всё как раньше: один агент
+Режим ролей (``--roles``): пилот (``partner-pilot``) на каждое тело, один голос (``partner-voice``) и
+один стратег (``partner-strategist``) на всех помощников; у каждого агента свой ключ и своё первое
+сообщение (``--pilot-model`` — модель пилотов, ``sonnet`` или ``haiku``). Ключи голоса и стратега лежат в
+общей записи ``"*"`` файла ``helpers.json`` и годятся для любого помощника сервера, но только в своей
+роли; ключ пилота — только для его тела. Там же ключ диспетчера ``host`` — для главного чата, который
+запускает роли и передаёт им слова хозяина (``partner_relay``); он лежит в файле сессии отдельно
+(``host``) и в первые сообщения ролей не попадает. Без ``--roles`` всё как раньше: один агент
 ``partner`` на помощника.
 """
 from __future__ import annotations
@@ -157,26 +161,9 @@ def _write_private(path: Path, text: str) -> None:
 
 
 ROLES = ("pilot", "voice", "strategist")   # server/factorio_partner/roles.py, docs/MCP.md «Роли»
-
-
-def _role_entry(entry: dict) -> tuple[dict, bool]:
-    """Запись с ключами ролей: годные (≥ MIN_KEY, у ролей помощника разные) остаются, остальные
-    роли получают новые ключи. Чужие поля записи не трогаются. -> (запись, изменилась ли)."""
-    out = dict(entry)
-    good = {r: k for r in ROLES if isinstance(k := entry.get(r), str) and len(k) >= MIN_KEY}
-    counts: dict[str, int] = {}
-    for k in good.values():
-        counts[k] = counts.get(k, 0) + 1
-    good = {r: k for r, k in good.items() if counts[k] == 1}
-    changed = False
-    for r in ROLES:
-        if r not in good:
-            k = secrets.token_urlsafe(32)
-            while k in good.values():
-                k = secrets.token_urlsafe(32)
-            out[r] = good[r] = k
-            changed = True
-    return out, changed
+SHARED = "*"                                # общая запись helpers.json: ключи голоса и стратега
+SHARED_ROLES = ("voice", "strategist")
+HOST = "host"                               # ключ диспетчера в общей записи: только partner_relay
 
 
 def _load_keys(helpers_file: Path) -> dict:
@@ -187,25 +174,64 @@ def _load_keys(helpers_file: Path) -> dict:
     return data if isinstance(data, dict) else {}
 
 
+def _new_key(taken: set[str]) -> str:
+    k = secrets.token_urlsafe(32)
+    while k in taken:
+        k = secrets.token_urlsafe(32)
+    taken.add(k)
+    return k
+
+
 def _ensure(helpers_file: Path, ids: list[str], roles: bool) -> dict:
-    """Дополнить ``helpers.json`` и вернуть его содержимое. ``roles`` — каждому помощнику нужны ключи всех
-    трёх ролей: запись-строка (ключ пилота) становится записью-словарём с тем же ключом пилота."""
+    """Дополнить ``helpers.json`` и вернуть его содержимое.
+
+    Без ``roles`` — у каждого из ``ids`` годный ключ пилота: запись-строка или ``pilot`` записи-словаря;
+    общая запись ``"*"`` прежнего запуска в режиме ролей убирается (её ключи открывали бы всех помощников).
+    С ``roles`` — схема ролей: запись помощника ``{"pilot": <ключ>}`` (ключ пилота из записи-строки
+    сохраняется, прежние ключи голоса и стратега этого помощника убираются — их заменяет общая запись),
+    общая запись ``"*"`` — ``{"voice", "strategist", "host"}``. Ключ годен, если он не короче MIN_KEY и больше
+    нигде в файле не встречается; негодный заменяется новым. Чужие записи и чужие поля не трогаются."""
     data = _load_keys(helpers_file)
     changed = False
+    counts: dict[str, int] = {}
+    for entry in data.values():
+        for k in ([entry] if isinstance(entry, str) else entry.values() if isinstance(entry, dict) else []):
+            if isinstance(k, str):
+                counts[k] = counts.get(k, 0) + 1
+    taken = set(counts)
+
+    def unique(k: Any) -> bool:
+        return isinstance(k, str) and len(k) >= MIN_KEY and counts.get(k) == 1
+
     for hid in ids:
         entry = data.get(hid)
-        if roles and isinstance(entry, str) and len(entry) >= MIN_KEY:
-            entry = {"pilot": entry}
+        if roles:
+            pilot = entry if isinstance(entry, str) else entry.get("pilot") if isinstance(entry, dict) else None
+            new = {k: v for k, v in entry.items() if k not in ROLES} if isinstance(entry, dict) else {}
+            new["pilot"] = pilot if unique(pilot) else _new_key(taken)
+            if new != entry:
+                data[hid] = new
+                changed = True
+        elif isinstance(entry, dict):
+            if not unique(entry.get("pilot")):
+                data[hid] = dict(entry, pilot=_new_key(taken))
+                changed = True
+        elif not unique(entry):
+            data[hid] = _new_key(taken)
             changed = True
-        if isinstance(entry, dict):
-            entry, more = _role_entry(entry)
-            data[hid] = entry
-            changed |= more
-        elif not (isinstance(entry, str) and len(entry) >= MIN_KEY):
-            data[hid] = secrets.token_urlsafe(32)
+    if not roles and SHARED in data:
+        # без режима ролей общих голоса и стратега нет: их ключи из прежнего запуска больше не годны
+        del data[SHARED]
+        changed = True
+    if roles:
+        shared = data.get(SHARED)
+        new = dict(shared) if isinstance(shared, dict) else {}
+        for r in SHARED_ROLES + (HOST,):
+            if not unique(new.get(r)):
+                new[r] = _new_key(taken)
+        if new != shared:
+            data[SHARED] = new
             changed = True
-            if roles:
-                data[hid], _ = _role_entry({"pilot": data[hid]})
     if changed or not helpers_file.exists():
         _write_private(helpers_file, json.dumps(data, ensure_ascii=False, indent=1) + "\n")
     return data
@@ -213,17 +239,21 @@ def _ensure(helpers_file: Path, ids: list[str], roles: bool) -> dict:
 
 def ensure_keys(helpers_file: Path, ids: list[str]) -> dict[str, str]:
     """Ключи пилотов для ``ids``: годные существующие остаются, недостающие создаются. Чужие записи
-    целы. Запись старого вида — строка (ключ пилота); запись-словарь с ключами ролей сохраняется и
-    дополняется недостающими ролями."""
+    целы. Запись старого вида — строка (ключ пилота); у записи-словаря берётся и при нужде заменяется
+    только ``pilot``, остальные её поля не трогаются."""
     data = _ensure(helpers_file, ids, roles=False)
     return {hid: (data[hid]["pilot"] if isinstance(data[hid], dict) else data[hid]) for hid in ids}
 
 
-def ensure_role_keys(helpers_file: Path, ids: list[str]) -> dict[str, dict[str, str]]:
-    """Ключи всех трёх ролей для каждого из ``ids`` (режим ролей). Годные ключи остаются, ключ пилота
-    из записи-строки сохраняется, недостающие создаются; ключи ролей одного помощника всегда разные."""
+def ensure_role_keys(helpers_file: Path, ids: list[str]) -> dict:
+    """Ключи режима ролей: ``{"voice": <ключ>, "strategist": <ключ>, "host": <ключ>, "pilots": {id:
+    <ключ>}}``. Голос, стратег и диспетчер (``host``) — одни на всех помощников (общая запись ``"*"``),
+    пилот — свой у каждого тела. Годные ключи остаются, ключ пилота из записи-строки сохраняется,
+    недостающие создаются; все ключи разные."""
     data = _ensure(helpers_file, ids, roles=True)
-    return {hid: {r: data[hid][r] for r in ROLES} for hid in ids}
+    return {"voice": data[SHARED]["voice"], "strategist": data[SHARED]["strategist"],
+            "host": data[SHARED][HOST],
+            "pilots": {hid: data[hid]["pilot"] for hid in ids}}
 
 
 def install_style(home: Path, source: Path = STYLE_SOURCE) -> bool:
@@ -267,9 +297,20 @@ def strategist_knowledge(directory: Path = KNOWLEDGE_DIR) -> str:
     return "\n\n".join(parts)
 
 
+def display_name(hid: str) -> str:
+    """Имя помощника в игре (настройка мода partner-helper-name, по умолчанию Claude): у h1 — само
+    имя, у остальных «<имя> <id>» — как подпись над телом (scripts/core/nameplate.lua). Имя чистится
+    так же, как в моде и на сервере (factorio_partner/address.py ``clean_name``): без ``[`` и ``]``,
+    без пробелов по краям, не длиннее 24 байт UTF-8 (разрезанная буква отбрасывается)."""
+    base = re.sub(r"[\[\]]", "", os.environ.get("FP_HELPER_NAME") or "").strip()
+    base = base.encode("utf-8")[:24].decode("utf-8", "ignore") or "Claude"
+    return base if hid == "h1" else f"{base} {hid}"
+
+
 def role_message(role: str, hid: str, key: str, body: str, player: str | None, total: int,
-                 module_errors: int, knowledge: str = "") -> str:
-    """Первое сообщение агенту роли. Ключ — ключ именно этой роли этого помощника."""
+                 module_errors: int, knowledge: str = "", helpers: list[str] | None = None) -> str:
+    """Первое сообщение агенту роли. Ключ — ключ именно этой роли. ``helpers`` — все тела сервера:
+    голос и стратег одни на всех (их ключ годится для любого id из списка)."""
     if role not in ROLE_AGENTS:
         raise LaunchError(f"неизвестная роль: {role}")
     lines = [
@@ -281,6 +322,10 @@ def role_message(role: str, hid: str, key: str, body: str, player: str | None, t
         f"помощников в этой игре: {total}",
         f"module_errors: {module_errors}",
     ]
+    if helpers and role in SHARED_ROLES:
+        lines.append("helpers: " + ", ".join(f"{h} «{display_name(h)}»" for h in helpers))
+        lines.append("Ты один на всех этих помощников: ключ годится для любого id из helpers, "
+                     "helper в вызове — тело, о котором речь (по умолчанию первое).")
     lines.append({
         "voice": "Начни смену по своим правилам: partner_brief, затем partner_wait; хозяину не здоровайся.",
         "pilot": "Начни смену по своим правилам: partner_brief, partner_state, рефлексы, partner_wait.",
@@ -397,18 +442,15 @@ def parse_pilot_model(value: Any) -> str:
     return model
 
 
-def helper_roles(hid: str, keys: dict[str, str], mcp_files: dict[str, Path], body: str,
-                 player: str | None, total: int, module_errors: int, pilot_model: str,
-                 knowledge: str = "") -> dict[str, dict]:
-    """Три агента одного помощника: роль -> {agent, model, mcp_config, prompt}. В prompt — ключ этой роли."""
-    out: dict[str, dict] = {}
-    for role in ("voice", "pilot", "strategist"):
-        agent, model = ROLE_AGENTS[role]
-        out[role] = {"agent": agent, "model": pilot_model if role == "pilot" else model,
-                     "mcp_config": str(mcp_files[role]),
-                     "prompt": role_message(role, hid, keys[role], body, player, total, module_errors,
-                                            knowledge if role == "strategist" else "")}
-    return out
+def role_agent(role: str, hid: str, key: str, mcp_files: dict[str, Path], body: str,
+               player: str | None, total: int, module_errors: int, pilot_model: str,
+               knowledge: str = "", helpers: list[str] | None = None) -> dict:
+    """Один агент роли: {agent, model, mcp_config, prompt}. В prompt — ключ этой роли."""
+    agent, model = ROLE_AGENTS[role]
+    return {"agent": agent, "model": pilot_model if role == "pilot" else model,
+            "mcp_config": str(mcp_files[role]),
+            "prompt": role_message(role, hid, key, body, player, total, module_errors,
+                                   knowledge if role == "strategist" else "", helpers)}
 
 
 async def launch(cfg, n: int, body: str, players: list[str], *, core,
@@ -420,7 +462,7 @@ async def launch(cfg, n: int, body: str, players: list[str], *, core,
     pilot_model = parse_pilot_model(pilot_model)
     ids = list(ids) if ids else helper_ids(n)
     role_keys = ensure_role_keys(cfg.helpers_file, ids) if roles else None
-    keys = {hid: k["pilot"] for hid, k in role_keys.items()} if role_keys else ensure_keys(cfg.helpers_file, ids)
+    keys = dict(role_keys["pilots"]) if role_keys else ensure_keys(cfg.helpers_file, ids)
     if install_style(cfg.home):
         say("стиль общения скопирован в папку данных (style.md) — его можно править под себя")
     mod = await prepare_mod(core, ids, body, players, say, limit=n)
@@ -447,14 +489,24 @@ async def launch(cfg, n: int, body: str, players: list[str], *, core,
         knowledge = strategist_knowledge()
         session["mode"] = "roles"
         session["pilot_model"] = pilot_model
+        # голос и стратег — по одному на всех помощников; helper в их сообщении — первое тело
+        for role in SHARED_ROLES:
+            session[role] = role_agent(role, ids[0], role_keys[role], mcp_files, body, None, n,
+                                       mod["module_errors"], pilot_model, knowledge, ids)
+            summary.append({"helper": SHARED, "role": role,
+                            **{k: v for k, v in session[role].items() if k != "prompt"}})
+        # ключ диспетчера — главному чату, который запускает роли: только partner_relay, ни одной
+        # роли он не выдаётся (сценарий partner-roles.js его в агентов не передаёт)
+        session[HOST] = {"helper": ids[0], "key": role_keys[HOST], "mcp_config": str(mcp_path),
+                         "tool": "partner_relay"}
         for i, h in enumerate(session["helpers"]):
-            # в режиме ролей готовое первое сообщение у каждой роли своё (с ключом этой роли)
+            # в режиме ролей готовое первое сообщение у каждого агента своё (с ключом его роли)
             del h["prompt"]
-            h["roles"] = helper_roles(h["id"], role_keys[h["id"]], mcp_files, body,
-                                      players[i] if body == "player" else None, n,
-                                      mod["module_errors"], pilot_model, knowledge)
-            summary += [{"helper": h["id"], "role": r, **{k: v for k, v in a.items() if k != "prompt"}}
-                        for r, a in h["roles"].items()]
+            h["roles"] = {"pilot": role_agent("pilot", h["id"], role_keys["pilots"][h["id"]], mcp_files,
+                                              body, players[i] if body == "player" else None, n,
+                                              mod["module_errors"], pilot_model)}
+            summary.append({"helper": h["id"], "role": "pilot",
+                            **{k: v for k, v in h["roles"]["pilot"].items() if k != "prompt"}})
     _write_private(session_path, json.dumps(session, ensure_ascii=False, indent=1) + "\n")
     return {"helpers": ids, "body": body, "module_errors": mod["module_errors"],
             "mcp_config": mcp_path, "session": session_path,
@@ -471,7 +523,7 @@ def build_parser() -> argparse.ArgumentParser:
                     help="для --body player: имя игрока второго клиента, по одному на помощника (можно несколько раз)")
     ap.add_argument("--players", help="то же одним флагом: имена игроков через запятую")
     ap.add_argument("--roles", action="store_true",
-                    help="режим трёх ролей: пилот на каждого помощника, голос и стратег — по одному")
+                    help="режим ролей: пилот на каждого помощника, голос и стратег — по одному на всех")
     ap.add_argument("--pilot-model", default="sonnet", metavar="MODEL",
                     help="модель пилотов в режиме ролей: sonnet (по умолчанию) или haiku")
     return ap
@@ -526,9 +578,11 @@ def main(argv: list[str] | None = None) -> int:
     say(f"Конфигурация MCP: {result['mcp_config']}")
     say(f"Файл сессии (с ключами, никому не показывать): {result['session']}")
     if result["agents"]:
-        say("Запустить агентов (первое сообщение каждому — prompt из файла сессии, helpers[].roles):")
+        say("Запустить агентов (первое сообщение каждому — prompt из файла сессии: voice, strategist, "
+            "helpers[].roles.pilot):")
         for a in result["agents"]:
-            say(f"  {a['helper']}: {a['agent']}  модель {a['model']}  конфигурация {a['mcp_config']}")
+            who = "все помощники" if a["helper"] == SHARED else a["helper"]
+            say(f"  {who}: {a['agent']}  модель {a['model']}  конфигурация {a['mcp_config']}")
     say("Дальше — agents/README.md, раздел «Запуск агентов».")
     return 0
 

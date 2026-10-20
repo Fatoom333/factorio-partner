@@ -16,12 +16,15 @@
 {"helper":"h1","surface":"vulcanus","pos":{"x":52.4,"y":93.4},"health":250,"max_health":250,
  "reach":{"build":10,"reach":10,"resource":2.7,"pickup":1},
  "inv":{"iron-plate":40,"coal":12},"inv_free":72,"armor":"power-armor-mk2",
+ "armor_grid":{"w":10,"h":10,"used":38,"free":62,"equipment":{"battery-mk2-equipment":2,"exoskeleton-equipment":2}},
  "robots":{"construction":10,"available":9},
  "job":{"job":57,"do":"walk","progress":[12,40]},"queue":2,"idle_ticks":0,"busy_share":0.82,"busy_window":36000,
  "players":[{"name":"Owner","owner":true,"online":true,"surface":"vulcanus","pos":{"x":48,"y":90},"dist":4.2}],
  "near":{"enemies":[],"containers":3},"vision":true,"body":"character","module_errors":0,"tick":4109766,"seq":812}
 ```
 - `inv` — главный инвентарь (`normal`), `inv_free` — пустых ячеек; `armor` — имя брони, если есть;
+  `armor_grid` — сетка надетой брони (нет брони или сетки — поля нет): `w`×`h`, занятые и свободные
+  клетки, модули по именам предметов (ACTIONS.md «Руки: броня»);
   `robots` — дроны логистической ячейки тела (всего / свободных).
 - `job` берётся из `jobs.active(helper)` ядра (ACTIONS.md), `progress` — `[сделано, всего]`;
   `queue` — ждущих задач без активной.

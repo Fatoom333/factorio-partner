@@ -297,13 +297,17 @@ def build_server(core: Core, admin: bool = False, packages: bool = True) -> Fast
                                 description="small — одно-два действия (пилот сам); large — стройка, проект (стратег)")],
                             urgent: bool = False,
                             answer_to: Annotated[str | None, Field(
-                                description="id вопроса стратега (q<N>), на который этим сообщением ответил хозяин; тогда size large")] = None) -> dict:
+                                description="id вопроса стратега (q<N>), на который этим сообщением ответил хозяин; тогда size large")] = None,
+                            to: Annotated[str | None, Field(
+                                description="(общий голос) id помощника, если хозяин имени не назвал, но ясно, о ком речь")] = None) -> dict:
         """(голос) Положить поручение хозяина во входящие помощника. Только со ссылкой на его
         настоящее сообщение: сервер сам читает это событие у мода (хозяин, не старше 10 минут, мод не
         ответил на него как на слово); одно сообщение — одно поручение. Слова хозяина приходят в
-        поручении полем owner_said. Ответ {order:{id, said_seq, tick, size, urgent, text, owner_said},
-        open}."""
-        return await _run(core.op_order(helper, key, said_seq, text, size, urgent, answer_to))
+        поручении полем owner_said. Общий голос (один на всех помощников): адресата сервер берёт из
+        имени в словах хозяина («Claude2, …» — h2), иначе to, иначе small — самому свободному телу,
+        large — стратегу. Ответ {order:{id, said_seq, tick, size, urgent, text, owner_said, helper?},
+        open, to:{helper, role, by}}."""
+        return await _run(core.op_order(helper, key, said_seq, text, size, urgent, answer_to, to))
 
     @mcp.tool()
     async def partner_inbox(helper: Helper, key: Key,
@@ -311,7 +315,8 @@ def build_server(core: Core, admin: bool = False, packages: bool = True) -> Fast
                                 description="id выполненных или взятых в работу поручений: уйдут из входящих")] = None) -> dict:
         """Входящие поручения хозяина этого помощника, старые первыми: {orders:[{id, said_seq, tick,
         size, urgent, text, owner_said}], acked?}. Верь owner_said (его слова), text — пересказ голоса.
-        ack — убрать сделанные (пилот и стратег)."""
+        ack — убрать сделанные (пилот и стратег). Общим голосу и стратегу — поручения всех помощников,
+        у каждого helper (null — общие входящие стратега)."""
         return await _run(core.op_inbox(helper, key, ack))
 
     @mcp.tool()
@@ -333,7 +338,9 @@ def build_server(core: Core, admin: bool = False, packages: bool = True) -> Fast
                              on: Annotated[bool | None, Field(
                                  description="для thoughts: true — показывать мысли стратега, false — нет")] = None,
                              said_seq: Annotated[int | None, Field(
-                                 description="для thoughts: seq настоящего сообщения хозяина (player_said, owner:true)")] = None) -> dict:
+                                 description="для thoughts: seq настоящего сообщения хозяина (player_said, owner:true)")] = None,
+                             order: Annotated[str | None, Field(
+                                 description="для ask: id поручения (o<N>), о котором вопрос — ответ хозяина станет разрешением пакету этого поручения (package.approved)")] = None) -> dict:
         """Пакеты стройки: именованный план из шагов act (как действие plan) с якорем, приоритетом
         (now/next/later) и 1–3 проверками (stock, rate, ghosts). Пишет только стратег; сервер сам ставит
         пакет телу, когда оно свободно и хозяин не держит, и через 2 минуты игры после plan_done
@@ -342,8 +349,24 @@ def build_server(core: Core, admin: bool = False, packages: bool = True) -> Fast
         хозяину из partner_brief.work); ask — вопрос хозяину (≤ 5 открытых): голос получает событие
         strategist_question, ответ хозяина приходит во входящие поручением с answer_to.
         thoughts (голос) — по просьбе хозяина «показывай мысли стратега» / «хватит»: on + said_seq его
-        сообщения; пока включено, новая заметка стратега будит голос событием strategist_note."""
-        return await _run(core.op_ledger(helper, key, action, package, id, rev, text, on, said_seq))
+        сообщения; пока включено, новая заметка стратега будит голос событием strategist_note.
+        Забрать у хозяина (collect, extract, from_lines:true) пакет может только с его разрешения:
+        ask с order, его ответ, затем put с package.order и package.approved:"q<N>". Отказ put
+        называет шаг и поле: «steps[3] (insert): unknown field "item" — ожидается items:{name:count};
+        пример: …» — исправь это поле, не перебирай варианты."""
+        return await _run(core.op_ledger(helper, key, action, package, id, rev, text, on, said_seq, order))
+
+    @mcp.tool()
+    async def partner_relay(helper: Helper, key: Key,
+                            to: Annotated[Literal["voice", "pilot", "strategist"] | None, Field(
+                                description="роль, которую хозяин назвал: voice, pilot или strategist")] = None,
+                            text: Annotated[str | None, Field(
+                                description="слова хозяина из главного чата, ≤ 600 символов")] = None) -> dict:
+        """(диспетчер, ключ host) Передать роли то, что хозяин набрал в главном чате («передай
+        стратегу: …»). helper — тело: для пилота — чей пилот, для голоса и стратега — о каком теле речь.
+        voice — громкое событие host_message голосу; pilot и strategist — поручение from:"host" во
+        входящие (голос тоже получает host_message и говорит хозяину в чат). Без to — отказ."""
+        return await _run(core.op_relay(helper, key, to, text))
 
     @mcp.tool()
     async def partner_plan(helper: Helper, key: Key, task: Literal["mining", "block"] = "mining",

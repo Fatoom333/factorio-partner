@@ -49,6 +49,8 @@ PENDING_TOOLS: set[str] = set()
 # инструменты только для режима нескольких ролей: одиночному агенту partner (ключ старого вида —
 # пилот без голоса и стратега) они не нужны — поручений ему никто не кладёт
 MULTI_ROLE_TOOLS = {"partner_order", "partner_inbox", "partner_ledger"}
+# инструменты диспетчера (ключ host, главный чат), не агентов: ни один агент их не получает
+HOST_TOOLS = {"partner_relay"}
 # аргументы partner_plan описаны в MCP.md отдельным разделом, а не в таблице
 PLAN_ARGS = {"task", "resource", "patch", "options"}
 # MCP.md: для build_blueprint вместо blob можно plan; mirror — аргумент мода, которым применяется
@@ -198,7 +200,8 @@ def role_rights() -> dict[str, frozenset[str]]:
         from factorio_partner import roles  # noqa: PLC0415
     finally:
         sys.path.pop(0)
-    return dict(roles.ALLOWED)
+    # права агентов; host — ключ диспетчера (главный чат), не агент
+    return {r: v for r, v in roles.ALLOWED.items() if r in roles.ROLES}
 
 
 def role_allowed(role: str, tool: str, args: dict) -> bool:
@@ -417,7 +420,9 @@ def lint_agent(agent_file: Path = AGENT_FILE, server_file: Path = SERVER_FILE, d
             problems.append(f"tools: {name} нет ни в сервере, ни среди добавляемых по docs/MCP.md")
         elif name not in tools:
             problems.append(f"tools: {name} нет в таблице инструментов docs/MCP.md")
-    for name in sorted(set(tools) - short - MULTI_ROLE_TOOLS):
+    for name in sorted(short & HOST_TOOLS):
+        problems.append(f"tools: {name} — инструмент диспетчера (ключ host), агенту не выдаётся")
+    for name in sorted(set(tools) - short - MULTI_ROLE_TOOLS - HOST_TOOLS):
         problems.append(f"tools: в белом списке нет инструмента {name} из docs/MCP.md")
     for name in sorted(short & MULTI_ROLE_TOOLS):
         problems.append(f"tools: {name} — инструмент режима ролей, одиночному агенту не нужен")

@@ -1,13 +1,17 @@
 -- Действие `collect`. Контракт: docs/ACTIONS.md, PROTOCOL.md §6, §7 (резервы),
 -- STATE.md «stock» (какие склады видны).
 --
--- args: items, center?:pos │ near?:"player", radius?=64 (≤ 128, больше → limit).
+-- args: items, center?:pos │ near?:"player", radius?=64 (≤ 128, больше → limit), from_lines?=false.
 -- Собирает items со складов своей силы в радиусе (те же склады, что видит `stock`: контейнеры и
--- логистические сундуки, содержимое — только в видимых чанках). Чужой резерв не берёт; на время
--- задачи резервирует нужное за собой (storage.reservations, снимается в конце). Обходит склады
--- жадно — ближайший к помощнику, где ещё есть нужное; к каждому подходит на reach_distance.
--- done.detail = {collected: items, missing: items, from: [unit_number]}; ничего не собрано →
--- failed{no_items} с той же detail; полный инвентарь — событие inventory_full и failed{no_space}
+-- логистические сундуки, содержимое — только в видимых чанках). Сундук, в который кладёт манипулятор
+-- или загрузчик хозяина (выход линии), и выходные слоты сборщиков и печей — только с from_lines
+-- (scripts/lib/lines.lua); без флага то, что там лежит, называется в detail.lines.
+-- Чужой резерв не берёт; на время задачи резервирует нужное за собой (storage.reservations,
+-- снимается в конце). Обходит склады жадно — ближайший к помощнику, где ещё есть нужное; к каждому
+-- подходит на reach_distance.
+-- done.detail = {collected: items, missing: items, from: [unit_number], lines?: {item: {count, at,
+-- hint}}}; ничего не собрано → failed{no_items} с той же detail; полный инвентарь — событие
+-- inventory_full и failed{no_space}
 -- (detail — что успел собрать). Остался только неделимый стак (предмет с данными/портящийся
 -- больше остатка заявки) — failed{no_items, detail.reason="whole_stacks_only"}.
 local reserve = require("scripts.core.reserve")
@@ -16,7 +20,7 @@ local target = require("scripts.core.target")
 local inv = require("scripts.lib.inventory")
 local extract = require("scripts.actions.extract")
 local C = require("scripts.perception.state").common
-local stock = require("scripts.perception.stock")
+local lines = require("scripts.lib.lines")
 
 local M = {}
 M.name = "collect"
@@ -25,6 +29,7 @@ M.schema = {
   center = { type = "pos" },
   near = { type = "string", values = { "player" } },
   radius = { type = "number", min = 1, max = 128, default = 64 },
+  from_lines = { type = "bool", default = false },
 }
 
 M.MAX_RADIUS = 128
@@ -46,6 +51,11 @@ local function result(task)
     if left > 0 then missing[name] = left end
   end
   local detail = { collected = task.collected, missing = missing, from = task.from }
+  if task.lines ~= nil then
+    local hints = {}
+    for name in pairs(missing) do hints[name] = lines.hint(task.lines, name) end
+    if next(hints) ~= nil then detail.lines = hints end
+  end
   return detail
 end
 
@@ -66,6 +76,9 @@ local function finish(task, ctx)
       detail.reason = "whole_stacks_only"
       return inv.failed("no_items", "items with data or spoilage move only as whole stacks", detail)
     end
+    if detail.lines ~= nil then
+      return inv.failed("no_items", "the items are only in owner's line outputs (needs from_lines)", detail)
+    end
     return inv.failed("no_items", "nothing to collect in range", detail)
   end
   return inv.done(detail)
@@ -81,7 +94,9 @@ function M.start(task, ctx)
   local h = ctx.entity
   local filter = {}
   for name in pairs(a.items) do filter[name] = true end
-  local scan = stock.scan(h.surface, h.force, where.center, a.radius, filter, ctx.helper_id)
+  local scan = lines.scan(h.surface, h.force, where.center, a.radius, filter, ctx.helper_id,
+    { from_lines = a.from_lines, hint = not a.from_lines })
+  task.lines = scan.lines
 
   -- сколько можно взять: видимое на складах минус чужой резерв
   task.want = {}
@@ -95,7 +110,7 @@ function M.start(task, ctx)
   task.plan = {}
   for i, c in ipairs(scan.containers) do
     if i > M.MAX_CONTAINERS then break end
-    task.plan[#task.plan + 1] = { unit = c.unit, pos = c.pos, items = c.items }
+    task.plan[#task.plan + 1] = { unit = c.unit, pos = c.pos, items = c.items, kind = c.kind }
   end
   if next(task.want) == nil then return finish(task, ctx) end
   reserve.add_items(ctx.helper_id, task.want)
@@ -124,6 +139,7 @@ local function next_container(task, h, need)
   table.remove(task.plan, bi)
   local e = target.resolve(h.surface, { unit_number = best.unit, pos = best.pos }, h.force)
   if e == nil then return next_container(task, h, need) end
+  task.cur_kind = best.kind
   return e
 end
 
@@ -143,7 +159,9 @@ function M.tick(task, ctx)
     r.detail = result(task)
     return r
   end
-  local src = inv.main_inventory(task.cur)
+  -- у машины — только выходной слот (lines.lua): входы и топливо не трогаются
+  local src
+  if task.cur_kind == "machine" then src = lines.output_inventory(task.cur) else src = inv.main_inventory(task.cur) end
   if src ~= nil then
     -- свой резерв на эти предметы на время переноса снят не будет: reserved_by_others его не видит
     local got, _, flags = extract.take(task, ctx, src, need)

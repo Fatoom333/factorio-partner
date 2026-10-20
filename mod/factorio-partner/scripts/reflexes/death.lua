@@ -12,9 +12,19 @@
 -- Места нет — повтор каждые 5 с (до 12 раз), потом reflex_done{type:"respawn", outcome:"failed"}
 -- и помощник остаётся мёртвым (helper_spawn — после перезарядки). Помощника удалили или
 -- заспавнили заново, пока он был мёртв, — возрождение отменяется.
+--
+-- Последний труп: при смерти в состояние рефлексов пишется `corpse = {pos, surface, tick, taken?}`
+-- (место трупа из on_post_entity_died, иначе — место смерти; tick — тик смерти, он же
+-- character_corpse_tick_of_death у трупа). Его находит pickup{corpse:true}; запись переживает
+-- возрождение и заменяется следующей смертью.
+--
+-- Броня после возрождения: пока новое тело живёт меньше REARM_TICKS, раз в секунду проверяется
+-- слот брони — пуст, а в карманах броня (тело-игрок, вещи из сундука) — надевается лучшая
+-- (scripts/lib/armor.lua auto_wear), шумное armor_equipped{item, armor}.
 local util = require("scripts.core.util")
 local events = require("scripts.core.events")
 local registry = require("scripts.core.registry")
+local armor = require("scripts.lib.armor")
 local C = require("scripts.reflexes.common")
 
 local M = {}
@@ -24,6 +34,7 @@ M.RESPAWN_TICKS = 600   -- PROTOCOL §6.9
 M.RETRY_TICKS = 300     -- нет места у точки возрождения — повтор
 M.MAX_RETRIES = 12
 M.SPAWN_RADIUS = 16     -- поиск свободного места вокруг точки возрождения
+M.REARM_TICKS = 36000   -- 10 мин после возрождения мод сам надевает броню из карманов
 
 local CHAR = { { filter = "type", type = "character" } }
 
@@ -44,6 +55,8 @@ function M.on_died(e)
     tick = game.tick, unit = ent.unit_number, pos = util.pos(ent.position),
     surface = ent.surface.index, force = ent.force.name, announced = false, retries = 0,
   }
+  st.corpse = { pos = util.pos(ent.position), surface = ent.surface.index, tick = game.tick }
+  st.rearm = { dead_unit = ent.unit_number }
 end
 
 function M.on_post_died(e)
@@ -53,8 +66,52 @@ function M.on_post_died(e)
     local d = st.death
     if d ~= nil and d.unit == unit and not d.announced then
       local c = e.corpses and e.corpses[1]
-      announce(id, d, c and c.valid and util.pos(c.position) or nil)
+      local cpos = c and c.valid and util.pos(c.position) or nil
+      if cpos ~= nil and st.corpse ~= nil and st.corpse.tick == d.tick then st.corpse.pos = cpos end
+      announce(id, d, cpos)
       return
+    end
+  end
+end
+
+--- Последний труп помощника: {pos, surface (индекс), tick, taken?} или nil.
+function M.last_corpse(helper)
+  local st = C.state(helper, false)
+  return st and st.corpse or nil
+end
+
+--- Свой труп забран целиком (pickup{corpse:true}): второй раз его не ищем.
+function M.corpse_taken(helper)
+  local c = M.last_corpse(helper)
+  if c ~= nil then c.taken = true end
+end
+
+--- Броня после возрождения (см. шапку): новое тело, слот пуст, в карманах броня → надеть.
+function M.rearm_sweep(tick)
+  for id, st in pairs(C.all()) do
+    local r = st.rearm
+    if r ~= nil then
+      local rec = registry.get(id)
+      local e = rec and rec.entity
+      if rec == nil or rec.state == "removed" then
+        st.rearm = nil
+      elseif rec.state == "alive" and e ~= nil and e.valid and e.unit_number ~= r.dead_unit then
+        r.since = r.since or tick
+        local ok, got = pcall(armor.auto_wear, e)
+        if ok and got ~= nil then
+          st.rearm = nil
+          events.emit(id, "armor_equipped", { item = got.equipped, armor = got.armor })
+        elseif tick - r.since >= M.REARM_TICKS then
+          st.rearm = nil
+        else
+          -- броню уже надели (equip, extract{equip}) — дальше не смотрим
+          local ok2, worn = pcall(function()
+            local s = armor.slot(e)
+            return s ~= nil and s.valid_for_read
+          end)
+          if ok2 and worn then st.rearm = nil end
+        end
+      end
     end
   end
 end
@@ -115,6 +172,7 @@ M.events = {
 
 M.on_nth = {
   [10] = function(e) M.sweep(e.tick) end,
+  [60] = function(e) M.rearm_sweep(e.tick) end,
 }
 
 return M

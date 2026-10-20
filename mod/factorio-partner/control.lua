@@ -7,7 +7,7 @@ local core = require("scripts.core.init")
 
 local ACTIONS = {
   "walk", "approach", "follow",
-  "mine", "craft", "insert", "extract", "collect", "pickup",
+  "mine", "craft", "insert", "extract", "collect", "pickup", "equip", "armor_grid",
   "place", "rotate", "set_recipe", "build_blueprint", "build_layout", "build_ghosts", "deconstruct",
   "plan_mining",
   "plan_belt",

@@ -54,10 +54,15 @@ S.suite("hands_pickup", {
       local c = corpse({ x = 20.5, y = 0.5 }, { { name = "power-armor-mk2", count = 1, data = "grid-X" }, { name = "coal", count = 30 } })
       local d, kind = C.wait(pickup{ target = { unit_number = c.unit_number } })
       S.eq(kind, "job_done", S.dump(d))
-      S.eq(d.detail, { picked = { ["power-armor-mk2"] = 1, coal = 30 } })
+      -- слот брони был пуст — броня из трупа надета сразу, со своими данными (сеткой)
+      S.eq(d.detail, { picked = { ["power-armor-mk2"] = 1, coal = 30 }, equipped = "power-armor-mk2",
+        armor = { name = "power-armor-mk2" } })
       S.ok(c.get_inventory(defines.inventory.character_corpse).is_empty())
       S.eq(C.data_destroyed, 0)
       S.ok(W.h.can_reach_entity(c))
+      S.eq(W.armor[1].name, "power-armor-mk2")
+      S.eq(W.armor[1].data, "grid-X")
+      S.eq(C.counts(W.main), { coal = 30 })
   end },
   { "труп по форме {name:\"character-corpse\", pos}: место из события смерти, неточное до 3 клеток", function()
       local W = C.setup()

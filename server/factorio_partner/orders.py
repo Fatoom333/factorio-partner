@@ -19,7 +19,9 @@ packages in the ledger of the save:
 
 A new large order of the owner (``partner_order{size:"large"}``) lets the running package finish
 its current step (``cancel{at_boundary}``) and pauses it; it goes on from the next step once the
-packages for the new order are done.
+packages for the new order are done — or from the last run of steps that bring items (get_items,
+collect, extract) before it, when there is one (``validate.restart_step``). A new
+package (``put``) always starts from its first step.
 
 The bridge changes nothing in the game that an agent could not: it only queues ``plan`` jobs of
 ordinary actions, cancels them and reads — honesty rules of PROTOCOL §6 hold for every step.
@@ -130,12 +132,12 @@ class PackageBridge:
         return t if _is_int(t) else None
 
     def notify(self, helper: str, kind: str, data: dict, roles: tuple[str, ...] = (R.PILOT, R.STRATEGIST)) -> None:
-        """A loud server-made event for the roles of the helper that have called the server."""
-        ev = {"seq": self.core.bridge.last_seq, "tick": self.core.bridge.last_tick, "helper": helper,
+        """A loud server-made event for the roles of the helper that have called the server, and for
+        the shared voice and strategist; ``helper`` roles.SHARED — for the shared roles only."""
+        ev = {"seq": self.core.bridge.last_seq, "tick": self.core.bridge.last_tick,
+              "helper": None if helper == R.SHARED else helper,
               "kind": kind, "data": data, "loud": True}
-        for role in roles:
-            if (helper, role) in self.core.cursors:
-                self.core._notice((helper, role), json.loads(json.dumps(ev)))
+        self.core.notify_roles(helper, ev, roles)
 
     def _set(self, pid: str, **fields) -> dict | None:
         def fn(d):
@@ -177,7 +179,8 @@ class PackageBridge:
         if t - self._note_sent.get(helper, -1e12) >= NOTE_EVERY:
             self._note_pending.pop(helper, None)
             self._note_sent[helper] = t
-            self.notify(helper, "strategist_note", {"text": text, "helper": helper}, roles=(R.VOICE,))
+            self.notify(helper, "strategist_note",
+                        {"text": text, "helper": None if helper == R.SHARED else helper}, roles=(R.VOICE,))
         else:
             self._note_pending[helper] = text
 
@@ -198,7 +201,7 @@ class PackageBridge:
         voice that has called the server: until then it sees the question in partner_brief)."""
         led = self.ledger()
         qs = led.data().get("questions")
-        names = [h for h, v in qs.items() if isinstance(v, list) and L.HELPER_RE.match(h)
+        names = [h for h, v in qs.items() if isinstance(v, list) and (h == R.SHARED or L.HELPER_RE.match(h))
                  and (h, R.VOICE) in self.core.cursors] if isinstance(qs, dict) else []
         for h in names:
             t = L.now()
@@ -523,11 +526,21 @@ class PackageBridge:
             return
         try:
             # the file can be edited by hand: what goes to the mod is checked again, like any act
-            steps = V.package_steps("package.steps", p.get("steps"))
+            leave = bool(p.get("approved")) and bool(p.get("order"))
+            steps = V.package_steps("package.steps", p.get("steps"), approved=leave)
+            if V.needs_leave(steps):
+                # the owner's leave is checked again when the package goes, not only at put
+                scope = p.get("leave_scope") if p.get("leave_scope") in (h, R.SHARED) else h
+                why = L.leave_problem(self.ledger().data(), scope, p, p.get("order_tick"))
+                if why is not None:
+                    raise PartnerError("bad_args", why)
             for i, c in enumerate(p.get("verify") or [], 1):
                 V.check_package_check(f"package.verify[{i}]", c)
             on_fail = V.enum("stop", "continue")("package.on_fail", p.get("on_fail", "stop"))
             from_step = V.integer(1, len(steps))("package.from_step", p.get("from_step") or 1)
+            # a stopped package goes on from the steps that bring its items, not after them: what
+            # they brought may be gone while it stood (V.restart_step)
+            from_step = V.restart_step(steps, from_step)
         except PartnerError as e:
             q = self._set(p["id"], status="failed", plan={"status": "failed", "code": e.code,
                                                            "text": (e.text or "")[:300]})

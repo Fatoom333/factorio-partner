@@ -9,8 +9,12 @@
 -- способ до конца задачи, и план перестраивается. Мира не выдумывает: предметов из воздуха нет,
 -- склады и печи — только видимые (PROTOCOL §6.7), своей силы, рецепты — своей силы, открытые.
 --
--- Состояние — task.supply = {want, from, blocked, reasons, start, radius, cur, replans, fueled}:
--- только данные (в storage нет функций и тяжёлых таблиц).
+-- Склады — свои сундуки хозяина; выходы его линий (сундук, в который кладёт манипулятор или загрузчик)
+-- и выходные слоты машин — только с from_lines (scripts/lib/lines.lua). Без флага недостающее, что
+-- лежит в таких выходах, называется в shortfall (in_lines, lines_at, hint).
+--
+-- Состояние — task.supply = {want, from, blocked, reasons, start, radius, cur, replans, fueled,
+-- from_lines, seen_stock}: только данные (в storage нет функций и тяжёлых таблиц).
 --   cur = {step, kind, t, before} — текущий шаг как дочерняя задача; модуль действия по kind берётся
 --   из локальной таблицы MODS. Индекс рецептов — кэш модуля (пересобирается после загрузки).
 -- API: begin(task, ctx, want, opts) → nil │ result; step(task, ctx) → nil │ result;
@@ -18,7 +22,7 @@
 local util = require("scripts.core.util")
 local inv = require("scripts.lib.inventory")
 local reserve = require("scripts.core.reserve")
-local stock = require("scripts.perception.stock")
+local lines = require("scripts.lib.lines")
 local recipes_p = require("scripts.perception.recipes")
 local collect = require("scripts.actions.collect")
 local craft = require("scripts.actions.craft")
@@ -34,7 +38,6 @@ M.DEFAULT_RADIUS = 64
 M.WAIT_CHECK = 30        -- тиков между опросами печей
 M.DEFAULT_USAGE = 90000  -- Вт, если мощность печи не прочесть
 M.MAX_CALLS = 2000       -- вызовов resolve на один план; больше — причина too_complex
-M.OWNER_REACH_MIN = 2    -- наименьшая дальность, на которую ищем манипуляторы и загрузчики хозяина у печи
 M.FUELS = { "coal", "wood", "solid-fuel" }
 
 -- индекс рецептов по задаче-снабжению: кэш, не storage (после загрузки сейва пересобирается)
@@ -157,31 +160,6 @@ local function same(a, b)
   return ok and r == true
 end
 
--- наибольшая дальность манипуляторов из прототипов (кэш модуля, не storage; считается один раз за загрузку)
-local reach_cache, reach_for
-
-local function vec_len(v)
-  if type(v) ~= "table" then return 0 end
-  local x, y = v.x or v[1], v.y or v[2]
-  if type(x) ~= "number" or type(y) ~= "number" then return 0 end
-  return math.sqrt(x * x + y * y)
-end
-
-local function owner_reach()
-  if reach_cache ~= nil and reach_for == prototypes then return reach_cache end
-  local best = M.OWNER_REACH_MIN
-  local ok, protos = pcall(function()
-    return prototypes.get_entity_filtered{ { filter = "type", type = "inserter" } }
-  end)
-  if ok and type(protos) == "table" then
-    for _, p in pairs(protos) do
-      best = math.max(best, field(p, "inserter_pickup_position") and vec_len(field(p, "inserter_pickup_position")) or 0,
-        field(p, "inserter_drop_position") and vec_len(field(p, "inserter_drop_position")) or 0)
-    end
-  end
-  reach_cache, reach_for = best, prototypes
-  return best
-end
 
 --- Прямоугольник печи: рамка выбора, иначе рамка по размеру прототипа вокруг центра.
 local function furnace_box(e)
@@ -200,7 +178,7 @@ end
 --- Манипулятор — pickup_target/drop_target, загрузчик — loader_container. Ищем в рамке печи, расширенной
 --- на наибольшую дальность манипуляторов (длинные и модовые тоже находятся).
 local function owner_linked(h, e)
-  local reach = owner_reach()
+  local reach = lines.reach()
   local bx = furnace_box(e)
   local ok, list = pcall(function()
     return h.surface.find_entities_filtered{ type = { "inserter", "loader", "loader-1x1" },
@@ -492,10 +470,15 @@ local function make_plan(g, task, ctx)
     steps = {}, short = {}, visiting = {}, nlog = 0, lt = {}, lk = {}, lo = {},
   }
   if not g.blocked.collect then
-    local scan = stock.scan(h.surface, h.force, util.xy(h.position), g.radius, nil, ctx.helper_id)
+    -- склады хозяина; выходы его линий и машин — только с from_lines (scripts/lib/lines.lua)
+    local scan = lines.scan(h.surface, h.force, util.xy(h.position), g.radius, nil, ctx.helper_id,
+      { from_lines = g.from_lines })
     for name, n in pairs(scan.total) do
       local allowed = n - reserve.reserved_by_others(ctx.helper_id, name)
-      if allowed > 0 then S.stock[name] = allowed end
+      if allowed > 0 then
+        S.stock[name] = allowed
+        if g.want[name] ~= nil then g.seen_stock[name] = true end
+      end
     end
   end
   local names = {}
@@ -732,7 +715,7 @@ local function start_step(g, task, ctx, step)
   local args
   local c = { step = step, kind = kind, before = inv.counts(ctx.entity.get_main_inventory()) }
   if kind == "collect" then
-    args = { items = step.items, radius = g.radius }
+    args = { items = step.items, radius = g.radius, from_lines = g.from_lines }
   elseif kind == "craft" then
     args = { recipe = step.recipe, count = step.count, wait = true }
   elseif kind == "mine" then
@@ -799,6 +782,28 @@ local function have_of(ctx, want)
   return out
 end
 
+--- Подсказка в shortfall: недостающее лежит в выходах линий хозяина или машин (брать — только с
+--- from_lines). Предмет записи — тот, что просили, и «бутылочное горлышко» via.
+local function add_line_hints(g, ctx, shortfall)
+  local h = ctx.entity
+  local filter = {}
+  for _, s in ipairs(shortfall) do
+    filter[s.item] = true
+    if s.via then filter[s.via] = true end
+  end
+  local ok, scan = pcall(lines.scan, h.surface, h.force, util.xy(h.position), g.radius, filter, ctx.helper_id,
+    { hint = true })
+  if not ok or scan.lines == nil then return end
+  for _, s in ipairs(shortfall) do
+    local x, of = lines.hint(scan.lines, s.item), nil
+    if x == nil and s.via then x, of = lines.hint(scan.lines, s.via), s.via end
+    if x ~= nil then
+      s.in_lines, s.lines_at, s.hint = x.count, x.at, x.hint
+      if of then s.lines_item = of end
+    end
+  end
+end
+
 local function finish(g, task, ctx, plan)
   stop_child(g, ctx)
   local have = have_of(ctx, g.want)
@@ -813,9 +818,15 @@ local function finish(g, task, ctx, plan)
       local why = plan and plan.by_item[name]
       local entry = { item = name, missing = miss, reason = (why and why.reason) or g.last_reason or "no_source" }
       if why and why.via ~= name then entry.via = why.via end
+      -- предмет был на складах, но сбор не удался (путь, досягаемость): причина — код сбора, а не
+      -- «нечем получить»
+      if entry.reason == "no_source" and g.blocked.collect and g.seen_stock[name] then
+        entry.reason = g.reasons.collect or "no_items"
+      end
       shortfall[#shortfall + 1] = entry
     end
   end
+  if #shortfall > 0 and not g.from_lines then add_line_hints(g, ctx, shortfall) end
   local detail = { have = have, from = g.from }
   for _, k in ipairs({ "inventory", "storage", "crafted", "smelted", "mined" }) do
     if next(g.from[k]) == nil then g.from[k] = nil end
@@ -839,7 +850,7 @@ function M.begin(task, ctx, want, opts)
   local g = {
     want = util.copy(want), from = { inventory = {}, storage = {}, crafted = {}, smelted = {}, mined = {} },
     blocked = {}, reasons = {}, start = inv.counts_of(main, want), radius = opts.radius or M.DEFAULT_RADIUS,
-    mineable = {}, replans = 0, fueled = {},
+    mineable = {}, replans = 0, fueled = {}, from_lines = opts.from_lines == true, seen_stock = {},
     -- печи ищутся вокруг точки, где задачу дали: шаг «копать» уводит тело от печи
     origin = util.xy(h.position),
   }
@@ -863,6 +874,7 @@ function M.step(task, ctx)
   local g = task.supply
   if g.mineable == nil then g.mineable = {} end
   if g.fueled == nil then g.fueled = {} end
+  if g.seen_stock == nil then g.seen_stock = {} end
   progress(g, task, ctx)
   if g.cur ~= nil then
     local c = g.cur

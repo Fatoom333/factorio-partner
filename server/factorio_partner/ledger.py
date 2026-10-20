@@ -49,7 +49,8 @@ NOTE_MAX = 200              # characters of the strategist's note on the work
 QUESTION_MAX = 200          # characters of a question to the owner
 QUESTIONS_OPEN_MAX = 5      # open questions per helper
 QUESTIONS_KEEP = 5          # answered questions kept per helper
-REMIND_AFTER = 10 * 60.0    # s: an open question unanswered this long is reminded once
+ANSWER_SAID_MAX = 200       # characters of the owner's answer kept on the question
+REMIND_AFTER = 10 * 60.0   # s: an open question unanswered this long is reminded once
 _SIDE = ("notes", "questions", "qnext", "thoughts")      # parts of the file that do not move rev
 
 now = time.time             # wall clock of notes and questions: it outlives a restart (tests patch it)
@@ -288,27 +289,33 @@ def open_questions(data: dict, helper: str) -> list[dict]:
     return [q for q in questions_of(data, helper) if q.get("status") == "open"]
 
 
-def ask(data: dict, helper: str, text: str, tick: int | None) -> dict:
-    """A new open question of the strategist to the owner (``q<N>``); at most QUESTIONS_OPEN_MAX open."""
+def ask(data: dict, helper: str, text: str, tick: int | None, order: str | None = None) -> dict:
+    """A new open question of the strategist to the owner (``q<N>``); at most QUESTIONS_OPEN_MAX open.
+    ``order`` — the owner's order the question is about (the leave for a package of that order)."""
     if len(open_questions(data, helper)) >= QUESTIONS_OPEN_MAX:
         raise PartnerError("limit", f"at most {QUESTIONS_OPEN_MAX} open questions per helper; wait for "
                                     "the owner's answers")
     n = int(data.get("qnext", 1)) if isinstance(data.get("qnext"), int) else 1
     data["qnext"] = n + 1
     q = {"id": f"q{n}", "text": text, "status": "open", "at": now(), "tick": tick}
+    if order is not None:
+        q["order"] = order
     qs = _side(data, "questions").setdefault(helper, [])
     qs.append(q)
     _keep_questions(data, helper)
     return dict(q)
 
 
-def answer(data: dict, helper: str, qid: str, order_id: str) -> dict:
-    """Close an open question: the owner's answer came as the order ``order_id``."""
+def answer(data: dict, helper: str, qid: str, order_id: str, said: str | None = None) -> dict:
+    """Close an open question: the owner's answer came as the order ``order_id``; ``said`` — his own
+    words (kept: a package's leave is refused when he said no)."""
     for q in questions_of(data, helper):
         if q["id"] == qid:
             if q.get("status") != "open":
                 raise PartnerError("bad_args", f"answer_to: question {qid} is already {q.get('status')}")
             q.update(status="answered", answer=order_id, answered_at=now())
+            if isinstance(said, str):
+                q["said"] = said[:ANSWER_SAID_MAX]
             _keep_questions(data, helper)
             return dict(q)
     raise PartnerError("not_found", f"answer_to: no question {qid}")
@@ -333,3 +340,46 @@ def _keep_questions(data: dict, helper: str) -> None:
     closed = [q for q in qs if isinstance(q, dict) and q.get("status") != "open"][-QUESTIONS_KEEP:]
     keep = {id(q) for q in opened + closed}
     qs[:] = [q for q in qs if id(q) in keep]
+
+
+# ---------------------------------------------------------------- the owner's leave for a package
+_NO_START = ("нет", "неа", "no", "нельзя", "отказ", "стоп")
+_NO_PHRASES = ("не надо", "не бери", "не трогай", "не смей", "не нужно", "не стоит", "нельзя", "запрещаю",
+               "не разрешаю", "не забирай")
+
+
+def said_no(text: Any) -> bool:
+    """The owner's answer reads as a refusal («нет», «не бери», «нельзя»): no leave, whatever the
+    strategist thinks it means."""
+    if not isinstance(text, str):
+        return False
+    t = " ".join(text.lower().replace("ё", "е").split())
+    words = [w.strip(".,!?:;—-«»\"'()") for w in t.split()]
+    words = [w for w in words if w]
+    if words and words[0] in _NO_START:
+        return True
+    return any(p in t for p in _NO_PHRASES)
+
+
+def leave_problem(data: dict, scope: str, pkg: dict, order_tick: Any) -> str | None:
+    """Why the package may not take from the owner (None — it may): ``approved`` names a question of
+    the strategist (of ``scope``) the owner answered, about the package's ``order`` — the question
+    names that order, or was asked after it came (``order_tick``) — and the answer is not «нет»."""
+    qid, oid = pkg.get("approved"), pkg.get("order")
+    if not isinstance(qid, str) or not isinstance(oid, str):
+        return "approved: a step takes from the owner — the package needs order and approved (q<N>)"
+    q = next((x for x in questions_of(data, scope) if x["id"] == qid), None)
+    if q is None:
+        return f"approved: нет вопроса {qid} (partner_ledger list → questions)"
+    if q.get("status") != "answered":
+        return (f"approved: на вопрос {qid} хозяин ещё не ответил ({q.get('status')}); дождись ответа "
+                "(поручение с answer_to)")
+    if q.get("order") is not None:
+        if q["order"] != oid:
+            return f"approved: вопрос {qid} задан про поручение {q['order']}, а пакет — для {oid}"
+    elif not (isinstance(order_tick, int) and isinstance(q.get("tick"), int) and q["tick"] >= order_tick):
+        return (f"approved: вопрос {qid} не про поручение {oid} (задан раньше него или без order); "
+                f"спроси заново: partner_ledger{{action:\"ask\", order:\"{oid}\"}}")
+    if said_no(q.get("said")):
+        return f"approved: хозяин ответил на {qid} отказом: забирать нельзя"
+    return None

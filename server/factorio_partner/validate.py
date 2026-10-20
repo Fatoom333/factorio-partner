@@ -6,6 +6,7 @@ unknown fields never reach the game. Every error is ``PartnerError("bad_args", "
 """
 from __future__ import annotations
 
+import difflib
 import json
 import math
 import re
@@ -155,6 +156,20 @@ def target(field: str, v: Any):
     if isinstance(v, dict) and set(v) == {"name", "pos"}:
         return {"name": name(field + ".name", v["name"]), "pos": pos(field + ".pos", v["pos"])}
     raise bad(field, "must be {unit_number, pos?} or {name, pos}")
+
+
+def only_true(field: str, v: Any):
+    """A switch that exists only as ``true`` (``pickup.corpse``): false is a mistake, not a no."""
+    if v is not True:
+        raise bad(field, "only true (leave it out otherwise)")
+    return v
+
+
+def target_or_armor(field: str, v: Any):
+    """``insert.target``: a building, or ``"armor"`` — the grid of the helper's own armour."""
+    if v == "armor":
+        return v
+    return target(field, v)
 
 
 def items(field: str, v: Any):
@@ -421,13 +436,21 @@ ACTIONS: dict[str, tuple[dict[str, Validator], tuple[str, ...], tuple[tuple[tupl
              ("count",), ((("target", "resource", "item"), True),)),
     # wait=false — queue the craft and go on (craft_done comes when it is ready)
     "craft": ({"recipe": name, "count": integer(1, 10_000), "wait": boolean}, ("recipe", "count"), ()),
-    "insert": ({"target": target, "items": items, "auto_supply": boolean}, ("target", "items"), ()),
+    # target "armor" — modules into the grid of the worn armour (like armor_grid{put})
+    "insert": ({"target": target_or_armor, "items": items, "auto_supply": boolean}, ("target", "items"), ()),
     "extract": ({"target": target, "items": items, "equip": boolean}, ("target",), ()),
-    "collect": ({"items": items, "center": pos, "near": enum("player"), "radius": number(1, 128)},
+    # from_lines — the owner's leave to take from the outputs of his lines and machines too
+    "collect": ({"items": items, "center": pos, "near": enum("player"), "radius": number(1, 128),
+                 "from_lines": boolean},
                 ("items",), ((("center", "near"), False),)),
     # bring the items up to these counts in the pockets: storages -> craft -> smelt -> mine by hand
-    "get_items": ({"items": items, "radius": number(1, 128)}, ("items",), ()),
-    "pickup": ({"target": target, "area": area}, (), ((("target", "area"), False),)),
+    "get_items": ({"items": items, "radius": number(1, 128), "from_lines": boolean}, ("items",), ()),
+    # the helper's own armour: wear one from the pockets; modules into / out of its grid
+    "equip": ({"item": name}, ("item",), ()),
+    "armor_grid": ({"put": items, "take": items}, (), ()),     # at least one of them (check_act)
+    # corpse:true — the helper's own last corpse (only true); exactly one of the three
+    "pickup": ({"target": target, "area": area, "corpse": only_true}, (),
+               ((("target", "area", "corpse"), True),)),
     "place": ({"item": name, "pos": pos, "direction": DIRECTION, "recipe": name, "auto_supply": boolean},
               ("item", "pos"), ()),
     # turn an own building like the R key (the last built belt of a re-planned belt)
@@ -499,6 +522,8 @@ def check_act(do: Any, args: Any) -> dict:
     if do == "plan_belt" and out["from"] != "resume" and "to" not in out:
         # from="resume" takes the target from the remembered plan (docs/ACTIONS.md, «plan_belt»)
         raise bad("args.to", 'required (optional only with from="resume")')
+    if do == "armor_grid" and not out:
+        raise bad("args", "put or take is required (at least one)")
     if do == "connect_entities":
         # a prototype of another kind of line would be ignored by the mod: say so here
         want = {"belt": "belt", "pipe": "pipe", "power": "pole"}[out["kind"]]
@@ -524,6 +549,10 @@ def check_say(text: Any) -> str:
     return text
 
 
+# the ammo reflex: the gap to the turrets' frames, how far behind their line, how far from any enemy
+AMMO_BOUNDS = {"turret_gap": (0, 16), "behind": (0, 12), "keep_away": (0, 96)}
+
+
 def check_reflexes(rset: Any) -> list:
     if not isinstance(rset, list):
         raise bad("set", "must be a list")
@@ -537,6 +566,12 @@ def check_reflexes(rset: Any) -> list:
         t = r.get("type")
         if not isinstance(t, str) or not NAME_RE.match(t):
             raise bad(f"set[{i}].type", "must be a reflex type name")
+        if t == "ammo":
+            # where the helper may stand to fill the turrets (EVENTS.md «ammo»): checked here so a
+            # wrong bound costs no round trip; the mod checks the rest of the schema
+            for k, (lo, hi) in AMMO_BOUNDS.items():
+                if k in r:
+                    number(lo, hi)(f"set[{i}].{k}", r[k])
     if json_size(rset) > MAX_ACT_ARGS:
         raise PartnerError("limit", f"reflex set larger than {MAX_ACT_ARGS} bytes")
     return rset
@@ -619,7 +654,7 @@ PACKAGE_CHECKS_MAX = 3
 CHECK_RADIUS_DEFAULT = 32
 CHECK_VALUE_MAX = 10_000_000
 ORDER_ID_RE = re.compile(r"^o[0-9]{1,9}$")
-_PACKAGE_FIELDS = ("name", "anchor", "priority", "steps", "on_fail", "verify", "note", "order")
+_PACKAGE_FIELDS = ("name", "anchor", "priority", "steps", "on_fail", "verify", "note", "order", "approved")
 _CHECK_FIELDS = {
     "stock": {"kind", "item", "at_least", "radius", "center"},
     "rate": {"kind", "item", "at_least", "surface"},
@@ -645,32 +680,217 @@ def check_line(field: str, v: Any, limit: int) -> str:
     return _line(field, v, limit)
 
 
-# a package runs on the body without the pilot's turn: only building steps. Nothing that takes from or
-# breaks the owner's buildings (deconstruct, extract, collect, pickup, mine{target}, rotate,
-# set_recipe), no superforced or partial blueprint (only with the owner's word, given to the pilot)
+# a package runs on the body without the pilot's turn: only building steps and the helper's own
+# armour. Nothing that breaks the owner's buildings (deconstruct, pickup, mine{target}, rotate,
+# set_recipe), no superforced or partial blueprint (only with the owner's word, given to the pilot).
+# Taking from the owner's chests and machines (TAKE_DO, get_items/collect with from_lines) only with
+# his leave: the package names the order and the answered question (``order`` + ``approved``)
 PACKAGE_DO = ("walk", "approach", "get_items", "craft", "mine", "insert", "place", "build_blueprint",
-              "build_layout", "connect_entities", "build_ghosts", "plan_mining", "plan_belt", "wait")
+              "build_layout", "connect_entities", "build_ghosts", "plan_mining", "plan_belt", "wait",
+              "equip", "armor_grid")
+TAKE_DO = ("collect", "extract")
+GET_DO = ("get_items",) + TAKE_DO     # steps that bring items into the pockets
+QUESTION_ID_RE = re.compile(r"^q[0-9]{1,9}$")
+
+# the shape of each action and of each field, for the texts of refusals (one place: the strategist
+# reads them and fixes the field instead of trying variants)
+STEP_EXAMPLES: dict[str, dict] = {
+    "walk": {"to": {"x": 10, "y": 20}},
+    "approach": {"target": {"name": "iron-chest", "pos": {"x": 10.5, "y": 20.5}}},
+    "follow": {"distance": 4},
+    "mine": {"resource": "iron-ore", "count": 50},
+    "craft": {"recipe": "iron-gear-wheel", "count": 20},
+    "insert": {"target": {"name": "assembling-machine-1", "pos": {"x": 10.5, "y": 20.5}},
+               "items": {"electronic-circuit": 60}},
+    "extract": {"target": {"name": "iron-chest", "pos": {"x": 10.5, "y": 20.5}},
+                "items": {"electronic-circuit": 60}},
+    "collect": {"items": {"electronic-circuit": 60}, "radius": 32},
+    "get_items": {"items": {"transport-belt": 50}},
+    "pickup": {"corpse": True},
+    "place": {"item": "stone-furnace", "pos": {"x": 10, "y": 20}, "direction": 0},
+    "rotate": {"target": {"name": "transport-belt", "pos": {"x": 10.5, "y": 20.5}}, "direction": 4},
+    "set_recipe": {"target": {"name": "assembling-machine-1", "pos": {"x": 10.5, "y": 20.5}},
+                   "recipe": "iron-gear-wheel"},
+    "build_blueprint": {"plan": "mining-1", "anchor": {"x": 10, "y": 20}},
+    "build_ghosts": {"radius": 16},
+    "deconstruct": {"target": {"name": "wooden-chest", "pos": {"x": 10.5, "y": 20.5}}},
+    "plan_mining": {"resource": "iron-ore", "near": {"x": 10, "y": 20}},
+    "plan_belt": {"from": "patch", "to": {"x": 40, "y": 20}},
+    "build_layout": {"anchor": {"x": 10, "y": 20},
+                     "entities": [{"name": "stone-furnace", "dx": 0, "dy": 0}]},
+    "connect_entities": {"kind": "belt", "from": {"pos": {"x": 10, "y": 20}},
+                         "to": {"pos": {"x": 30, "y": 20}}},
+    "wait": {"seconds": 10},
+    "equip": {"item": "modular-armor"},
+    "armor_grid": {"put": {"solar-panel-equipment": 2}},
+}
+FIELD_FORMS: dict[str, str] = {
+    "to": 'to:{x,y} или "player"', "pos": "pos:{x,y}", "anchor": "anchor:{x,y}", "center": "center:{x,y}",
+    "near": "near:{x,y}", "target": "target:{name, pos:{x,y}} или {unit_number, pos?}",
+    "items": "items:{name:count}", "item": "item:имя предмета", "count": "count:число",
+    "recipe": "recipe:имя рецепта", "resource": "resource:имя ресурса", "radius": "radius:число",
+    "direction": "direction:0|4|8|12", "seconds": "seconds:число", "put": "put:{name:count}",
+    "take": "take:{name:count}", "from_lines": "from_lines:true|false", "at_least": "at_least:число",
+    "at_most": "at_most:число", "kind": "kind:stock|rate|ghosts", "area": "area:{left_top, right_bottom}",
+    "plan": "plan:id из partner_plan", "corpse": "corpse:true", "from": 'from:{x,y}, "patch" или "resume"',
+}
+# fields agents mix up -> the field they meant
+FIELD_MIXUPS: dict[str, str] = {"x": "to", "y": "to", "position": "pos", "item": "items", "name": "item",
+                                "amount": "count", "n": "count", "qty": "count", "at": "at_least",
+                                "min": "at_least", "max": "at_most", "entity": "target", "where": "pos"}
+CHECK_EXAMPLES: dict[str, dict] = {
+    "stock": {"kind": "stock", "item": "iron-plate", "at_least": 100},
+    "rate": {"kind": "rate", "item": "iron-plate", "at_least": 30},
+    "ghosts": {"kind": "ghosts", "at_most": 0},
+}
 
 
-def package_steps(field: str, v: Any) -> list:
-    """``package.steps``: ``plan_steps`` limited to ``PACKAGE_DO``."""
-    out = plan_steps(field, v)
-    for i, st in enumerate(out, 1):
-        f = f"{field}[{i}]"
-        do, args = st["do"], st["args"]
-        if do not in PACKAGE_DO:
-            raise bad(f"{f}.do", f"{do} is not a building step; a package allows: " + ", ".join(PACKAGE_DO))
-        if do == "mine" and "target" in args:
-            raise bad(f"{f}.args.target", "a package mines only by resource or item")
-        if do == "build_blueprint" and (args.get("force") == "superforced" or args.get("partial")):
-            raise bad(f"{f}.args", "superforced and partial need the owner's word: not in a package")
-        if do == "build_layout" and args.get("keep_ghosts"):
-            raise bad(f"{f}.args.keep_ghosts", "a package must not leave ghosts behind (the owner's "
-                                               "drones would build them): drop keep_ghosts")
-        if do == "connect_entities" and args.get("build") is False:
-            raise bad(f"{f}.args.build", "a package must not leave ghosts behind (the owner's "
-                                         "drones would build them): drop build:false")
+def _compact(v: Any) -> str:
+    return json.dumps(v, ensure_ascii=False, separators=(",", ":"))
+
+
+def step_example(do: str) -> str:
+    """One step of ``do`` as a package carries it; "" — no example for this action."""
+    ex = STEP_EXAMPLES.get(do)
+    return _compact({"do": do, "args": ex}) if ex else ""
+
+
+def _meant(bad_field: str, allowed) -> str | None:
+    """The field an agent most likely meant by an unknown one."""
+    allowed = list(allowed)
+    want = FIELD_MIXUPS.get(bad_field)
+    if want in allowed:
+        return want
+    if bad_field + "s" in allowed:
+        return bad_field + "s"
+    if bad_field.endswith("s") and bad_field[:-1] in allowed:
+        return bad_field[:-1]
+    close = difflib.get_close_matches(bad_field, allowed, n=1, cutoff=0.75)
+    return close[0] if close else None
+
+
+def unknown_field_text(head: str, bad_field: str, allowed, example: str = "") -> str:
+    """«<head>: unknown field "item" — ожидается items:{name:count}; пример: {...}»."""
+    want = _meant(bad_field, allowed)
+    if want is not None:
+        text = f'{head}: unknown field "{bad_field}" — ожидается {FIELD_FORMS.get(want, want)}'
+    else:
+        text = f'{head}: unknown field "{bad_field}" — можно: ' + ", ".join(allowed)
+    return text + (f"; пример: {example}" if example else "")
+
+
+def explain_step(head: str, do: Any, args: Any, err: PartnerError) -> PartnerError:
+    """A refusal of one step as the strategist should read it: «steps[3] (insert): unknown field
+    "item" — ожидается items:{name:count}; пример: {...}». The code stays the same."""
+    known = isinstance(do, str) and do in ACTIONS
+    ex = step_example(do) if known else ""
+    if known and isinstance(args, dict):
+        fields = list(ACTIONS[do][0])
+        for k in args:
+            if k not in fields:
+                return PartnerError(err.code, unknown_field_text(f"{head} ({do})", str(k)[:40], fields, ex))
+    label = f"{head} ({do})" if known else head
+    out = f"{label}: {err.text}" if err.text else label
+    if known:
+        fields, required, _ = ACTIONS[do]
+        out += "; форма: " + ", ".join(FIELD_FORMS.get(k, k) + ("" if k in required else "?") for k in fields)
+        if ex:
+            out += f"; пример: {ex}"
+    return PartnerError(err.code, out)
+
+
+def takes_from_owner(do: str, args: Any) -> bool:
+    """A step that takes from the owner's chests and machines: only with his leave in a package."""
+    a = args if isinstance(args, dict) else {}
+    return do in TAKE_DO or (do in ("get_items", "collect") and a.get("from_lines") is True)
+
+
+TAKE_REFUSAL = ("забирать из машин и сундуков хозяина пакетом можно только с его разрешения: order + "
+                "approved (id отвеченного вопроса) — спроси хозяина partner_ledger{action:\"ask\"}, после "
+                "его ответа поставь пакет с order и approved:\"q<N>\"")
+
+
+def package_steps(field: str, v: Any, approved: bool = False) -> list:
+    """``package.steps``: ``plan_steps`` limited to ``PACKAGE_DO``; steps of ``TAKE_DO`` and
+    ``from_lines:true`` only with ``approved`` (the package carries the owner's leave; the caller
+    checks it against the answered question). Every refusal names the step and its action
+    (``explain_step``): «steps[3] (insert): …»."""
+    if not isinstance(v, list) or not v:
+        raise bad(field, "must be a non-empty list of steps {do, args?, on_fail?}; пример: "
+                  + step_example("walk"))
+    if len(v) > PLAN_STEPS_MAX:
+        raise PartnerError("limit", f"{field}: at most {PLAN_STEPS_MAX} steps")
+    out = []
+    for i, s in enumerate(v, 1):
+        head = f"steps[{i}]"
+        if not isinstance(s, dict):
+            raise PartnerError("bad_args", f"{head}: must be an object {{do, args?, on_fail?}}; пример: "
+                               + step_example("walk"))
+        do, args = s.get("do"), s.get("args")
+        for k in s:
+            if k not in ("do", "args", "on_fail"):
+                ex = step_example(do) if isinstance(do, str) else ""
+                ex = ex or step_example("walk")
+                if isinstance(do, str) and do in ACTIONS and k in ACTIONS[do][0]:
+                    text = f'{head} ({do}): field "{k}" goes inside args — {{do, args:{{{k}: …}}}}; пример: {ex}'
+                else:
+                    text = unknown_field_text(head, str(k)[:40], ("do", "args", "on_fail"), ex)
+                raise PartnerError("bad_args", text)
+        if not isinstance(do, str) or do not in ACTIONS:
+            raise PartnerError("bad_args", f'{head}: unknown action "{str(do)[:40]}"; в пакете можно: '
+                               + ", ".join(PACKAGE_DO) + "; с разрешения хозяина ещё " + ", ".join(TAKE_DO))
+        if do == "plan":
+            raise PartnerError("bad_args", f"{head} (plan): a package is a plan already, steps cannot hold one")
+        take = takes_from_owner(do, args)
+        if do not in PACKAGE_DO and not take:
+            raise PartnerError("bad_args", f"{head} ({do}): не шаг стройки — разбирать, подбирать, вращать и "
+                               "перенастраивать постройки хозяина пакет не может, это работа пилота; в пакете "
+                               "можно: " + ", ".join(PACKAGE_DO) + "; с разрешения хозяина ещё "
+                               + ", ".join(TAKE_DO) + " и from_lines:true")
+        if take and not approved:
+            raise PartnerError("bad_args", f"{head} ({do}): {TAKE_REFUSAL}")
+        try:
+            step = {"do": do, "args": check_act(do, args)}
+            if "on_fail" in s:
+                step["on_fail"] = enum("stop", "continue")("on_fail", s["on_fail"])
+        except PartnerError as e:
+            raise explain_step(head, do, args, e) from None
+        a = step["args"]
+        if do == "mine" and "target" in a:
+            raise PartnerError("bad_args", f"{head} (mine): a package mines only by resource or item, not "
+                               "target (that breaks a building of the owner); пример: " + step_example("mine"))
+        if do == "build_blueprint" and (a.get("force") == "superforced" or a.get("partial")):
+            raise PartnerError("bad_args", f"{head} (build_blueprint): superforced and partial need the "
+                               "owner's word: not in a package")
+        if do == "build_layout" and a.get("keep_ghosts"):
+            raise PartnerError("bad_args", f"{head} (build_layout): a package must not leave ghosts behind "
+                               "(the owner's drones would build them): drop keep_ghosts")
+        if do == "connect_entities" and a.get("build") is False:
+            raise PartnerError("bad_args", f"{head} (connect_entities): a package must not leave ghosts "
+                               "behind (the owner's drones would build them): drop build:false")
+        out.append(step)
     return out
+
+
+def needs_leave(steps: list) -> bool:
+    """Whether checked ``steps`` take from the owner (need ``order`` + ``approved``)."""
+    return any(takes_from_owner(st.get("do"), st.get("args")) for st in steps if isinstance(st, dict))
+
+
+def restart_step(steps: list, from_step: int) -> int:
+    """The step a stopped package goes on from: its first unfinished step, or — when steps that get
+    items (get_items, collect, extract) stand before it — the first of the last run of such steps:
+    what they brought may be gone by now (another job took it), so they run again."""
+    j = None
+    for i in range(min(from_step, len(steps) + 1) - 1, 0, -1):
+        if isinstance(steps[i - 1], dict) and steps[i - 1].get("do") in GET_DO:
+            j = i
+            break
+    if j is None:
+        return from_step
+    while j > 1 and isinstance(steps[j - 2], dict) and steps[j - 2].get("do") in GET_DO:
+        j -= 1
+    return j
 
 
 def check_package_check(field: str, v: Any) -> dict:
@@ -678,12 +898,16 @@ def check_package_check(field: str, v: Any) -> dict:
     (the anchor by default); ``rate`` — at least N made per minute on the surface (statistics of the
     last minute); ``ghosts`` — at most N ghosts left around ``center``."""
     if not isinstance(v, dict):
-        raise bad(field, "must be an object {kind, ...}")
-    kind = enum(*_CHECK_FIELDS)(f"{field}.kind", v.get("kind"))
+        raise bad(field, "must be an object {kind, ...}; пример: " + _compact(CHECK_EXAMPLES["stock"]))
+    kind = v.get("kind")
+    if not isinstance(kind, str) or kind not in _CHECK_FIELDS:
+        raise bad(f"{field}.kind", "must be one of " + ", ".join(_CHECK_FIELDS) + "; пример: "
+                  + _compact(CHECK_EXAMPLES["stock"]))
     for k in v:
         if k not in _CHECK_FIELDS[kind]:
-            raise bad(f"{field}.{k}", f"unknown field for {kind}; allowed: "
-                      + ", ".join(sorted(_CHECK_FIELDS[kind])))
+            raise PartnerError("bad_args", unknown_field_text(f"{field} ({kind})", str(k)[:40],
+                                                              sorted(_CHECK_FIELDS[kind]),
+                                                              _compact(CHECK_EXAMPLES[kind])))
     out: dict = {"kind": kind}
     if kind in ("stock", "rate"):
         if "item" not in v:
@@ -705,25 +929,38 @@ def check_package_check(field: str, v: Any) -> dict:
     return out
 
 
+PACKAGE_EXAMPLE = _compact({"name": "печи", "anchor": {"x": 10, "y": 20},
+                            "steps": [{"do": "get_items", "args": {"items": {"stone-furnace": 4}}},
+                                      {"do": "place", "args": {"item": "stone-furnace",
+                                                               "pos": {"x": 10, "y": 20}}}],
+                            "verify": [{"kind": "ghosts", "at_most": 0}]})
+
+
 def check_package(v: Any) -> dict:
     """``partner_ledger{action:"put", package}``: a named plan of ``plan`` steps with an anchor, a
     priority and 1..3 checks; the whole package ≤ 8 KB of JSON. Each step is checked as its own act
     (``plan_steps``), so a package the server accepts is a plan the mod would accept; only building
-    steps (``PACKAGE_DO``)."""
+    steps (``PACKAGE_DO``). Steps that take from the owner (``TAKE_DO``, ``from_lines:true``) need
+    ``order`` + ``approved`` (q<N>); whether that question is answered and belongs to the order, the
+    caller checks (core.Core.check_leave)."""
     if not isinstance(v, dict):
         raise bad("package", "must be an object")
     if json_size(v) > PACKAGE_MAX:
         raise PartnerError("limit", f"package: larger than {PACKAGE_MAX} bytes of JSON")
     for k in v:
         if k not in _PACKAGE_FIELDS:
-            raise bad(f"package.{k}", "unknown field; allowed: " + ", ".join(_PACKAGE_FIELDS))
+            raise PartnerError("bad_args", unknown_field_text("package", str(k)[:40], _PACKAGE_FIELDS,
+                                                              PACKAGE_EXAMPLE))
     for k in ("name", "anchor", "steps", "verify"):
         if k not in v:
-            raise bad(f"package.{k}", "required")
+            raise bad(f"package.{k}", "required; пример: " + PACKAGE_EXAMPLE)
+    if "approved" in v and "order" not in v:
+        raise bad("package.approved", "goes with order: the owner's order (o<N>) the leave is for")
     out: dict = {"name": _line("package.name", v["name"], PACKAGE_NAME_MAX),
                  "anchor": pos("package.anchor", v["anchor"]),
                  "priority": enum(*PACKAGE_PRIORITIES)("package.priority", v.get("priority", "next")),
-                 "steps": package_steps("package.steps", v["steps"]),
+                 "steps": package_steps("package.steps", v["steps"],
+                                        approved=bool(v.get("approved")) and bool(v.get("order"))),
                  "on_fail": enum("stop", "continue")("package.on_fail", v.get("on_fail", "stop"))}
     checks = v["verify"]
     if not isinstance(checks, list) or not 1 <= len(checks) <= PACKAGE_CHECKS_MAX:
@@ -735,4 +972,11 @@ def check_package(v: Any) -> dict:
         if not isinstance(v["order"], str) or not ORDER_ID_RE.match(v["order"]):
             raise bad("package.order", "must be an order id from partner_inbox (o<N>)")
         out["order"] = v["order"]
+    if "approved" in v:
+        if not isinstance(v["approved"], str) or not QUESTION_ID_RE.match(v["approved"]):
+            raise bad("package.approved", "must be the id of the strategist's question the owner "
+                                          "answered (q<N>)")
+        if "order" not in out:
+            raise bad("package.approved", "goes with order: the owner's order (o<N>) the leave is for")
+        out["approved"] = v["approved"]
     return out

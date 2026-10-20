@@ -3,6 +3,9 @@
 --
 -- args: target, items? (нет → всё), equip?:bool. Берёт предметы из главного инвентаря цели
 -- (сундук, багажник, выход машины) в инвентарь помощника, только в досягаемости (reach_distance).
+-- Цель по unit_number ищется и без точного pos: движок (get_entity_by_unit_number) находит не все
+-- постройки, поэтому номер ищется вокруг pos и в радиусе 128 вокруг помощника (core/target.lua,
+-- opts.near); сила своя или neutral, та же поверхность, открытый чанк — дальше помощник подходит сам.
 -- Чужой резерв (storage.reservations других помощников) не трогает. Предметы с данными — только
 -- целым стаком (transfer_stack), стак больше заявки не делится и не берётся (попадает в missing);
 -- equip=true — взятую броню сразу в слот брони (swap_stack): из нескольких видов — по имени
@@ -12,7 +15,9 @@
 -- не взято → failed: reserved (всё нужное в чужом резерве), иначе no_items (если мешает только
 -- неделимый стак — с detail.reason = "whole_stacks_only"). Не влезло в инвентарь помощника
 -- (взято всё или часть) — событие inventory_full и failed{no_space} (detail — что взято).
+local err = require("scripts.core.err")
 local reserve = require("scripts.core.reserve")
+local target = require("scripts.core.target")
 local inv = require("scripts.lib.inventory")
 
 local M = {}
@@ -23,10 +28,23 @@ M.schema = {
   equip = { type = "bool", default = false },
 }
 
+--- Цель extract: по unit_number — с широким поиском (pos может быть неточным), иначе как у всех.
+function M.resolve(ctx, t)
+  local h = ctx.entity
+  if t.unit_number ~= nil then
+    local e = target.resolve(h.surface, t, h.force, { near = h.position })
+    if e ~= nil then
+      if not inv.charted(h, e.position) then err.raise("not_charted", "target is in an uncharted chunk") end
+      return e
+    end
+  end
+  return inv.resolve_target(ctx, t)
+end
+
 function M.start(task, ctx)
   local a = task.args
   if a.items then inv.check_items(a.items, "args.items") end
-  local t = inv.resolve_target(ctx, a.target)
+  local t = M.resolve(ctx, a.target)
   if t.type == "character" then
     return inv.failed("bad_args", "args.target: cannot take items from a character")
   end

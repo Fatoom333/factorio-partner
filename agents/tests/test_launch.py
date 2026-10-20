@@ -159,17 +159,17 @@ def test_keys_of_roles_are_kept(tmp_path):
     assert launch.ensure_keys(f, ["h1"]) == {"h1": "p" * 40}
     assert json.loads(f.read_text(encoding="utf-8"))["h1"] == roles
     assert f.stat().st_mtime_ns == before            # nothing to add: the file is not rewritten
-    # missing, short and shared keys of roles are replaced; good ones stay
+    # a pilot key shared with another role is replaced; the other fields of the entry stay as they are
     f.write_text(json.dumps({"h1": {"pilot": "k" * 40, "voice": "k" * 40, "strategist": "short"}}),
                  encoding="utf-8")
     keys = launch.ensure_keys(f, ["h1"])
     entry = json.loads(f.read_text(encoding="utf-8"))["h1"]
-    assert keys["h1"] == entry["pilot"] and set(entry) == {"pilot", "voice", "strategist"}
-    assert len(set(entry.values())) == 3 and all(len(k) >= 32 for k in entry.values())
+    assert keys["h1"] == entry["pilot"] != "k" * 40 and len(entry["pilot"]) >= 32
+    assert entry["voice"] == "k" * 40 and entry["strategist"] == "short"
     f.write_text(json.dumps({"h1": {"voice": "v" * 40}}), encoding="utf-8")
     keys = launch.ensure_keys(f, ["h1"])
     entry = json.loads(f.read_text(encoding="utf-8"))["h1"]
-    assert entry["voice"] == "v" * 40 and keys["h1"] == entry["pilot"] != entry["strategist"]
+    assert entry == {"voice": "v" * 40, "pilot": keys["h1"]}
 
 
 def test_style_is_installed_once(tmp_path):
@@ -371,34 +371,67 @@ def run_roles(tmp_path, n=1, pilot_model="sonnet", ids=None, body="character", p
     return result, session, cfg
 
 
-def test_role_keys_are_three_different_and_the_pilot_key_is_kept(tmp_path):
+def all_keys(cfg):
+    data = json.loads(cfg.helpers_file.read_text(encoding="utf-8"))
+    return [k for e in data.values() for k in ([e] if isinstance(e, str) else e.values())]
+
+
+def test_role_keys_one_voice_one_strategist_a_pilot_per_body(tmp_path):
     f = tmp_path / "helpers.json"
     f.write_text(json.dumps({"h1": "o" * 40, "other": "x" * 40}), encoding="utf-8")
-    keys = launch.ensure_role_keys(f, ["h1", "h2"])
-    assert keys["h1"]["pilot"] == "o" * 40
-    for hid in ("h1", "h2"):
-        assert set(keys[hid]) == {"voice", "pilot", "strategist"}
-        assert len(set(keys[hid].values())) == 3 and all(len(k) >= 32 for k in keys[hid].values())
+    keys = launch.ensure_role_keys(f, ["h1", "h2", "h3"])
+    assert keys["pilots"]["h1"] == "o" * 40 and set(keys["pilots"]) == {"h1", "h2", "h3"}
+    every = [keys["voice"], keys["strategist"], keys["host"], *keys["pilots"].values()]
+    assert len(set(every)) == 6 and all(len(k) >= 32 for k in every)
     data = json.loads(f.read_text(encoding="utf-8"))
-    assert data["other"] == "x" * 40 and data["h1"] == keys["h1"]
-    assert launch.ensure_role_keys(f, ["h1", "h2"]) == keys          # второй запуск ключей не меняет
+    assert data["*"] == {"voice": keys["voice"], "strategist": keys["strategist"], "host": keys["host"]}
+    assert data["other"] == "x" * 40 and data["h2"] == {"pilot": keys["pilots"]["h2"]}
+    assert launch.ensure_role_keys(f, ["h1", "h2", "h3"]) == keys     # второй запуск ключей не меняет
 
 
-def test_roles_launch_session_has_a_prompt_with_its_own_key_per_role(tmp_path):
-    result, session, cfg = run_roles(tmp_path, n=2, body="player", players=["Bob", "Eve"])
-    keys = json.loads(cfg.helpers_file.read_text(encoding="utf-8"))
+def test_role_keys_from_an_old_file_of_three_roles_per_helper(tmp_path):
+    f = tmp_path / "helpers.json"
+    old = {"pilot": "p" * 40, "voice": "v" * 40, "strategist": "s" * 40, "note": "x"}
+    f.write_text(json.dumps({"h1": old, "*": {"voice": "v" * 40}}), encoding="utf-8")
+    keys = launch.ensure_role_keys(f, ["h1"])
+    data = json.loads(f.read_text(encoding="utf-8"))
+    # ключи ролей самого помощника убраны (их заменяет общая запись), ключ пилота остался
+    assert data["h1"] == {"note": "x", "pilot": "p" * 40} == {"note": "x", "pilot": keys["pilots"]["h1"]}
+    # общий ключ, совпавший с другим ключом файла, негоден — выдан новый
+    assert keys["voice"] not in ("p" * 40, "v" * 40) and keys["strategist"] != "s" * 40
+
+
+def test_roles_launch_session_one_voice_one_strategist_three_pilots(tmp_path):
+    result, session, cfg = run_roles(tmp_path, n=3, body="player", players=["Bob", "Eve", "Ann"])
+    data = json.loads(cfg.helpers_file.read_text(encoding="utf-8"))
     assert session["mode"] == "roles" and session["pilot_model"] == "sonnet"
-    assert [h["id"] for h in session["helpers"]] == ["h1", "h2"]
+    assert [h["id"] for h in session["helpers"]] == ["h1", "h2", "h3"]
+    for role in ("voice", "strategist"):
+        entry = session[role]
+        assert entry["agent"] == f"partner-{role}" and f"role: {role}" in entry["prompt"]
+        assert f"key: {data['*'][role]}" in entry["prompt"]
+        assert "helpers: h1 «Claude», h2 «Claude h2», h3 «Claude h3»" in entry["prompt"]
+        assert Path(entry["mcp_config"]).name == f"mcp-{role}.json" and Path(entry["mcp_config"]).is_file()
     for h in session["helpers"]:
-        assert "prompt" not in h and set(h["roles"]) == {"voice", "pilot", "strategist"}
-        for role, entry in h["roles"].items():
-            assert entry["agent"] == f"partner-{role}"
-            assert f"role: {role}" in entry["prompt"] and f"helper: {h['id']}" in entry["prompt"]
-            assert f"key: {keys[h['id']][role]}" in entry["prompt"]
-            others = [k for r, k in keys[h["id"]].items() if r != role]
-            assert not any(k in entry["prompt"] for k in others)    # чужой ключ роли в сообщение не попадает
-            assert Path(entry["mcp_config"]).name == f"mcp-{role}.json" and Path(entry["mcp_config"]).is_file()
+        assert "prompt" not in h and set(h["roles"]) == {"pilot"}
+        pilot = h["roles"]["pilot"]
+        assert pilot["agent"] == "partner-pilot" and f"helper: {h['id']}" in pilot["prompt"]
+        assert f"key: {data[h['id']]['pilot']}" in pilot["prompt"]
+    # в сообщении каждого агента — только его ключ
+    prompts = [session["voice"]["prompt"], session["strategist"]["prompt"]] + \
+        [h["roles"]["pilot"]["prompt"] for h in session["helpers"]]
+    for text in prompts:
+        assert sum(k in text for k in all_keys(cfg)) == 1
     assert "персонаж игрока «Eve»" in session["helpers"][1]["roles"]["pilot"]["prompt"]
+    assert [(a["helper"], a["role"]) for a in result["agents"]] == \
+        [("*", "voice"), ("*", "strategist"), ("h1", "pilot"), ("h2", "pilot"), ("h3", "pilot")]
+
+
+def test_roles_launch_for_one_helper(tmp_path):
+    _, session, cfg = run_roles(tmp_path)
+    assert [h["id"] for h in session["helpers"]] == ["h1"]
+    assert "helper: h1" in session["voice"]["prompt"] and "helpers: h1 «Claude»" in session["voice"]["prompt"]
+    assert set(json.loads(cfg.helpers_file.read_text(encoding="utf-8"))) == {"*", "h1"}
 
 
 def test_roles_models_and_launch_summary_have_no_keys(tmp_path):
@@ -406,27 +439,39 @@ def test_roles_models_and_launch_summary_have_no_keys(tmp_path):
     models = {a["role"]: a["model"] for a in result["agents"]}
     assert models == {"voice": "haiku", "pilot": "haiku", "strategist": "sonnet"}
     assert {a["agent"] for a in result["agents"]} == {"partner-voice", "partner-pilot", "partner-strategist"}
-    keys = json.loads(cfg.helpers_file.read_text(encoding="utf-8"))["h1"].values()
-    assert not any(k in json.dumps(result, default=str) for k in keys)
+    assert not any(k in json.dumps(result, default=str) for k in all_keys(cfg))
     result, _, _ = run_roles(tmp_path / "again")
     assert {a["role"]: a["model"] for a in result["agents"]}["pilot"] == "sonnet"
 
 
 def test_role_mcp_configs_have_no_secrets_and_no_admin(tmp_path):
-    result, session, cfg = run_roles(tmp_path)
-    keys = json.loads(cfg.helpers_file.read_text(encoding="utf-8"))["h1"].values()
-    for entry in session["helpers"][0]["roles"].values():
+    result, session, cfg = run_roles(tmp_path, n=2)
+    entries = [session["voice"], session["strategist"]] + [h["roles"]["pilot"] for h in session["helpers"]]
+    for entry in entries:
         text = Path(entry["mcp_config"]).read_text(encoding="utf-8")
-        assert not any(k in text for k in keys) and "--admin" not in text
+        assert not any(k in text for k in all_keys(cfg)) and "--admin" not in text
         assert list(json.loads(text)["mcpServers"]) == ["partner"]
 
 
 def test_strategist_gets_the_knowledge_others_do_not(tmp_path):
     _, session, _ = run_roles(tmp_path)
-    roles = session["helpers"][0]["roles"]
-    assert "=== справка: factory-math.md ===" in roles["strategist"]["prompt"]
-    assert "=== справка: forge-blocks.md ===" in roles["strategist"]["prompt"]
-    assert "справка" not in roles["voice"]["prompt"] and "справка" not in roles["pilot"]["prompt"]
+    assert "=== справка: factory-math.md ===" in session["strategist"]["prompt"]
+    assert "=== справка: forge-blocks.md ===" in session["strategist"]["prompt"]
+    assert "справка" not in session["voice"]["prompt"]
+    assert "справка" not in session["helpers"][0]["roles"]["pilot"]["prompt"]
+
+
+def test_role_keys_open_the_server(tmp_path):
+    """Ключи, выданные запуском, сервер принимает в их ролях: общий голос — для любого тела."""
+    _, session, cfg = run_roles(tmp_path, n=3)
+    core = Core(SimpleNamespace(helpers_file=cfg.helpers_file), FakeBridge())
+    data = json.loads(cfg.helpers_file.read_text(encoding="utf-8"))
+    for hid in ("h1", "h2", "h3"):
+        assert core.check_access(hid, data["*"]["voice"]) == "voice"
+        assert core.check_access(hid, data["*"]["strategist"]) == "strategist"
+        assert core.check_access(hid, data[hid]["pilot"]) == "pilot"
+    with pytest.raises(PartnerError):
+        core.check_access("h2", data["h1"]["pilot"])
 
 
 def test_plain_launch_is_unchanged_by_the_roles_mode(tmp_path):
@@ -460,3 +505,36 @@ def test_launch_roles_match_the_agent_files():
         assert meta["name"] == agent and meta["model"] == model
         assert launch.ROLE_AGENTS[role][1] in lint.ROLE_MODELS[role]
     assert set(launch.PILOT_MODELS) == lint.ROLE_MODELS["pilot"]
+
+
+def test_plain_launch_drops_the_shared_entry_of_a_roles_launch(tmp_path):
+    f = tmp_path / "helpers.json"
+    keys = launch.ensure_role_keys(f, ["h1", "h2"])
+    plain = launch.ensure_keys(f, ["h1"])
+    data = json.loads(f.read_text(encoding="utf-8"))
+    assert "*" not in data                                  # общих голоса и стратега больше нет
+    assert plain["h1"] == keys["pilots"]["h1"] and data["h2"] == {"pilot": keys["pilots"]["h2"]}
+
+
+def test_display_name_is_cleaned_as_in_the_mod(monkeypatch):
+    monkeypatch.setenv("FP_HELPER_NAME", " [Bot] ")
+    assert launch.display_name("h1") == "Bot" and launch.display_name("h2") == "Bot h2"
+    monkeypatch.setenv("FP_HELPER_NAME", "Помощникдлинный")   # 30 байт: мод оставляет 24
+    assert launch.display_name("h1") == "Помощникдлин"
+    monkeypatch.setenv("FP_HELPER_NAME", "[]")
+    assert launch.display_name("h1") == "Claude"
+
+
+def test_host_key_goes_to_the_session_apart_from_the_roles(tmp_path):
+    """Ключ диспетчера (главный чат): в общей записи и в файле сессии отдельно, ни в одном первом
+    сообщении ролей; сервер принимает его только как host."""
+    _, session, cfg = run_roles(tmp_path, n=2)
+    data = json.loads(cfg.helpers_file.read_text(encoding="utf-8"))
+    host = data["*"]["host"]
+    assert session["host"]["key"] == host and session["host"]["tool"] == "partner_relay"
+    assert session["host"]["helper"] == "h1"
+    prompts = [session["voice"]["prompt"], session["strategist"]["prompt"]] + \
+        [h["roles"]["pilot"]["prompt"] for h in session["helpers"]]
+    assert not any(host in p for p in prompts)
+    core = Core(SimpleNamespace(helpers_file=cfg.helpers_file), FakeBridge())
+    assert core.check_access("h2", host) == "host"

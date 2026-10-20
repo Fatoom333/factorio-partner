@@ -4,6 +4,15 @@ A helper key belongs to one role: ``voice`` (answers the owner in chat and files
 ``pilot`` (the body: every physical action) or ``strategist`` (plans; reads only). A key of the old
 form — a plain string in ``helpers.json`` — is the pilot's.
 
+One voice and one strategist may serve every helper of the server: their keys sit in the shared
+entry ``"*"`` of ``helpers.json`` (``{"voice": "<key>", "strategist": "<key>"}``). Such a key opens
+its role for any helper that has a pilot key, never the pilot's rights; the pilot's key opens only
+its own helper. ``"*"`` is never a helper id (it does not match ``HELPER_RE``).
+
+The shared entry may also hold ``"host"``: the key of the dispatcher — the main chat where the owner
+types to the roles directly («передай стратегу: …»). It is not an agent role: it opens one tool only,
+``partner_relay``, which files the owner's words for the voice, a pilot or the strategist.
+
 Every tool call is checked here against the role of its key before any argument check or mod call:
 a role never gets past its rights, whatever the arguments.
 """
@@ -16,7 +25,12 @@ from .errors import PartnerError
 VOICE = "voice"
 PILOT = "pilot"
 STRATEGIST = "strategist"
+HOST = "host"                       # the dispatcher's key: the owner's words from the main chat
 ROLES = (VOICE, PILOT, STRATEGIST)
+ALL_ROLES = ROLES + (HOST,)
+SHARED = "*"                        # the shared entry of helpers.json and the scope of shared roles
+SHARED_ROLES = (VOICE, STRATEGIST)  # agent roles a shared key may carry
+RELAY_TO = (VOICE, PILOT, STRATEGIST)
 NOT_ALLOWED = "not_allowed"
 BUDGET = "budget"
 
@@ -60,13 +74,15 @@ ALLOWED: dict[str, frozenset[str]] = {
     STRATEGIST: READ | {"partner_plan", "partner_inbox.write", "partner_act.dry_run",
                         "partner_ledger.write", "partner_ledger.cancel", "partner_ledger.note",
                         "partner_ledger.ask"},
+    # the dispatcher reads nothing and drives nothing: it only hands the owner's words on
+    HOST: frozenset({"partner_relay"}),
 }
 
 # which events a role's partner_wait hands over (docs/MCP.md «Роли»); None — every event, as before
 WAKE: dict[str, frozenset[str] | None] = {
     PILOT: None,
     VOICE: frozenset({"player_said", "owner_stop", "owner_resume", "game_reloaded", "budget_low",
-                      "strategist_question", "strategist_note"}),
+                      "strategist_question", "strategist_note", "host_message", "follow_lag"}),
     STRATEGIST: frozenset({"order", "plan_done", "owner_stop", "owner_resume", "game_reloaded",
                            "died", "helper_lost", "package_verified", "package_unmet"}),
 }
@@ -155,6 +171,33 @@ def keys_of(entry: Any, min_key: int) -> dict[str, str]:
     for k in good.values():
         seen[k] = seen.get(k, 0) + 1
     return {r: k for r, k in good.items() if seen[k] == 1}
+
+
+def _all_keys(data: dict) -> dict[str, int]:
+    """How many times each key string appears anywhere in ``helpers.json``."""
+    seen: dict[str, int] = {}
+    for entry in data.values():
+        vals = [entry] if isinstance(entry, str) else list(entry.values()) if isinstance(entry, dict) else []
+        for k in vals:
+            if isinstance(k, str):
+                seen[k] = seen.get(k, 0) + 1
+    return seen
+
+
+def shared_keys_of(data: Any, min_key: int) -> dict[str, str]:
+    """The shared entry ``"*"`` of ``helpers.json`` -> {role: key} for the voice, the strategist and
+    the dispatcher (``host``).
+
+    A short key, another role and a key that appears anywhere else in the file (another role, a
+    pilot of some helper) are ignored: such a key opens nothing."""
+    if not isinstance(data, dict):
+        return {}
+    entry = data.get(SHARED)
+    if not isinstance(entry, dict):
+        return {}
+    seen = _all_keys(data)
+    return {r: k for r in SHARED_ROLES + (HOST,)
+            if isinstance(k := entry.get(r), str) and len(k) >= min_key and seen.get(k) == 1}
 
 
 def keep(role: str, ev: dict) -> str | None:

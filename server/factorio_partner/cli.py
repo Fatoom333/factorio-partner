@@ -53,9 +53,10 @@ TOOLS: dict[str, tuple[str, tuple[str, ...]]] = {
     "partner_wait": ("op_wait", ("timeout", "quiet", "since")),
     "partner_reflex": ("op_reflex", ("set",)),
     "partner_say": ("op_say", ("text",)),
-    "partner_order": ("op_order", ("said_seq", "text", "size", "urgent")),
+    "partner_order": ("op_order", ("said_seq", "text", "size", "urgent", "answer_to", "to")),
     "partner_inbox": ("op_inbox", ("ack",)),
-    "partner_ledger": ("op_ledger", ("action", "package", "id", "rev", "text", "on", "said_seq")),
+    "partner_ledger": ("op_ledger", ("action", "package", "id", "rev", "text", "on", "said_seq", "order")),
+    "partner_relay": ("op_relay", ("to", "text")),
     "partner_plan": ("op_plan", ("task", "resource", "patch", "options")),
 }
 ADMIN = {

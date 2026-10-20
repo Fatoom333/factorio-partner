@@ -43,11 +43,16 @@ S.suite("hands_transfer", {
         if e ~= nil and e.type == "container" then return nil end -- как в 2.0 для построек
         return e
       end
-      local d1 = C.wait(job_of("extract", { target = { unit_number = ch.unit_number } }))
-      S.eq(d1.code, "not_found", "без pos найти нечем")
       local d2, k2 = C.wait(job_of("extract", { target = { unit_number = ch.unit_number, pos = { x = 3.5, y = 0.5 } } }))
       S.eq(k2, "job_done", S.dump(d2))
       S.eq(d2.detail.extracted, { coal = 9 })
+      -- extract ищет номер и без pos — в радиусе 128 вокруг помощника; дальше — not_found
+      local near = C.chest({ x = 6.5, y = 0.5 }, { coal = 2 })
+      local d1, k1 = C.wait(job_of("extract", { target = { unit_number = near.unit_number } }))
+      S.eq(k1, "job_done", S.dump(d1))
+      local far = C.chest({ x = 300.5, y = 0.5 }, { coal = 2 })
+      local d3 = C.wait(job_of("extract", { target = { unit_number = far.unit_number } }))
+      S.eq(d3.code, "not_found", "дальше 128 от помощника и без pos найти нечем")
   end },
   { "insert: target {name,pos}; нет у помощника — no_items с missing, ничего не тронуто", function()
       local W = C.setup{ items = { ["iron-plate"] = 5 } }

@@ -1,22 +1,31 @@
 -- Действие `pickup`. Контракт: docs/ACTIONS.md, PROTOCOL.md §6.
 --
--- args: target (труп: `{name:"character-corpse", pos}`) │ area (предметы на земле). Ровно одно.
+-- args: corpse:true (свой последний труп) │ target (труп: `{name:"character-corpse", pos}`) │
+-- area (предметы на земле). Ровно одно.
+-- * corpse:true — последний труп этого помощника по записи рефлекса смерти
+--   (scripts/reflexes/death.lua last_corpse): у места трупа, тик смерти совпадает с
+--   character_corpse_tick_of_death. Чужие трупы (хозяина, других помощников) так не берутся —
+--   только явной целью. Нет записи или трупа на месте — not_found с detail.pos;
 -- * труп — цель в форме {name, pos} (у трупа в игре нет unit_number; pos — `corpse` из события
 --   `died` или `helper_list`): ближайший труп в 3 клетках от pos. Подходит на reach_distance и
 --   забирает всё (normal) из инвентаря трупа; предметы с
---   данными — целым стаком (transfer_stack);
+--   данными — целым стаком (transfer_stack). После трупа слот брони пуст, а в карманах броня —
+--   мод надевает лучшую (scripts/lib/armor.lua auto_wear): detail.equipped и detail.armor;
 -- * area — предметы на земле (`item-entity`, своя сила или neutral, только normal) в области
 --   (сторона ≤ 128); живое (PROTOCOL §6.7): берутся только видимые предметы (видимый чанк или
 --   уже в досягаемости помощника), если в области есть только невидимые — not_visible. Обходит
 --   ближайший-первым, к каждому подходит на item_pickup_distance; не больше 500 за задачу.
--- done.detail = {picked: items}; инвентарь полон — событие inventory_full и failed{no_space}
+-- done.detail = {picked: items, equipped?, armor?}; инвентарь полон — событие inventory_full и failed{no_space}
 -- (detail: picked и, у трупа, left).
 local util = require("scripts.core.util")
 local inv = require("scripts.lib.inventory")
+local armor = require("scripts.lib.armor")
+local death = require("scripts.reflexes.death")
 
 local M = {}
 M.name = "pickup"
 M.schema = {
+  corpse = { type = "bool" },
   target = { type = "target" },
   area = { type = "area" },
 }
@@ -50,13 +59,64 @@ local function corpse_near(ctx, t)
   return best
 end
 
+local function tick_of_death(e)
+  local ok, t = pcall(function() return e.character_corpse_tick_of_death end)
+  if ok then return t end
+  return nil
+end
+
+--- Свой последний труп (pickup{corpse:true}) → LuaEntity │ nil, result-ошибка.
+local function own_corpse(ctx)
+  local h = ctx.entity
+  local rec = death.last_corpse(ctx.helper_id)
+  if rec == nil or rec.pos == nil then
+    return nil, inv.failed("not_found", "this helper has no corpse on record")
+  end
+  local where = { pos = rec.pos, surface = rec.surface }
+  if rec.taken then
+    return nil, inv.failed("not_found", "the corpse of this helper was already picked up", where)
+  end
+  if rec.surface ~= nil and rec.surface ~= h.surface.index then
+    local s = game.get_surface(rec.surface)
+    where.surface = s and s.name or rec.surface
+    return nil, inv.failed("not_reachable", "the corpse is on another surface", where)
+  end
+  where.surface = h.surface.name
+  local p = util.xy(rec.pos)
+  if not inv.charted(h, p) then return nil, inv.failed("not_charted", "the corpse is in uncharted chunks", where) end
+  local found = h.surface.find_entities_filtered{ type = CORPSE, position = p, radius = M.CORPSE_RADIUS }
+  local best, bd
+  for _, e in ipairs(found) do
+    if e.valid and inv.allowed_force(h, e) then
+      local t = tick_of_death(e)
+      -- тик смерти известен — только этот труп; не знает его игра — ближайший к месту записи
+      if t == nil or t == rec.tick then
+        local d = util.dist(util.xy(e.position), p)
+        if best == nil or d < bd then best, bd = e, d end
+      end
+    end
+  end
+  if best == nil then
+    return nil, inv.failed("not_found", "no corpse of this helper at the place of death", where)
+  end
+  return best
+end
+
 function M.start(task, ctx)
   local a = task.args
   local h = ctx.entity
-  if (a.target == nil) == (a.area == nil) then
-    return inv.failed("bad_args", "args: exactly one of target, area is required")
+  local n = (a.corpse ~= nil and 1 or 0) + (a.target ~= nil and 1 or 0) + (a.area ~= nil and 1 or 0)
+  if n ~= 1 or a.corpse == false then
+    return inv.failed("bad_args", "args: exactly one of corpse:true, target, area is required")
   end
   task.picked = {}
+  if a.corpse then
+    local c, res = own_corpse(ctx)
+    if c == nil then return res end
+    task.corpse = c
+    task.own = true
+    return nil
+  end
   if a.target then
     local t = a.target
     if t.name ~= nil then
@@ -139,10 +199,17 @@ local function tick_corpse(task, ctx)
     inv.add(left, name, n - moved)
   end
   local detail = { picked = task.picked }
+  -- слот брони пуст (после смерти), а броня теперь в карманах — надеть лучшую с её модулями
+  local worn = armor.auto_wear(h)
+  if worn ~= nil then
+    detail.equipped = worn.equipped
+    detail.armor = worn.armor
+  end
   if next(left) ~= nil then
     detail.left = left
     return inv.full_result(task, ctx, detail)
   end
+  if task.own then death.corpse_taken(task.helper or ctx.helper_id) end
   return inv.done(detail)
 end
 

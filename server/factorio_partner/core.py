@@ -22,6 +22,7 @@ import time
 from collections import OrderedDict
 from typing import Any, Awaitable, Callable
 
+from . import address
 from . import roles as R
 from .budget import Budget, VOICE_ONLY
 from . import validate as V
@@ -30,7 +31,7 @@ from . import ledger as L
 from . import savenotes
 from .orders import PackageBridge
 from .poller import EventPoller
-from .brief import build_brief, build_work
+from .brief import build_bodies, build_brief, build_work
 from .config import Config
 from .errors import (ACCESS_DENIED, GAME_PAUSED, REPEATED_FAILURE, RESPONSE_TOO_LARGE,
                      PartnerError)
@@ -52,9 +53,11 @@ CHAT_SETTLE_MAX = 6.0
 RULE_SAID_MAX_AGE = 10 * 60 * 60   # ticks: the owner's message that asked for a rule (partner_notes)
 RULE_CONFIRM_MAX_AGE = 2 * 60 * 60  # ticks: the rule question waits this long for the owner
 ORDER_SAID_MAX_AGE = 10 * 60 * 60  # ticks: the owner's message behind partner_order
+STATES_WAIT = 5.0               # s: one limit for the state of every body (shared brief, least busy)
 INBOX_MAX = 20                  # open orders per helper; more -> limit (the voice tells the owner)
 ORDER_MEMORY = 4096             # said_seq already turned into orders (a message is one order)
 ORDER_ACK_MAX = 20
+RELAY_TEXT_MAX = 600            # the owner's words from the main chat (partner_relay)
 ORDERS_TAKEN_KEEP = 5           # orders that left the inbox, kept for partner_brief.work
 PENDING_MAX = 64                # server-made notices queued per (helper, role)
 YES_RE = re.compile(r"^\s*(да|ага|подтверждаю|yes|y|ok|ок|\+)\s*[.!]*\s*$", re.IGNORECASE)
@@ -90,6 +93,20 @@ HINTS = {
 
 # role of the key of the call being served (set by Core._tool for the duration of the call)
 _ROLE: contextvars.ContextVar[str | None] = contextvars.ContextVar("fp_role", default=None)
+# scope of the call: the helper itself, or roles.SHARED for a voice or strategist key of the shared
+# entry (one voice and one strategist for every helper): its cursor, notices, notes and questions
+_SCOPE: contextvars.ContextVar[str | None] = contextvars.ContextVar("fp_scope", default=None)
+
+
+def _any_package(d: dict, pid: str) -> dict | None:
+    for p in d.get("packages", []) + d.get("history", []):
+        if isinstance(p, dict) and p.get("id") == pid:
+            return p
+    return None
+
+
+def _natural(h: str) -> tuple:
+    return tuple(int(p) if p.isdigit() else p for p in re.split(r"(\d+)", h))
 
 
 def _canon(v: Any) -> str:
@@ -142,8 +159,9 @@ class Core:
         self.forge_module = forge_module
         self.start_seq: int | None = None
         self._start_lock = asyncio.Lock()
-        # cursors, server-made notices and wait locks are per (helper, role): the voice, the pilot
-        # and the strategist of a helper wait at once and never take each other's events
+        # cursors, server-made notices and wait locks are per (scope, role): the voice, the pilot
+        # and the strategist of a helper wait at once and never take each other's events; the
+        # scope of a shared voice or strategist is roles.SHARED — one cursor over every helper
         self.cursors: dict[tuple[str, str], int] = {}
         self.pending: dict[tuple[str, str], list[dict]] = {}
         self._wait_locks: dict[tuple[str, str], asyncio.Lock] = {}
@@ -156,6 +174,8 @@ class Core:
         self.fail_counts: dict[tuple[str, str], int] = {}
         self._ledgers: dict[str, L.Ledger] = {}
         self.packages = PackageBridge(self)     # starts and checks the strategist's packages
+        self._order_busy: set[int] = set()      # said_seq of partner_order calls still running
+        self._ids_cache: tuple[tuple[int, int] | None, list[str]] = (None, [])
         self.bridge.on_reload(self._on_reload)
 
     # ================================================================ access
@@ -171,31 +191,50 @@ class Core:
 
         Returns the role of the key (roles.py): every role key of the helper is compared, with no
         early exit, so the time does not tell which role a wrong key came close to."""
+        return self._access(helper, key)[0]
+
+    def _access(self, helper: Any, key: Any) -> tuple[str, bool]:
+        """check_access -> (role, whether the key came from the shared entry "*")."""
         ok_shape = (isinstance(helper, str) and HELPER_RE.match(helper) is not None
                     and isinstance(key, str) and MIN_KEY <= len(key) <= MAX_KEY)
         keys: dict[str, str] = {}
+        shared: dict[str, str] = {}
+        host = ""
         if ok_shape:
-            keys = R.keys_of(self._load_keys().get(helper), MIN_KEY)
+            data = self._load_keys()
+            keys = R.keys_of(data.get(helper), MIN_KEY)
+            # a shared key opens its role for a helper of this server (one with a pilot key) only,
+            # and not for a helper with a voice or strategist of its own: one helper is served
+            # either by its own voice and strategist or by the shared ones, never by a mix
+            every = R.shared_keys_of(data, MIN_KEY) if R.PILOT in keys else {}
+            if not any(r in keys for r in R.SHARED_ROLES):
+                shared = {r: k for r, k in every.items() if r in R.SHARED_ROLES}
+            # the dispatcher's key: any helper of this server (it only relays the owner's words)
+            host = every.get(R.HOST, "")
         given = key.encode("utf-8", "replace")[:MAX_KEY * 4] if isinstance(key, str) else b""
         role = None
-        for r in R.ROLES:
-            expected = keys.get(r, "")
+        from_shared = False
+        cands = [(r, keys.get(r, ""), False) for r in R.ROLES]
+        cands += [(r, shared.get(r, ""), True) for r in R.SHARED_ROLES]
+        cands.append((R.HOST, host, True))
+        for r, expected, sh in cands:
             match = hmac.compare_digest(expected.encode("utf-8") or b"\0" * MIN_KEY, given)
             if match and expected and role is None:
-                role = r
+                role, from_shared = r, sh
         if not (ok_shape and role):
             log.info("access denied for helper %s",
                      helper if isinstance(helper, str) and HELPER_RE.match(helper) else "?")
             raise PartnerError(ACCESS_DENIED)
-        return role
+        return role, from_shared
 
     # ================================================================ logging
     def _log_call(self, helper: str, tool: str, args: dict, code: str, started: float,
-                  role: str | None = None) -> None:
+                  role: str | None = None, shared: bool = False) -> None:
         rec = {
             "t": time.strftime("%Y-%m-%dT%H:%M:%S"),
             "tool": tool,
             "role": role,
+            **({"shared": True} if shared else {}),
             "args": _redact(args),
             "code": code,
             "ms": round((time.monotonic() - started) * 1000),
@@ -214,19 +253,26 @@ class Core:
     async def _tool(self, tool: str, helper: Any, key: Any, args: dict,
                     fn: Callable[[str], Awaitable[dict]]) -> dict:
         started = time.monotonic()
-        got = self.check_access(helper, key)
+        if "check_access" in self.__dict__:
+            # a stand-in for check_access (tests): it gives the role only, never a shared key
+            got, shared = self.check_access(helper, key), False
+        else:
+            got, shared = self._access(helper, key)
         # check_access raises on every failure; a stand-in that returns the helper id (the old
         # contract) means a key of the old form, i.e. the pilot
-        role = got if got in R.ROLES else R.PILOT
+        role = got if got in R.ALL_ROLES else R.PILOT
+        shared = shared and role in R.SHARED_ROLES + (R.HOST,)
+        scope = R.SHARED if shared else helper
         code = "ok"
         token = _ROLE.set(role)
+        token_scope = _SCOPE.set(scope)
         try:
             R.require(role, tool, args)     # before any argument check or mod call
             level = self.budget.level() if self.budget.configured else None
             if level is not None:
                 R.budget_gate(level, role, tool, args)
             await self._ensure_started()
-            self._cursor((helper, role))    # register the role: reload notices and orders reach it
+            self._cursor((scope, role))     # register the role: reload notices and orders reach it
             if level is not None:
                 self._budget_notice(level)
             result = await fn(helper)
@@ -245,7 +291,8 @@ class Core:
             raise PartnerError("internal", "server error (see server.log)") from None
         finally:
             _ROLE.reset(token)
-            self._log_call(helper, tool, args, code, started, role)
+            _SCOPE.reset(token_scope)
+            self._log_call(helper, tool, args, code, started, role, shared)
 
     def _budget_notice(self, level: str) -> None:
         """Tell each helper's voice once, per spell of ``voice_only``, to warn the owner. The spell
@@ -268,6 +315,68 @@ class Core:
     @staticmethod
     def _role() -> str:
         return _ROLE.get() or R.PILOT
+
+    @staticmethod
+    def _scope(helper: str) -> str:
+        """The scope of the call being served: roles.SHARED for a shared key, else the helper."""
+        return _SCOPE.get() or helper
+
+    @staticmethod
+    def _shared() -> bool:
+        return _SCOPE.get() == R.SHARED
+
+    def helper_ids(self) -> list[str]:
+        """The helpers of this server: entries of ``helpers.json`` with a pilot key (h1, h2, … h10).
+        Kept while the file's mtime and size stay the same."""
+        try:
+            st = self.cfg.helpers_file.stat()
+            stamp: tuple[int, int] | None = (st.st_mtime_ns, st.st_size)
+        except OSError:
+            stamp = None
+        cached_stamp, cached = self._ids_cache
+        if stamp is not None and stamp == cached_stamp:
+            return list(cached)
+        data = self._load_keys()
+        ids = sorted((h for h, e in data.items() if isinstance(h, str) and HELPER_RE.match(h)
+                      and R.PILOT in R.keys_of(e, MIN_KEY)), key=_natural)
+        self._ids_cache = (stamp, ids)
+        return list(ids)
+
+    async def _states(self, ids: list[str]) -> dict[str, dict | None]:
+        """``state`` of several bodies at once, under one time limit (STATES_WAIT): a body that
+        does not answer in time, or answers with an error, is None."""
+        if not ids:
+            return {}
+        tasks = {h: asyncio.ensure_future(self._state_or_none(h)) for h in ids}
+        done, pending = await asyncio.wait(list(tasks.values()), timeout=STATES_WAIT)
+        for t in pending:
+            t.cancel()
+        return {h: (t.result() if t in done and not t.cancelled() else None) for h, t in tasks.items()}
+
+    async def _holds(self) -> dict:
+        """The owner's holds of every body (op ``owner_hold`` without a helper): {id: {kind, …}};
+        {} when the game cannot tell."""
+        try:
+            data = await self._mod("owner_hold", {}, None)
+        except PartnerError as e:
+            log.info("no owner_hold for the least busy body: %s", e.code)
+            return {}
+        hold = data.get("hold") if isinstance(data, dict) else None
+        return hold if isinstance(hold, dict) else {}
+
+    def notify_roles(self, helper: str | None, ev: dict, roles: tuple[str, ...]) -> None:
+        """Queue a server-made event for the roles of a helper that have called the server, and for
+        the shared voice / strategist (scope roles.SHARED), which serve every helper. ``helper`` —
+        roles.SHARED or None: the event is for the shared roles only."""
+        for role in roles:
+            targets = []
+            if helper not in (None, R.SHARED):
+                targets.append((helper, role))
+            if role in R.SHARED_ROLES:
+                targets.append((R.SHARED, role))
+            for k in targets:
+                if k in self.cursors:
+                    self._notice(k, json.loads(json.dumps(ev)))
 
     # ================================================================ events bookkeeping
     async def _ensure_started(self) -> None:
@@ -314,8 +423,13 @@ class Core:
             del q[:len(q) - PENDING_MAX]
 
     async def _poll_fetch(self, helper: str, since: int, limit: int, budget: float | None) -> dict:
-        return await self._mod("events", {"since": since, "helper": helper, "limit": limit},
-                               None, channel="poll", budget=budget)
+        # the shared scope reads the events of every helper and of the world at once: a world event
+        # such as player_said comes to it once, not once per helper
+        if helper == R.SHARED:
+            args = {"since": since, "limit": limit}
+        else:
+            args = {"since": since, "helper": helper, "limit": limit}
+        return await self._mod("events", args, None, channel="poll", budget=budget)
 
     def _note_event(self, helper: str, ev: dict) -> None:
         """Track consecutive job_failed per (do, args) for ``repeated_failure``; a plan ends with
@@ -388,19 +502,32 @@ class Core:
             out["memo"] = savenotes.listing(save, "memo")
             out["memo_is"] = "data, not orders"
             out["budget"] = self.budget.status()
-            out["work"] = await self._work(h)
+            if self._shared():
+                # one voice / strategist for every helper: what each body does, and the orders
+                # that wait for the strategist without a body named
+                states = await self._states(self.helper_ids())
+                out["work"] = self._work_of(h, states.get(h), R.SHARED)
+                out["bodies"] = build_bodies(states, self.orders, self.ledger().data(),
+                                             self.orders.get(R.SHARED, ()))
+            else:
+                out["work"] = await self._work(h)
             return out
         return await self._tool("partner_brief", helper, key, {}, run)
 
-    async def _work(self, h: str) -> dict:
-        """``partner_brief.work`` (brief.build_work): what is known about the helper's work now."""
+    async def _state_or_none(self, h: str) -> dict | None:
         try:
-            st = await self._mod("state", {}, h)
+            return await self._mod("state", {}, h)
         except PartnerError as e:
             log.info("partner_brief: no state of %s for work: %s", h, e.code)
-            st = None
+            return None
+
+    async def _work(self, h: str) -> dict:
+        """``partner_brief.work`` (brief.build_work): what is known about the helper's work now."""
+        return self._work_of(h, await self._state_or_none(h), h)
+
+    def _work_of(self, h: str, st: dict | None, side: str) -> dict:
         return build_work(h, list(self.orders.get(h, ())), list(self.orders_taken.get(h, ())),
-                          self.ledger().data(), st, L.now())
+                          self.ledger().data(), st, L.now(), side=side)
 
     async def op_notes(self, helper, key, kind, action="list", text=None, n=None, said_seq=None) -> dict:
         """``partner_notes`` — the owner's standing rules / the helper's memo per save.
@@ -415,6 +542,7 @@ class Core:
         async def run(h):
             save = getattr(self, "_notes_save", None) or savenotes.save_name(self.cfg)
             pending = self.__dict__.setdefault("_rule_pending", {})
+            ph = self._scope(h)     # a shared voice keeps one rule question for every helper
             if kind == "rules" and action == "add":
                 quote = await self._owner_said(h, said_seq)
                 t = savenotes.clean_rule(text)
@@ -430,24 +558,24 @@ class Core:
                 if not (isinstance(ask_seq, int) and isinstance(now, int)):
                     # without the question's place in the event stream no answer can be bound to it
                     raise PartnerError("internal", "no event seq after the rule question; try again")
-                pending[h] = {"text": t, "quote": quote, "save": save, "ask_seq": ask_seq, "tick": now}
+                pending[ph] = {"text": t, "quote": quote, "save": save, "ask_seq": ask_seq, "tick": now}
                 return {"save": save, "kind": kind, "pending": t, "items": savenotes.listing(save, kind),
                         "next": "wait for the owner's answer; «да» — action confirm with its said_seq"}
             if kind == "rules" and action == "confirm":
-                p = self._rule_waiting(h)
+                p = self._rule_waiting(ph)
                 if p is None:
                     raise PartnerError("bad_args", "no rule waits for the owner's confirmation")
                 answer = await self._owner_said(h, said_seq)
                 if said_seq <= p["ask_seq"]:
                     raise PartnerError("bad_args", "said_seq: the owner's answer must come after the question")
                 if said_seq != await self._first_owner_said(h, p["ask_seq"]):
-                    pending.pop(h, None)
+                    pending.pop(ph, None)
                     raise PartnerError("bad_args", "said_seq: only the owner's first message after the question "
                                                    "answers it; the rule is dropped")
                 if not YES_RE.match(answer):
-                    pending.pop(h, None)
+                    pending.pop(ph, None)
                     raise PartnerError("bad_args", "the owner did not answer «да»: the rule is dropped")
-                pending.pop(h, None)
+                pending.pop(ph, None)
                 return savenotes.op(p["save"], kind, "add", p["text"], quote=p["quote"])
             if kind == "rules" and action == "remove":
                 await self._owner_said(h, said_seq)
@@ -900,8 +1028,8 @@ class Core:
         return await self._tool("partner_say", helper, key, a, run)
 
     async def op_order(self, helper, key, said_seq=None, text=None, size=None, urgent=False,
-                       answer_to=None) -> dict:
-        """``partner_order`` — the voice files an order of the owner into the helper's inbox.
+                       answer_to=None, to=None) -> dict:
+        """``partner_order`` — the voice files an order of the owner into a helper's inbox.
 
         Only with ``said_seq`` of a real message of the owner: the server reads that event from the
         mod itself (``player_said``, ``owner:true``, no ``auto_reply`` — the mod has not handled it as
@@ -911,43 +1039,76 @@ class Core:
 
         ``answer_to`` — the id of the strategist's open question this message answers: the order goes
         to the strategist only (size large), holds no package and closes the question (answered).
+
+        Who gets it. A voice of one helper files into that helper's inbox, as before. The shared
+        voice (one for every helper) does not choose by itself: the server reads the address from the
+        owner's own words (``address.named``: «Claude2, принеси» — h2); ``to`` — the helper the voice
+        means when the owner named none («он», «тот, что у печей»). Without a name and ``to``, a small
+        order goes to the least busy body, a large one to the strategist (the shared inbox). The answer
+        says where it went (``to``).
         """
-        a = {"said_seq": said_seq, "text": text, "size": size, "urgent": urgent, "answer_to": answer_to}
+        a = {"said_seq": said_seq, "text": text, "size": size, "urgent": urgent, "answer_to": answer_to,
+             "to": to}
 
         async def run(h):
             seq = V.integer(1, 2**53)("said_seq", said_seq)
             sz = V.enum(*V.ORDER_SIZES)("size", size)
             urg = V.boolean("urgent", urgent)
             t = V.check_order_text(text)
+            shared = self._shared()
+            side = self._scope(h)
+            want = None
+            if to is not None:
+                if not shared:
+                    raise V.bad("to", "only the shared voice picks the helper; this voice files to its own")
+                if not isinstance(to, str) or not HELPER_RE.match(to):
+                    raise V.bad("to", "must match ^[a-z0-9_-]{1,16}$")
+                want = to
+                if want not in self.helper_ids():
+                    raise PartnerError("not_found", f"to: no helper {want} on this server")
             qid = None
             if answer_to is not None:
                 qid = V.ident("answer_to", answer_to)
                 if sz != "large":
                     raise V.bad("size", "an answer to the strategist's question goes with size large")
-                if not any(q["id"] == qid for q in L.open_questions(self.ledger().data(), h)):
+                if not any(q["id"] == qid for q in L.open_questions(self.ledger().data(), side)):
                     raise PartnerError("not_found", f"answer_to: no open question {qid}")
             if seq <= (self.start_seq or 0):
                 # the message came before this server started or before the save was loaded: whether
                 # it already became an order is unknown (the used seq live in this process only)
                 raise PartnerError("bad_args", "said_seq: the message came before the server started or "
                                                "the save was loaded; ask the owner again")
-            if seq in self._order_used:
+            if seq in self._order_used or seq in self._order_busy:
+                # _order_busy: a parallel call with the same seq is still choosing the inbox
                 raise PartnerError("bad_args", "said_seq: this message of the owner is already an order")
-            if len(self.orders.get(h, ())) >= INBOX_MAX:
+            if not shared and len(self.orders.get(h, ())) >= INBOX_MAX:
                 raise PartnerError("limit", f"the inbox holds {INBOX_MAX} open orders; tell the owner "
                                             "it is full")
+            # the seq is taken from here on, while the message is read and the inbox chosen (both
+            # wait for the game); a failed call gives it back
+            self._order_busy.add(seq)
+            try:
+                return await file(h, seq, sz, urg, t, shared, side, want, qid)
+            finally:
+                self._order_busy.discard(seq)
+
+        async def file(h, seq, sz, urg, t, shared, side, want, qid):
             words, tick = await self._order_said(h, seq)
             if seq <= (self.start_seq or 0):  # the save was reloaded while reading the message
                 raise PartnerError("bad_args", "said_seq: the save was loaded; ask the owner again")
-            if seq in self._order_used:       # a parallel call with the same seq got there first
+            if seq in self._order_used:
                 raise PartnerError("bad_args", "said_seq: this message of the owner is already an order")
-            if len(self.orders.get(h, ())) >= INBOX_MAX:
+            if shared:
+                box, dest = await self._order_target(words, sz, want, qid)
+            else:
+                box, dest = h, {"helper": h, "role": "strategist" if sz == "large" else "pilot", "by": "own"}
+            if len(self.orders.get(box, ())) >= INBOX_MAX:
                 raise PartnerError("limit", f"the inbox holds {INBOX_MAX} open orders; tell the owner "
                                             "it is full")
             if qid is not None:
                 # closed before anything is filed: a question answered twice is refused here
                 oid = f"o{self._order_n + 1}"
-                self.ledger().mutate(lambda d: L.answer(d, h, qid, oid))
+                self.ledger().mutate(lambda d: L.answer(d, side, qid, oid, words))
             self._order_used[seq] = None
             while len(self._order_used) > ORDER_MEMORY:
                 self._order_used.popitem(last=False)
@@ -956,20 +1117,139 @@ class Core:
                      "urgent": urg, "text": t, "owner_said": words}
             if qid is not None:
                 order["answer_to"] = qid
-            self.orders.setdefault(h, []).append(order)
-            ev = {"seq": self.bridge.last_seq, "tick": self.bridge.last_tick, "helper": h,
+            if shared:
+                order["helper"] = None if box == R.SHARED else box
+                if dest.get("helpers"):
+                    order["helpers"] = list(dest["helpers"])
+            self.orders.setdefault(box, []).append(order)
+            ev = {"seq": self.bridge.last_seq, "tick": self.bridge.last_tick,
+                  "helper": None if box == R.SHARED else box,
                   "kind": "order", "data": dict(order), "loud": True}
-            for role in ((R.STRATEGIST,) if qid is not None else (R.PILOT, R.STRATEGIST)):
-                if (h, role) in self.cursors:     # roles that have called the server get woken
-                    self._notice((h, role), dict(ev))
-            if sz == "large" and qid is None:
+            self.notify_roles(box, ev, (R.STRATEGIST,) if qid is not None else (R.PILOT, R.STRATEGIST))
+            if sz == "large" and qid is None and box != R.SHARED:
                 # the running package finishes its step and pauses: the new order goes first
                 try:
-                    await self.packages.on_large_order(h, order)
+                    await self.packages.on_large_order(box, order)
                 except PartnerError as e:
                     log.info("cannot pause the running package for order %s: %s", order["id"], e.code)
-            return {"order": order, "open": len(self.orders[h])}
+            return {"order": order, "open": len(self.orders[box]), "to": dest}
         return await self._tool("partner_order", helper, key, a, run)
+
+    async def op_relay(self, helper, key, to=None, text=None) -> dict:
+        """``partner_relay`` — the dispatcher (key ``host``) hands on what the owner typed in the main
+        chat for one role: «передай стратегу: …». The owner's words go as they are (``text`` ≤ 600):
+
+        - ``to:"voice"`` — the loud server event ``host_message`` for the voice of ``helper`` and the
+          shared voice; the voice tells the owner in chat that the words came and acts on them;
+        - ``to:"pilot"`` — an order ``from:"host"`` (size small) in the inbox of ``helper``;
+        - ``to:"strategist"`` — an order ``from:"host"`` (size large) in the inbox of ``helper`` (it
+          pauses a running package at the step boundary, as a large order of the voice does).
+
+        The voice also gets ``host_message`` for the pilot and the strategist: it says in chat what
+        came from the main chat. No ``to`` — ``bad_args``: the dispatcher never guesses the role."""
+        a = {"to": to, "text": text}
+
+        async def run(h):
+            if to is None:
+                raise V.bad("to", "required: voice, pilot or strategist — the role the owner named")
+            dest = V.enum(*R.RELAY_TO)("to", to)
+            if not isinstance(text, str):
+                raise V.bad("text", "must be a string")
+            t = " ".join(text.split())
+            if not t:
+                raise V.bad("text", "must not be empty")
+            if len(t) > RELAY_TEXT_MAX:
+                raise PartnerError("limit", f"text: at most {RELAY_TEXT_MAX} characters")
+            if h not in self.helper_ids():
+                raise PartnerError("not_found", f"helper: no helper {h} on this server")
+            tick = self.bridge.last_tick
+            out: dict = {"to": dest, "helper": h}
+            if dest != R.VOICE:
+                if len(self.orders.get(h, ())) >= INBOX_MAX:
+                    raise PartnerError("limit", f"the inbox holds {INBOX_MAX} open orders")
+                self._order_n += 1
+                size = "large" if dest == R.STRATEGIST else "small"
+                order = {"id": f"o{self._order_n}", "from": "host", "tick": tick, "size": size,
+                         "urgent": False, "text": t[:V.ORDER_TEXT_MAX], "owner_said": t, "for": dest}
+                self.orders.setdefault(h, []).append(order)
+                ev = {"seq": self.bridge.last_seq, "tick": tick, "helper": h, "kind": "order",
+                      "data": dict(order), "loud": True}
+                self.notify_roles(h, ev, (R.PILOT, R.STRATEGIST))
+                if size == "large":
+                    try:
+                        await self.packages.on_large_order(h, order)
+                    except PartnerError as e:
+                        log.info("cannot pause the running package for order %s: %s", order["id"], e.code)
+                out["order"] = order
+            msg = {"seq": self.bridge.last_seq, "tick": tick, "helper": h, "kind": "host_message",
+                   "data": {"from": "host", "to": dest, "helper": h, "text": t,
+                            **({"order": out["order"]["id"]} if "order" in out else {})},
+                   "loud": True}
+            self.notify_roles(h, msg, (R.VOICE,))
+            return self._stamp(out)
+        return await self._tool("partner_relay", helper, key, a, run)
+
+    async def _order_target(self, words: str, size: str, want: str | None,
+                            qid: str | None) -> tuple[str, dict]:
+        """The inbox of an order filed by the shared voice -> (box, where): a helper id, or
+        roles.SHARED — the strategist's inbox for work no body was named for."""
+        ids = self.helper_ids()
+        named = address.named(words, ids)
+        if qid is not None:
+            # the answer to the strategist's question: his alone, whatever names it carries
+            return R.SHARED, {"helper": None, "role": "strategist", "by": "answer"}
+        if want is not None:
+            if named and want not in named:
+                raise V.bad("to", "the owner named " + ", ".join(named) + ", not " + want)
+            await self._body_answers(want)
+            return want, self._dest(want, size, "to")
+        if len(named) == 1:
+            await self._body_answers(named[0])
+            return named[0], self._dest(named[0], size, "name")
+        if len(named) > 1:
+            if size == "large":
+                return R.SHARED, {"helper": None, "role": "strategist", "by": "name", "helpers": named}
+            raise V.bad("to", "the owner named several helpers (" + ", ".join(named) + "): pass to with "
+                              "one of them, or size large for the strategist to share the work")
+        if size == "large":
+            return R.SHARED, {"helper": None, "role": "strategist", "by": "strategist"}
+        best, how = await self._least_busy(ids)
+        return best, self._dest(best, size, how)
+
+    @staticmethod
+    def _dest(h: str, size: str, by: str) -> dict:
+        return {"helper": h, "role": "strategist" if size == "large" else "pilot", "by": by}
+
+    async def _body_answers(self, h: str) -> None:
+        """An order named for a body goes there only while the game answers for it (a dead body,
+        or one whose entry outlived it, is refused: the voice tells the owner)."""
+        if not isinstance(await self._state_or_none(h), dict):
+            raise PartnerError("not_found", f"the game does not answer for helper {h}; tell the owner")
+
+    async def _least_busy(self, ids: list[str]) -> tuple[str, str]:
+        """The body with the least work for a small order nobody was named for: ``free`` — idle, no
+        orders and no packages; ``least_busy`` — the least of (job + queue + orders + packages).
+        Skipped: a body the game does not answer for and a body the owner holds («стоп», «иди
+        сюда» — it looks idle but waits for his word); none left -> not_found."""
+        states, holds = await asyncio.gather(self._states(ids), self._holds())
+        data = self.ledger().data()
+        best: tuple[int, int] | None = None
+        pick = ""
+        for i, hid in enumerate(ids):
+            st = states.get(hid)
+            if not isinstance(st, dict) or hid in holds:
+                continue
+            job = 1 if isinstance(st.get("job"), dict) else 0
+            queue = st.get("queue") if _is_int(st.get("queue")) else 0
+            pk = sum(1 for p in data.get("packages", []) if isinstance(p, dict) and p.get("helper") == hid
+                     and p.get("status") in L.ACTIVE)
+            score = job + max(queue, 0) + len(self.orders.get(hid, ())) + pk
+            if best is None or (score, i) < best:
+                best, pick = (score, i), hid
+        if not pick:
+            raise PartnerError("not_found", "no helper free to take the order (none answers or the "
+                                            "owner holds each); tell the owner")
+        return pick, "free" if best is not None and best[0] == 0 else "least_busy"
 
     async def _order_said(self, helper: str, said_seq: int) -> tuple[str, int | None]:
         """The owner's message behind an order, read from the mod: (his text, its tick)."""
@@ -994,6 +1274,8 @@ class Core:
         a = {"ack": ack}
 
         async def run(h):
+            if self._shared():
+                return self._inbox_all(ack)
             box = self.orders.setdefault(h, [])
             acked: list[str] = []
             if ack is not None:
@@ -1019,6 +1301,40 @@ class Core:
             return self._stamp(out)
         return await self._tool("partner_inbox", helper, key, a, run)
 
+    def _inbox_all(self, ack) -> dict:
+        """``partner_inbox`` of the shared roles: the open orders of every helper and of the shared
+        inbox (``helper`` null — for the strategist, no body named), oldest first; ``ack`` takes
+        orders out of whichever inbox holds them."""
+        boxes = [b for b in self.orders if b == R.SHARED or b in set(self.helper_ids())]
+        if ack is not None:
+            if (not isinstance(ack, list) or not ack or len(ack) > ORDER_ACK_MAX
+                    or not all(isinstance(x, str) for x in ack)):
+                raise V.bad("ack", f"must be a list of 1..{ORDER_ACK_MAX} order ids")
+            known = {o["id"] for b in boxes for o in self.orders[b]}
+            unknown = [x for x in ack if x not in known]
+            if unknown:
+                raise V.bad("ack", "no open order " + ", ".join(x[:20] for x in unknown[:5]))
+        acked: list[str] = []
+        want = set(ack or ())
+        for b in boxes:
+            box = self.orders[b]
+            mine = [o for o in box if o["id"] in want]
+            if not mine:
+                continue
+            acked += [o["id"] for o in mine]
+            if b != R.SHARED and any(o.get("size") != "large" for o in mine):
+                self.packages.on_small_ack(b)
+            taken = self.orders_taken.setdefault(b, [])
+            taken.extend(dict(o) for o in mine)
+            del taken[:-ORDERS_TAKEN_KEEP]
+            box[:] = [o for o in box if o["id"] not in want]
+        orders = [dict(o, helper=None if b == R.SHARED else b) for b in boxes for o in self.orders[b]]
+        orders.sort(key=lambda o: int(o["id"][1:]) if o["id"][1:].isdigit() else 0)
+        out: dict = {"orders": orders}
+        if acked:
+            out["acked"] = acked
+        return self._stamp(out)
+
     # ================================================================ build packages
     def ledger(self) -> L.Ledger:
         """The packages of the save the notes belong to (savenotes.save_name)."""
@@ -1029,22 +1345,28 @@ class Core:
         return led
 
     async def op_ledger(self, helper, key, action="list", package=None, id=None, rev=None,  # noqa: A002
-                        text=None, on=None, said_seq=None) -> dict:
+                        text=None, on=None, said_seq=None, order=None) -> dict:
         """``partner_ledger`` — the strategist's build packages of this helper (docs/MCP.md
         «Пакеты стройки»). ``list`` (every role): open packages without steps and the last finished
         ones; with ``id`` — that package in full. ``put`` (the strategist): a new package, the server
         starts it itself. ``resume`` (the strategist): a paused package goes back to the queue.
         ``cancel`` (the pilot and the strategist): the package leaves, its running plan is cancelled.
         ``note`` (the strategist): his one last note on the work, read by the voice in partner_brief.
-        ``ask`` (the strategist): a question to the owner; the voice gets ``strategist_question``.
+        ``ask`` (the strategist): a question to the owner; the voice gets ``strategist_question``;
+        ``order`` — the owner's order it is about (an answered one is the leave of a package of that
+        order to take from the owner: ``package.approved``).
         ``thoughts`` (the voice): the owner's switch «show the strategist's thoughts» (``on``), with
         ``said_seq`` of his real message; while on, every new ``note`` wakes the voice (``strategist_note``)."""
         a = {"action": action, "package": package, "id": id, "rev": rev, "text": text, "on": on,
-             "said_seq": said_seq}
+             "said_seq": said_seq, "order": order}
 
         async def run(h):
             act = V.enum("list", "put", "cancel", "resume", "note", "ask", "thoughts")("action", action)
             led = self.ledger()
+            # notes, questions and the thoughts switch belong to the scope: one set for the shared
+            # strategist and voice (roles.SHARED), else the helper's own
+            side = self._scope(h)
+            shared = self._shared()
             if act == "thoughts":
                 for f, v in (("package", package), ("id", id), ("rev", rev), ("text", text)):
                     if v is not None:
@@ -1056,13 +1378,15 @@ class Core:
                 if seq is None:
                     raise V.bad("said_seq", "seq of the owner's message (player_said, owner:true) is required")
                 await self._order_said(h, seq)
-                led.mutate(lambda d: L.set_thoughts(d, h, flag))
+                led.mutate(lambda d: L.set_thoughts(d, side, flag))
                 if not flag:
-                    self.packages.drop_pending_note(h)
+                    self.packages.drop_pending_note(side)
                 return self._stamp({"thoughts": flag})
             for f, v in (("on", on), ("said_seq", said_seq)):
                 if v is not None:
                     raise V.bad(f, "only with action=thoughts")
+            if order is not None and act != "ask":
+                raise V.bad("order", "only with action=ask (a package names its order in package.order)")
             if act in ("note", "ask"):
                 for f, v in (("package", package), ("id", id), ("rev", rev)):
                     if v is not None:
@@ -1070,16 +1394,21 @@ class Core:
                 tick = self.bridge.last_tick
                 if act == "note":
                     t = V.check_line("text", text, L.NOTE_MAX)
-                    n = led.mutate(lambda d: L.set_note(d, h, t, tick))
-                    if L.thoughts_on(led.data(), h):
-                        self.packages.note_event(h, t)
+                    n = led.mutate(lambda d: L.set_note(d, side, t, tick))
+                    if L.thoughts_on(led.data(), side):
+                        self.packages.note_event(side, t)
                     return self._stamp({"note": n})
                 t = V.check_line("text", text, L.QUESTION_MAX)
-                q = led.mutate(lambda d: L.ask(d, h, t, tick))
-                self.packages.notify(h, "strategist_question", {"id": q["id"], "text": q["text"]},
+                oid = None
+                if order is not None:
+                    if not isinstance(order, str) or not V.ORDER_ID_RE.match(order):
+                        raise V.bad("order", "must be an order id from partner_inbox (o<N>)")
+                    oid = order
+                q = led.mutate(lambda d: L.ask(d, side, t, tick, oid))
+                self.packages.notify(side, "strategist_question", {"id": q["id"], "text": q["text"]},
                                      roles=(R.VOICE,))
                 return self._stamp({"question": q,
-                                    "open": len(L.open_questions(led.data(), h))})
+                                    "open": len(L.open_questions(led.data(), side))})
             if text is not None:
                 raise V.bad("text", "only with action=note or ask")
             if act != "put" and package is not None:
@@ -1090,22 +1419,33 @@ class Core:
                 raise V.bad("rev", "only with action=put")
             if act == "list":
                 if id is not None:
-                    p = led.get(h, V.ident("id", id))
+                    pid = V.ident("id", id)
+                    p = _any_package(led.data(), pid) if shared else led.get(h, pid)
                     if p is None:
                         raise PartnerError("not_found", f"id: no package {id}")
                     return self._stamp({"save": led.save, "rev": led.data()["rev"], "package": p})
                 d = led.data()
                 return self._stamp({
                     "save": led.save, "rev": d["rev"],
-                    "packages": [L.compact(p) for p in d["packages"] if p.get("helper") == h],
-                    "history": [p for p in d["history"] if p.get("helper") == h],
-                    "note": L.note_of(d, h),
-                    "questions": L.questions_of(d, h),
+                    # the shared strategist sees the packages of every body (each names its helper)
+                    "packages": [L.compact(p) for p in d["packages"] if shared or p.get("helper") == h],
+                    "history": [p for p in d["history"] if shared or p.get("helper") == h],
+                    "note": L.note_of(d, side),
+                    "questions": L.questions_of(d, side),
                 })
             if act == "put":
                 if package is None:
                     raise V.bad("package", "required for action=put")
                 clean = V.check_package(package)
+                if "approved" in clean:
+                    # the owner's leave to take from him: an answered question about this order
+                    otick = self._order_tick(clean["order"])
+                    why = L.leave_problem(led.data(), side, clean, otick)
+                    if why is not None:
+                        raise PartnerError("bad_args", why)
+                    clean["leave_scope"] = side
+                    if otick is not None:
+                        clean["order_tick"] = otick
                 r = None if rev is None else V.integer(0, 2**53)("rev", rev)
                 tick = self.bridge.last_tick
                 p = led.mutate(lambda d: L.add(d, h, clean, tick, r))
@@ -1113,6 +1453,11 @@ class Core:
             pid = V.ident("id", id) if id is not None else None
             if pid is None:
                 raise V.bad("id", f"required for action={act}")
+            if shared:
+                # a package of any body: the call's helper does not matter, the package's does
+                found = L.find(led.data(), pid)
+                if found is not None and isinstance(found.get("helper"), str):
+                    h = found["helper"]
             if act == "cancel":
                 return self._stamp(dict(await self.packages.cancel(h, pid), rev=led.data()["rev"]))
 
@@ -1129,6 +1474,15 @@ class Core:
             return self._stamp({"package": p, "rev": led.data()["rev"]})
         return await self._tool("partner_ledger", helper, key, a, run)
 
+    def _order_tick(self, oid: str) -> int | None:
+        """The tick of the owner's order ``oid`` (open or lately taken, in any inbox); None — unknown."""
+        for boxes in (self.orders, self.orders_taken):
+            for box in boxes.values():
+                for o in box:
+                    if o.get("id") == oid:
+                        return o["tick"] if _is_int(o.get("tick")) else None
+        return None
+
     async def op_wait(self, helper, key, timeout=30, quiet=True, since=None) -> dict:
         a = {"timeout": timeout, "quiet": quiet, "since": since}
 
@@ -1136,8 +1490,9 @@ class Core:
             t = V.number(0, WAIT_MAX)("timeout", timeout)
             q = V.boolean("quiet", quiet)
             s = None if since is None else V.integer(0, 2**53)("since", since)
-            k = (h, self._role())
-            # one wait at a time per (helper, role); the roles of a helper wait side by side
+            k = (self._scope(h), self._role())
+            # one wait at a time per (scope, role); the roles of a helper wait side by side, the
+            # shared voice and strategist read the events of every helper with one cursor
             lock = self._wait_locks.setdefault(k, asyncio.Lock())
             async with lock:
                 return await self._wait(k, t, q, s)
@@ -1146,7 +1501,7 @@ class Core:
     async def _wait(self, k: tuple[str, str], timeout: float, quiet: bool, since: int | None) -> dict:
         """Poll ``events`` (through the shared poller) until something worth waking for, or ``timeout``.
 
-        ``k`` is (helper, role). The cursor (EVENTS.md: last seq HANDED to the agent) moves only at
+        ``k`` is (scope, role): a helper, or roles.SHARED for every helper at once. The cursor (EVENTS.md: last seq HANDED to the agent) moves only at
         the very end, after the answer has been cut to fit ``MAX_RESPONSE``: anything not handed
         over stays in the mod's buffer (or in ``pending``) for the next call. On any exception the
         cursor is untouched and server-made notices go back to ``pending``. Events this role does
@@ -1280,7 +1635,13 @@ class Core:
         """Build the wait answer, cutting it to ``MAX_RESPONSE``; the cursor covers only what
         is handed over. Cut-off notices go back to ``pending``."""
         helper, role = k
-        inbox = len(self.orders.get(helper, ())) if R.allowed(role, "partner_inbox", {"ack": []}) else 0
+        inbox = 0
+        if R.allowed(role, "partner_inbox", {"ack": []}):
+            if helper == R.SHARED:
+                ids = set(self.helper_ids())
+                inbox = sum(len(v) for b, v in self.orders.items() if b == R.SHARED or b in ids)
+            else:
+                inbox = len(self.orders.get(helper, ()))
 
         def build(evs: list[dict], seq: int, more_: bool) -> dict:
             o = {"seq": seq, "tick": self.bridge.last_tick, "events": evs, "timed_out": timed_out}

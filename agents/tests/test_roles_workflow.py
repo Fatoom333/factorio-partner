@@ -178,3 +178,148 @@ def test_link_lost_gives_up_after_retries():
     assert len([c for c in out["calls"] if c["type"] == "partner-voice"]) == 4   # 1 + 3 повтора
     res = {r["role"]: r for r in out["result"]["roles"]}
     assert res["voice"]["status"] == "стоп"
+
+
+# ---- голос и стратег на всех, пилот на каждое тело ----------------------------------------
+
+SHARED_KEYS = {"voice": "V" * 40, "strategist": "S" * 40}
+PILOT_KEYS = {"h1": "1" * 40, "h2": "2" * 40, "h3": "3" * 40}
+
+
+def session(ids=("h1", "h2", "h3")):
+    return {"voice": {"prompt": f"helper: h1\nkey: {SHARED_KEYS['voice']}\nроль voice"},
+            "strategist": {"prompt": f"helper: h1\nkey: {SHARED_KEYS['strategist']}\nроль strategist"},
+            "helpers": [{"id": h, "roles": {"pilot": {"prompt": f"helper: {h}\nkey: {PILOT_KEYS[h]}\nроль pilot"}}}
+                        for h in ids]}
+
+
+def by_label(out, word):
+    return [c for c in out["calls"] if word in c["label"]]
+
+
+@needs_node
+def test_three_helpers_make_five_loops():
+    out = run(dict(session(), pilot_model="haiku"))
+    labels = sorted(c["label"] for c in out["calls"])
+    assert labels == ["h1 пилот: смена 1", "h2 пилот: смена 1", "h3 пилот: смена 1",
+                      "голос: смена 1", "стратег: смена 1"]
+    for c in out["calls"]:
+        assert not any(k in c["label"] for k in [*SHARED_KEYS.values(), *PILOT_KEYS.values()])
+        keys = [k for k in [*SHARED_KEYS.values(), *PILOT_KEYS.values()] if k in c["prompt"]]
+        assert len(keys) == 1                                  # в смене — только ключ этой петли
+    pilots = [c for c in out["calls"] if c["type"] == "partner-pilot"]
+    assert len(pilots) == 3 and all(c["model"] == "haiku" for c in pilots)
+    assert {c["type"]: c["model"] for c in out["calls"]}["partner-voice"] == "haiku"
+    res = out["result"]
+    assert res["helpers"] == ["h1", "h2", "h3"] and "helper" not in res
+    assert sorted((r["role"], r.get("helper")) for r in res["roles"]) == \
+        [("pilot", "h1"), ("pilot", "h2"), ("pilot", "h3"), ("strategist", None), ("voice", None)]
+
+
+@needs_node
+def test_lost_body_ends_only_its_pilot():
+    replies = {"partner-pilot": ["СМЕНА: стоп\nПричина: тела нет"] + ["СМЕНА: дальше\nПричина: x"] * 6,
+               "partner-voice": ["СМЕНА: дальше\nПричина: x"] * 2 + ["СМЕНА: стоп\nПричина: хозяин отпустил"],
+               "partner-strategist": ["СМЕНА: дальше\nПричина: x"] * 6}
+    out = run(dict(session(), max_shifts=5), replies)
+    res = {(r["role"], r.get("helper")): r for r in out["result"]["roles"]}
+    lost = [r for (role, _), r in res.items() if role == "pilot" and r["status"] == "стоп"]
+    assert len(lost) == 1 and lost[0]["shifts"] == 1        # первый ответ достался одному пилоту
+    assert len(by_label(out, "голос")) == 3                  # остальные работают, пока голос не отпустил
+    others = [r for (role, _), r in res.items() if role == "pilot" and r["status"] != "стоп"]
+    assert len(others) == 2 and all(r["shifts"] >= 2 for r in others)
+
+
+@needs_node
+def test_every_body_lost_stops_everyone():
+    replies = {"partner-pilot": ["СМЕНА: стоп\nПричина: тела нет"] * 3,
+               "partner-voice": ["СМЕНА: дальше\nПричина: x"] * 8,
+               "partner-strategist": ["СМЕНА: дальше\nПричина: x"] * 8}
+    out = run(dict(session(), max_shifts=8), replies)
+    assert len(by_label(out, "голос")) <= 2
+    res = {r["role"]: r for r in out["result"]["roles"] if r["role"] != "pilot"}
+    assert res["voice"]["status"] == "остановлено другой ролью"
+
+
+@needs_node
+def test_voice_stop_ends_every_loop_of_three_bodies():
+    replies = {"partner-voice": ["СМЕНА: стоп\nПричина: хозяин отпустил"],
+               "partner-pilot": ["СМЕНА: дальше\nПричина: x"] * 9,
+               "partner-strategist": ["СМЕНА: дальше\nПричина: x"] * 3}
+    out = run(session(), replies)
+    assert len([c for c in out["calls"] if c["type"] == "partner-pilot"]) <= 6
+    assert all(r["status"] in ("стоп", "остановлено другой ролью") for r in out["result"]["roles"])
+
+
+@needs_node
+def test_pilot_link_lost_restarts_its_shift_with_three_bodies():
+    replies = {"partner-pilot": ["СМЕНА: стоп\nПричина: нет связи, инструментов нет"]
+               + ["СМЕНА: стоп\nПричина: поручение выполнено"] * 3,
+               "partner-voice": ["СМЕНА: дальше\nПричина: x"] * 3 + ["СМЕНА: стоп\nПричина: отбой"],
+               "partner-strategist": ["СМЕНА: дальше\nПричина: x"] * 4}
+    out = run(session(), replies)
+    assert any("пилот — связь пропала" in line for line in out["logs"])
+    assert len([c for c in out["calls"] if c["type"] == "partner-pilot"]) == 4      # 3 + одна повторная
+    assert all(r["status"] == "стоп" for r in out["result"]["roles"] if r["role"] == "pilot")
+
+
+@needs_node
+def test_shared_budget_stop_and_cursor():
+    out = run(dict(session(("h1", "h2")), budget_stop=True, cursor=11))
+    assert not by_label(out, "стратег")
+    assert all("since=11" in c["prompt"] for c in out["calls"])
+    res = {r["role"]: r for r in out["result"]["roles"] if r["role"] != "pilot"}
+    assert res["strategist"]["status"] == "лимит"
+
+
+@needs_node
+def test_shared_session_checks():
+    bad = session()
+    del bad["strategist"]
+    assert "strategist" in run(bad)["error"]
+    bad = session()
+    bad["helpers"][1]["id"] = "h1"
+    assert "свой id" in run(bad)["error"]
+    bad = session()
+    del bad["helpers"][2]["roles"]["pilot"]
+    assert "h3" in run(bad)["error"]
+    assert "от 1" in run(dict(session(), helpers=[]))["error"]
+    # одно тело в новом виде — три петли, как раньше
+    out = run(session(("h1",)))
+    assert sorted(c["type"] for c in out["calls"]) == ["partner-pilot", "partner-strategist", "partner-voice"]
+
+
+@needs_node
+def test_voice_and_strategist_end_when_no_pilot_is_left():
+    # пилоты кончились сами (поручения выполнены, не потеря тела): голосу и стратегу некому передавать работу
+    replies = {"partner-pilot": ["СМЕНА: стоп\nПричина: поручение выполнено"] * 2,
+               "partner-voice": ["СМЕНА: дальше\nПричина: x"] * 20,
+               "partner-strategist": ["СМЕНА: дальше\nПричина: x"] * 20}
+    out = run(dict(session(("h1", "h2")), max_shifts=20), replies)
+    assert len(by_label(out, "голос")) <= 3 and len(by_label(out, "стратег")) <= 3     # не 20
+    assert any("пилотов не осталось" in line for line in out["logs"])
+    res = {r["role"]: r for r in out["result"]["roles"] if r["role"] != "pilot"}
+    assert res["voice"]["status"] == res["strategist"]["status"] == "остановлено другой ролью"
+
+
+@needs_node
+def test_pilots_at_the_shift_limit_end_the_shared_loops():
+    replies = {"partner-pilot": ["СМЕНА: дальше\nПричина: x"] * 4,
+               "partner-voice": ["СМЕНА: дальше\nПричина: x"] * 20,
+               "partner-strategist": ["СМЕНА: дальше\nПричина: x"] * 20}
+    out = run(dict(session(("h1", "h2")), max_shifts=2), replies)
+    res = {r["role"]: r for r in out["result"]["roles"] if r["role"] != "pilot"}
+    assert all(r["status"] in ("предел смен", "остановлено другой ролью") for r in res.values())
+
+
+@needs_node
+def test_host_key_never_reaches_an_agent():
+    """Ключ диспетчера из файла сессии (host) не идёт ни в одну смену и вычищается из выжимок."""
+    host = "H" * 40
+    replies = {"partner-pilot": ["СМЕНА: дальше\nПричина: x\nчужой " + host] + ["СМЕНА: дальше\nПричина: x"] * 4,
+               "partner-voice": ["СМЕНА: дальше\nПричина: x"] + ["СМЕНА: стоп\nПричина: хозяин отпустил"],
+               "partner-strategist": ["СМЕНА: дальше\nПричина: x"] * 4}
+    out = run(dict(session(ids=("h1",)), host={"key": host, "helper": "h1", "tool": "partner_relay"}), replies)
+    assert out["calls"]
+    for c in out["calls"]:
+        assert host not in c["prompt"] and host not in c["label"]

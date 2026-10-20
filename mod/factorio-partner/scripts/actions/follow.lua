@@ -3,6 +3,7 @@
 --   args: distance = 1..32 (по умолчанию 3), duration_s = 1..3600 (по умолчанию 600)
 --   done.detail: {} — когда время вышло. Хозяин ушёл из игры → no_player,
 --   на другую поверхность → not_reachable (ходить между поверхностями нельзя).
+--   Отстал дальше LAG_DIST дольше LAG_TICKS — громкое follow_lag и одно сообщение хозяину.
 local owner = require("scripts.core.owner")
 local util = require("scripts.core.util")
 local path = require("scripts.lib.path")
@@ -31,6 +32,35 @@ M.SAY_FAILED = {
   not_reachable = "Не могу подойти: ты на другой поверхности. Стою.",
 }
 M.OWNER_REQ = "owner_words"
+-- Отставание: тело дальше LAG_DIST клеток от хозяина дольше LAG_TICKS — один раз за отставание
+-- громкое follow_lag и сообщение хозяину в чат; снова — только после того, как догнал (ближе
+-- LAG_DIST / 2).
+M.LAG_DIST = 60
+M.LAG_TICKS = 1800
+M.SAY_LAG = "Отстал на %d клеток: прямой путь не находится, иду в обход."
+M.SAY_LAG_PLAIN = "Отстал на %d клеток, догоняю."
+
+local function lag_check(task, ctx, d, pos, goal)
+  if d <= M.LAG_DIST / 2 then
+    task.lag = nil
+    return
+  end
+  if d <= M.LAG_DIST then return end
+  local lag = task.lag
+  if lag == nil then
+    task.lag = { since = ctx.tick }
+    return
+  end
+  if lag.said or ctx.tick - lag.since < M.LAG_TICKS then return end
+  lag.said = true
+  local st = task.approach
+  local detour = st ~= nil and (st.seg ~= nil or (st.seg_total or 0) > 0 or (st.extends or 0) > 0)
+  local n = math.floor(d + 0.5)
+  ctx.emit("follow_lag", { job = task.job, dist = n, pos = util.pos(pos), owner = util.pos(goal),
+    detour = detour and true or false }, { loud = true })
+  local text = string.format(detour and M.SAY_LAG or M.SAY_LAG_PLAIN, n)
+  pcall(ops.say, { text = text }, { helper_id = task.helper or ctx.helper_id, entity = ctx.entity })
+end
 
 local function stop_walk(e)
   local ws = e.walking_state
@@ -65,6 +95,7 @@ function M.tick(task, ctx)
   local e = ctx.entity
   local pos = util.xy(e.position)
   local d = util.dist(pos, goal)
+  lag_check(task, ctx, d, pos, goal)
   if task.approach == nil and (d <= dist or (task.direct == nil and d <= dist + M.HYSTERESIS)) then
     task.direct = nil
     stop_walk(e)
