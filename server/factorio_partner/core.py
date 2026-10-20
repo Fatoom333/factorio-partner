@@ -1137,8 +1137,32 @@ class Core:
                     await self.packages.on_large_order(box, order)
                 except PartnerError as e:
                     log.info("cannot pause the running package for order %s: %s", order["id"], e.code)
-            return {"order": order, "open": len(self.orders[box]), "to": dest}
+            out = {"order": order, "open": len(self.orders[box]), "to": dest}
+            if qid is None:
+                released = await self._release_by_order(box, dest, seq)
+                if released:
+                    out["released"] = released
+            return out
         return await self._tool("partner_order", helper, key, a, run)
+
+    async def _release_by_order(self, box: str, dest: dict, seq: int) -> list[str]:
+        """A new order of the owner lifts his hold («стоп», «иди сюда») on the bodies it is for: the
+        order may go to the strategist, who has no ``partner_hold``, and a held body never takes his
+        package. The mod checks the message itself (newer than the hold, not a word, not addressed to
+        another helper, one lift per helper); a refusal only means this body stays held."""
+        if box != R.SHARED:
+            ids = [box]
+        else:
+            ids = list(dest.get("helpers") or self.helper_ids())
+        released: list[str] = []
+        for hid in ids:
+            try:
+                r = await self._mod("owner_hold", {"release": True, "seq": seq}, hid, mutating=True)
+            except PartnerError as e:
+                log.info("order said_seq=%s does not lift the hold of %s: %s", seq, hid, e.code)
+                continue
+            released += [x for x in (r.get("released") or []) if isinstance(x, str)]
+        return released
 
     async def op_relay(self, helper, key, to=None, text=None) -> dict:
         """``partner_relay`` — the dispatcher (key ``host``) hands on what the owner typed in the main

@@ -121,6 +121,7 @@ class PackageBridge:
         self._note_sent: dict[str, float] = {}       # helper -> time of the last strategist_note event
         self._note_pending: dict[str, str] = {}      # helper -> the latest note held back by the 30 s limit
         self._posted: dict[str, dict] = {}   # package id -> fields of a started plan not yet written
+        self._held_told: dict[str, str] = {}  # helper -> package the voice was told waits for the owner's word
         self._lock = asyncio.Lock()
 
     # ------------------------------------------------------------------ helpers
@@ -503,7 +504,7 @@ class PackageBridge:
             return paused[0]
         return None
 
-    async def _body_free(self, h: str) -> bool:
+    async def _body_free(self, h: str, pkg: dict | None = None) -> bool:
         st = await self.core._mod("state", {}, h)
         if isinstance(st.get("job"), dict) or (_is_int(st.get("queue")) and st["queue"] > 0):
             return False
@@ -512,7 +513,19 @@ class PackageBridge:
             return False
         hold = await self.core._mod("owner_hold", {}, h)
         held = hold.get("hold") if isinstance(hold.get("hold"), dict) else {}
-        return h not in held
+        if h not in held:
+            self._held_told.pop(h, None)
+            return True
+        if pkg is not None and self._held_told.get(h) != pkg.get("id"):
+            # the owner said «стоп» / «иди сюда» and the package cannot start: he is told once, or he
+            # never learns that the body stands waiting for his word
+            self._held_told[h] = pkg.get("id")
+            kind = held[h].get("kind") if isinstance(held[h], dict) else None
+            self.notify(h, "package_waits", {"package": pkg.get("id"), "name": pkg.get("name"),
+                                             "reason": "owner_hold", "hold": kind,
+                                             "helper": None if h == R.SHARED else h},
+                        roles=(R.VOICE,))
+        return False
 
     async def _maybe_post(self, h: str) -> None:
         if h in self.acked:
@@ -522,7 +535,7 @@ class PackageBridge:
             if tick is None or not 0 <= tick - self.acked[h] < ACK_GRACE_TICKS:
                 del self.acked[h]
         p = self._candidate(h)
-        if p is None or not await self._body_free(h):
+        if p is None or not await self._body_free(h, p):
             return
         try:
             # the file can be edited by hand: what goes to the mod is checked again, like any act
