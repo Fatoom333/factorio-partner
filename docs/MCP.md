@@ -530,8 +530,10 @@ budget, perms, chat, rescale?, work, bodies?, module_errors?, module_errors_last
   - `note` — последняя заметка стратега `{text, ago_s}` (сколько секунд назад) или `null`.
   - `questions` — открытые вопросы хозяину `{id, text, waiting_s, reminded}`; вопрос пилота (раздел
     «Разрешения хозяина») — с `from:"pilot"` и `helper`.
-  - `panel` — последние нажатия хозяина в окне панели (`combat`, `hold`, `resume`, `auto` …) —
-    `[{action, on?, n?, goal?, at}]`; голос видит по ним, что хозяин включил боевой режим или остановил тела.
+  - `panel` — последние нажатия хозяина в окне панели (`combat`, `hold`, `resume`, `auto`, `guard`, `unguard` …) —
+    `[{action, on?, n?, goal?, helper?, radius?, later?, refused?, at}]`; голос видит по ним, что хозяин включил
+    боевой режим, остановил тела или поставил охрану построек (`guard` — рефлекс `evacuate` вокруг места хозяина,
+    мод уже поставил его сам).
 
   Всё в `work` — только этого помощника (`helper` вызова) и без ключей; одинаково для всех ролей
   (у общих голоса и стратега `note`, `questions` и `thoughts` — общие). Тексты (`note`, названия

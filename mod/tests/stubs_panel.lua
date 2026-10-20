@@ -5,7 +5,7 @@
 --   P.attach(player)            -- player.gui.screen, player.toggled[prototype] = bool
 --   P.find(root, name)          -- элемент по имени среди вложенных (или nil)
 --   P.click(player, element)    -- on_gui_click; P.check(player, element, state); P.type_text(...)
---   P.confirm(player, element)  -- on_gui_confirmed
+--   P.confirm(player, element)  -- on_gui_confirmed; P.select(player, element, index) — drop-down
 --   P.shortcut(player)          -- on_lua_shortcut «partner-panel»; P.hotkey(player) — custom-input
 local S = require("stubs")
 
@@ -91,6 +91,12 @@ end
 function P.type_text(player, el, text)
   el.text = text
   return S.fire(defines.events.on_gui_text_changed, { player_index = player.index, element = el })
+end
+
+--- Выбор строки выпадающего списка (drop-down): on_gui_selection_state_changed.
+function P.select(player, el, index)
+  el.selected_index = index
+  return S.fire(defines.events.on_gui_selection_state_changed, { player_index = player.index, element = el })
 end
 
 function P.confirm(player, el)

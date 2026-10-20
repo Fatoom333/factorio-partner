@@ -10,7 +10,11 @@
 -- «Применить» (событие scale); «Все стоп» и «Продолжайте» (то же, что слово хозяина для всех тел:
 -- owner_words) и события hold/resume; флажки «Мысли стратега» (thoughts), «AUTO» с полем цели
 -- (auto), «Боевой режим» (combat: мод сам включает всем телам рефлексы shoot и ammo; запрет
--- `deny` в настройках мода уважается — такой рефлекс не включается, окно пишет почему).
+-- `deny` в настройках мода уважается — такой рефлекс не включается, окно пишет почему);
+-- «Охранять здесь» с полем радиуса (8..64, по умолчанию 50) и выбором тела (по умолчанию — ближайшее
+-- к хозяину): рефлекс evacuate вокруг места хозяина (reflexes/evacuate.lua owner_guard — слово хозяина:
+-- «спросить» не нужно, «нельзя» запрещает) и «Снять охрану» (owner_unguard: идёт эвакуация — снимется
+-- после возврата); события owner_panel{action:"guard"│"unguard", helper, ...}.
 --
 -- Событие owner_panel (без помощника, громкое) шлётся только от хозяина: чужое нажатие, даже
 -- если оно дошло до обработчика, игнорируется, а чужой игрок видит окно «только для хозяина».
@@ -22,6 +26,7 @@ local owner_words = require("scripts.core.owner_words")
 local nameplate = require("scripts.core.nameplate")
 local reflexes = require("scripts.core.reflexes")
 local perms = require("scripts.core.perms")
+local evacuate = require("scripts.reflexes.evacuate")
 
 local M = {}
 M.name = "core.panel"
@@ -199,6 +204,45 @@ local function ids_key(ids)
   return table.concat(ids, ",")
 end
 
+-- ------------------------------------------------------------------ охрана (evacuate)
+
+--- Живые тела для выбора охранника: {id, ...} (порядок окна).
+local function guard_ids()
+  return alive_ids()
+end
+
+local function guard_rows(body, st)
+  local row = body.add{ type = "flow", name = "guard_row", direction = "horizontal" }
+  row.style.horizontal_spacing = 8
+  row.style.vertical_align = "center"
+  row.add{ type = "button", name = M.WINDOW .. "_guard", caption = { "partner-panel.guard" },
+    tooltip = { "partner-panel.guard-tip" } }
+  row.add{ type = "label", caption = { "partner-panel.guard-radius" } }
+  local r = row.add{ type = "textfield", name = M.WINDOW .. "_guard_r", text = tostring(st.guard_r or evacuate.GUARD_RADIUS),
+    numeric = true, allow_decimal = false, allow_negative = false, tooltip = { "partner-panel.guard-radius-tip" } }
+  r.style.width = 50
+  local ids = guard_ids()
+  local items, sel = { { "partner-panel.guard-nearest" } }, 1
+  for i, id in ipairs(ids) do
+    items[#items + 1] = nameplate.display_name(id)
+    if id == st.guard_who then sel = i + 1 end
+  end
+  local who = row.add{ type = "drop-down", name = M.WINDOW .. "_guard_who", items = items, selected_index = sel,
+    tooltip = { "partner-panel.guard-who-tip" } }
+  who.items = items
+  who.selected_index = sel
+  who.tags = { ids = ids_key(ids) }
+  row.add{ type = "button", name = M.WINDOW .. "_unguard", caption = { "partner-panel.unguard" },
+    tooltip = { "partner-panel.unguard-tip" } }
+end
+
+local function clamp_r(v)
+  local n = math.floor(tonumber(v) or evacuate.GUARD_RADIUS)
+  if n < evacuate.GUARD_MIN then return evacuate.GUARD_MIN end
+  if n > evacuate.GUARD_MAX then return evacuate.GUARD_MAX end
+  return n
+end
+
 local function title_bar(w)
   local bar = w.add{ type = "flow", name = "bar", direction = "horizontal" }
   bar.drag_target = w
@@ -290,6 +334,8 @@ local function build_owner(p, st)
   body.add{ type = "checkbox", name = M.WINDOW .. "_combat", state = combat_is_on(),
     caption = { "partner-panel.combat" }, tooltip = { "partner-panel.combat-tip" } }
 
+  guard_rows(body, st)
+
   local note = body.add{ type = "label", name = M.WINDOW .. "_note", caption = "" }
   note.style.single_line = false
   note.style.maximal_width = M.STATUS_WIDTH + 80
@@ -324,10 +370,92 @@ local function toggle(p)
   if window_of(p) ~= nil then close(p) else open(p) end
 end
 
-local function set_note(w, key, extra)
+local function set_note(w, key, ...)
   local note = find(w, M.WINDOW .. "_note")
   if note == nil then return end
-  if key == nil then note.caption = "" else note.caption = { key, extra } end
+  if key == nil then note.caption = "" else note.caption = { key, ... } end
+end
+
+--- Тело для охраны: выбранное в окне (живое, на поверхности хозяина) или ближайшее к хозяину
+--- (guarded — только из тех, у кого охрана есть). → id, тело │ nil.
+local function chosen_body(st, ch, guarded)
+  if ch == nil then
+    -- хозяина нет на карте (погиб, вид издалека): снять охрану можно — выбранному или первому с охраной
+    if not guarded then return nil end
+    for _, id in ipairs(guard_ids()) do
+      local rec, e = registry.alive(id)
+      if rec and e ~= nil and e.valid and (id == st.guard_who or (st.guard_who == nil and evacuate.guarding(id))) then
+        return id, e
+      end
+    end
+    return nil
+  end
+  local best, be, bd
+  for _, id in ipairs(guard_ids()) do
+    local rec, e = registry.alive(id)
+    if rec and e ~= nil and e.valid and e.surface == ch.surface then
+      if st.guard_who ~= nil then
+        if id == st.guard_who then return id, e end
+      elseif not guarded or evacuate.guarding(id) then
+        local d = util.dist(util.xy(e.position), util.xy(ch.position))
+        if bd == nil or d < bd then best, be, bd = id, e, d end
+      end
+    end
+  end
+  return best, be
+end
+
+local function owner_body(p)
+  local ok, ch = pcall(function() return p.character end)
+  if ok and ch ~= nil and ch.valid then return ch end
+  return nil
+end
+
+local function on_guard(p, w, st)
+  local field = find(w, M.WINDOW .. "_guard_r")
+  local r = clamp_r(field and field.text or st.guard_r)
+  st.guard_r = r
+  if field then field.text = tostring(r) end
+  local ch = owner_body(p)
+  local id, h = chosen_body(st, ch, false)
+  if id == nil then
+    set_note(w, "partner-panel.note-no-body")
+    emit({ action = "guard", refused = "no_helper" })
+    return
+  end
+  local ok, code, text, data = evacuate.owner_guard(id, h, util.xy(ch.position), r)
+  if ok then
+    set_note(w, "partner-panel.note-guard", nameplate.display_name(id), r)
+    emit({ action = "guard", helper = id, center = util.pos(data.center), radius = r })
+    return
+  end
+  if code == "owner_forbids" then
+    set_note(w, "partner-panel.note-guard-denied", perms.label(data and data.perm or "build"))
+  else
+    set_note(w, "partner-panel.note-guard-failed", text or code)
+  end
+  emit({ action = "guard", helper = id, refused = code, why = text })
+end
+
+local function on_unguard(p, w, st)
+  local id, h = chosen_body(st, owner_body(p), true)
+  if id == nil or not evacuate.guarding(id) then
+    set_note(w, "partner-panel.note-unguard-none")
+    return
+  end
+  local res, code, text = evacuate.owner_unguard(id, h)
+  if res == "removed" then
+    set_note(w, "partner-panel.note-unguard", nameplate.display_name(id))
+    emit({ action = "unguard", helper = id })
+  elseif res == "later" then
+    set_note(w, "partner-panel.note-unguard-later", nameplate.display_name(id))
+    emit({ action = "unguard", helper = id, later = true })
+  elseif res == "none" then
+    set_note(w, "partner-panel.note-unguard-none")
+  else
+    set_note(w, "partner-panel.note-guard-failed", text or code)
+    emit({ action = "unguard", helper = id, refused = code, why = text })
+  end
 end
 
 -- ------------------------------------------------------------------ обработчики событий
@@ -395,7 +523,22 @@ local function on_click(e)
     apply_word("продолжай")
     emit({ action = "resume" })
     set_note(w, nil)
+  elseif name == "guard" then
+    on_guard(p, w, st)
+  elseif name == "unguard" then
+    on_unguard(p, w, st)
   end
+end
+
+--- Выбор тела для охраны: первая строка — «ближайшее», дальше — тела в порядке окна.
+local function on_selected(e)
+  if own_name(e.element) ~= "guard_who" then return end
+  local p = player_of(e)
+  if p == nil or not owner.is_owner(p) then return end
+  local ids = {}
+  for id in tostring((e.element.tags or {}).ids or ""):gmatch("[^,]+") do ids[#ids + 1] = id end
+  local idx = tonumber(e.element.selected_index) or 1
+  state_of(p.index).guard_who = ids[idx - 1]
 end
 
 local function on_checked(e)
@@ -431,7 +574,15 @@ local function on_checked(e)
 end
 
 local function on_text(e)
-  if own_name(e.element) ~= "goal" then return end
+  local name = own_name(e.element)
+  if name == "guard_r" then
+    local p = player_of(e)
+    if p == nil or not owner.is_owner(p) then return end
+    local n = tonumber(e.element.text or "")
+    if n ~= nil then state_of(p.index).guard_r = clamp_r(n) end
+    return
+  end
+  if name ~= "goal" then return end
   local p = player_of(e)
   if p == nil or not owner.is_owner(p) then return end
   state_of(p.index).goal = util.utf8_head(util.one_line(e.element.text or ""), M.GOAL_MAX)
@@ -471,6 +622,7 @@ M.events = {
   [defines.events.on_gui_click] = on_click,
   [defines.events.on_gui_checked_state_changed] = on_checked,
   [defines.events.on_gui_text_changed] = on_text,
+  [defines.events.on_gui_selection_state_changed] = on_selected,
   [defines.events.on_gui_confirmed] = on_confirmed,
   [defines.events.on_gui_location_changed] = on_moved,
   [defines.events.on_player_removed] = on_removed,
@@ -490,7 +642,9 @@ local function refresh(p, st)
   if not owner.is_owner(p) then return end
   local rows = find(w, "rows")
   local ids = listed_ids()
-  if rows == nil or (rows.tags or {}).ids ~= ids_key(ids) then
+  local who = find(w, M.WINDOW .. "_guard_who")
+  if rows == nil or (rows.tags or {}).ids ~= ids_key(ids)
+      or (who ~= nil and (who.tags or {}).ids ~= ids_key(guard_ids())) then
     open(p)
     return
   end

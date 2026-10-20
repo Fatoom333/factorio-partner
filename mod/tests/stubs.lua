@@ -160,7 +160,7 @@ local EVENT_NAMES = {
   "on_player_toggled_map_editor", "on_gui_click", "on_string_translated", "on_tick_paused",
   "on_entity_cloned", "on_space_platform_built_entity", "on_space_platform_mined_entity",
   "on_lua_shortcut", "on_gui_checked_state_changed", "on_gui_text_changed", "on_gui_confirmed",
-  "on_gui_location_changed",
+  "on_gui_location_changed", "on_gui_selection_state_changed",
 }
 
 local function table_size_impl(t)
@@ -577,7 +577,9 @@ function S.entity(surface, opts)
     unit_number = opts.unit_number or S._next_unit,
     health = opts.health or proto.max_health,
     max_health = proto.max_health,
-    quality = { name = "normal", level = 0 },
+    -- create_entity{quality=...}: строка или LuaQualityPrototype, по умолчанию normal
+    quality = { name = (type(opts.quality) == "string" and opts.quality)
+      or (type(opts.quality) == "table" and opts.quality.name) or "normal", level = 0 },
     prototype = proto,
   }
   if io_field ~= nil then e[io_field] = io end

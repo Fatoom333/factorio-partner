@@ -52,6 +52,37 @@ function M.is_normal(q)
   return ok and name == M.NORMAL
 end
 
+--- Имя качества (строка | LuaQualityPrototype | nil) → строка; nil — normal.
+function M.quality_name(q)
+  if q == nil then return M.NORMAL end
+  if type(q) == "string" then return q end
+  local ok, name = pcall(function() return q.name end)
+  if ok and type(name) == "string" then return name end
+  return M.NORMAL
+end
+
+--- Известное движку качество (prototypes.quality)?
+function M.known_quality(q)
+  if q == nil or q == M.NORMAL then return true end
+  if type(q) ~= "string" then return false end
+  local ok, p = pcall(function() return prototypes.quality[q] end)
+  return ok and p ~= nil
+end
+
+--- Ключ предмета с качеством: "name" для normal, "name@quality" для другого.
+function M.qkey(name, quality)
+  local q = M.quality_name(quality)
+  if q == M.NORMAL then return name end
+  return name .. "@" .. q
+end
+
+--- Ключ из qkey → name, quality. "@" без известного качества за ним — часть имени.
+function M.split_qkey(key)
+  local name, q = key:match("^(.+)@([^@]+)$")
+  if name ~= nil and M.known_quality(q) then return name, q end
+  return key, M.NORMAL
+end
+
 function M.item_proto(name)
   if type(name) ~= "string" then return nil end
   return prototypes.item[name]
@@ -105,9 +136,28 @@ function M.counts_of(inv, names)
   return out
 end
 
-function M.count(inv, name)
+function M.count(inv, name, quality)
   if inv == nil or not inv.valid then return 0 end
-  return inv.get_item_count{ name = name, quality = M.NORMAL }
+  return inv.get_item_count{ name = name, quality = quality or M.NORMAL }
+end
+
+--- Содержимое инвентаря всех качеств → {qkey = count} (см. M.qkey).
+function M.counts_q(inv)
+  local out = {}
+  if inv == nil or not inv.valid then return out end
+  for k, v in pairs(inv.get_contents()) do
+    local name, count, quality
+    if type(v) == "table" then
+      name, count, quality = v.name, v.count, v.quality
+    else
+      name, count = k, v
+    end
+    if type(name) == "string" and type(count) == "number" and count > 0 then
+      local key = M.qkey(name, quality)
+      out[key] = (out[key] or 0) + count
+    end
+  end
+  return out
 end
 
 --- Положительная разница after - before → {name=count} (пустая таблица, если прироста нет).
@@ -167,10 +217,10 @@ end
 
 -- ------------------------------------------------------------------ перенос
 
-local function spill(h, name, count)
+local function spill(h, name, count, quality)
   if count <= 0 or h == nil or not h.valid then return end
   h.surface.spill_item_stack{
-    position = h.position, stack = { name = name, count = count, quality = M.NORMAL },
+    position = h.position, stack = { name = name, count = count, quality = quality or M.NORMAL },
     enable_looted = true, allow_belts = false,
   }
 end
@@ -214,21 +264,24 @@ end
 --- dst = {inv = LuaInventory} | {entity = LuaEntity} (insert сущности сам выберет слот:
 --- топливо, патроны, сундук). h — тело помощника (куда высыпать невозвращённый остаток).
 --- Предметы с данными — только в настоящий главный инвентарь (data_inventory), целыми стаками.
+--- quality — только для своих вызовов мода (возврат построек рефлексом evacuate), простые предметы.
 --- → сколько реально оказалось в приёмнике, split (см. move_stacks).
-function M.move(src, dst, name, count, h)
+function M.move(src, dst, name, count, h, quality)
   if count == nil or count <= 0 or src == nil or not src.valid then return 0, false end
+  local q = quality or M.NORMAL
   if M.has_data(name) then
+    if q ~= M.NORMAL then return 0, false end
     local dst_inv = dst.inv or M.data_inventory(dst.entity)
     return M.move_stacks(src, dst_inv, name, count)
   end
-  local removed = src.remove{ name = name, count = count, quality = M.NORMAL }
+  local removed = src.remove{ name = name, count = count, quality = q }
   if removed <= 0 then return 0, false end
   local target = dst.inv or dst.entity
-  local ins = target.insert{ name = name, count = removed, quality = M.NORMAL }
+  local ins = target.insert{ name = name, count = removed, quality = q }
   local left = removed - ins
   if left > 0 then
-    local back = src.insert{ name = name, count = left, quality = M.NORMAL }
-    if back < left then spill(h, name, left - back) end
+    local back = src.insert{ name = name, count = left, quality = q }
+    if back < left then spill(h, name, left - back, q) end
   end
   return ins, false
 end

@@ -525,8 +525,15 @@ def test_evacuate_spec_is_checked():
            "names": ["electric-mining-drill", "assembling-machine-2"], "threat_radius": 60,
            "return_after_s": 600, "rebuild": False}
     assert V.check_reflexes([box]) == [box]
+    assert V.check_reflexes([evac(radius=64)]) == [evac(radius=64)]
+    side = dict(box, area={"left_top": {"x": 0, "y": 0}, "right_bottom": {"x": 128, "y": 128}})
+    assert V.check_reflexes([side]) == [side]
+    # quality on place is the mod's own argument (the restore of evacuate), never an agent's
+    with pytest.raises(PartnerError):
+        V.check_act("place", {"item": "iron-chest", "pos": {"x": 1, "y": 2}, "quality": "rare"})
     for bad, code in (
-        (evac(radius=49), "limit"),
+        (evac(radius=65), "limit"),
+        (dict(box, area={"left_top": {"x": 0, "y": 0}, "right_bottom": {"x": 129, "y": 1}}), "limit"),
         (evac(radius=0), "bad_args"),
         ({"type": "evacuate", "center": {"x": 0, "y": 0}}, "bad_args"),
         ({"type": "evacuate", "radius": 10}, "bad_args"),

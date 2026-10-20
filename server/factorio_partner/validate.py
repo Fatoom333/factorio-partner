@@ -585,7 +585,7 @@ def check_reflexes(rset: Any) -> list:
 
 
 # the evacuate reflex (ACTIONS.md «evacuate»): the area it guards and how it watches and returns
-EVACUATE_RADIUS_MAX = 48            # center + radius ≤ 48
+EVACUATE_RADIUS_MAX = 64            # center + radius ≤ 64; area side ≤ AREA_SIDE_MAX (128)
 EVACUATE_NAMES_MAX = 32
 EVACUATE_BOUNDS = {"threat_radius": (10, 120), "return_after_s": (30, 1800)}
 _EVACUATE_FIELDS = ("type", "area", "center", "radius", "names", "threat_radius", "return_after_s",
@@ -1117,7 +1117,8 @@ def rescale_tasks(field: str, v: Any) -> list:
     return out
 
 
-PANEL_ACTIONS = ("scale", "thoughts", "auto", "combat", "hold", "resume")
+PANEL_ACTIONS = ("scale", "thoughts", "auto", "combat", "hold", "resume", "guard", "unguard")
+PANEL_REFUSALS = re.compile(r"^[a-z_]{1,32}$")
 PANEL_GOAL_MAX = 100
 
 
@@ -1141,4 +1142,17 @@ def panel_event(data: Any) -> dict | None:
         if act == "auto" and isinstance(goal, str) and goal.strip():
             g = " ".join(goal.split())[:PANEL_GOAL_MAX]
             out["goal"] = g.replace("«", '"').replace("»", '"')
+    elif act in ("guard", "unguard"):
+        # the owner's guard button: the mod already set (or refused) the evacuate reflex itself
+        h = data.get("helper")
+        if isinstance(h, str) and re.match(r"^[a-z0-9_-]{1,16}$", h):
+            out["helper"] = h
+        r = data.get("radius")
+        if act == "guard" and isinstance(r, (int, float)) and not isinstance(r, bool) and 1 <= r <= EVACUATE_RADIUS_MAX:
+            out["radius"] = r
+        if data.get("later") is True:
+            out["later"] = True
+        code = data.get("refused")
+        if isinstance(code, str) and PANEL_REFUSALS.match(code):
+            out["refused"] = code
     return out

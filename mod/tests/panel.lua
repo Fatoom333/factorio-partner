@@ -20,6 +20,7 @@ local perms_stub = {
   add_spend = function(keys) return keys end,
   dig_keys = function(_, keys) return keys or {} end,
   owner_built = function() return false end,
+  label = function(key) return "подпись " .. tostring(key) end,
 }
 
 local function setup()
@@ -249,6 +250,30 @@ S.suite("panel", {
       perms_table = { ["perm-shoot"] = "ask", ["perm-turrets"] = "ask" }
       P.check(p, el(p, "partner_panel_combat"), true)
       S.eq(#refl.get("h1"), 2)
+  end },
+
+  { "охрана: строка окна, радиус 50, «нельзя» в настройках — отказ с причиной; тела нет — окно пишет почему", function()
+      local p = setup()
+      local refl = require("scripts.core.reflexes")
+      P.shortcut(p)
+      S.eq(el(p, "partner_panel_guard_r").text, "50")
+      S.ok(el(p, "partner_panel_unguard") ~= nil)
+      S.eq(el(p, "partner_panel_guard_who").selected_index, 1, "по умолчанию — ближайшее тело")
+      perms_table["perm-build"] = "deny"
+      P.click(p, el(p, "partner_panel_guard"))
+      S.eq(last_panel().data.refused, "owner_forbids")
+      local note = el(p, "partner_panel_note").caption
+      S.eq({ note[1], note[2] }, { "partner-panel.note-guard-denied", "подпись build" })
+      S.eq(refl.get("h1"), nil, "охрана не включена")
+      perms_table = { ["perm-build"] = "ask", ["perm-deconstruct-owner"] = "ask" }
+      P.click(p, el(p, "partner_panel_guard"))
+      S.eq(last_panel().data, { action = "guard", helper = "h1", center = { x = 0, y = 0 }, radius = 50 })
+      S.eq(refl.get("h1")[1].type, "evacuate")
+      S.okr(S.req("helper_remove", {}, "h1"))
+      B.tick(61)
+      P.click(p, el(p, "partner_panel_guard"))
+      S.eq(last_panel().data, { action = "guard", refused = "no_helper" })
+      S.eq(el(p, "partner_panel_note").caption[1], "partner-panel.note-no-body")
   end },
 
   { "раз в секунду статусы обновляются, список тел изменился — окно собирается заново", function()

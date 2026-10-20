@@ -1,19 +1,27 @@
 -- Рефлекс `evacuate` — разобрать постройки области, пока к ней идут враги, и поставить их обратно,
 -- когда станет тихо. Контракт: docs/EVENTS.md (evacuate_started, evacuated, evacuate_missing,
 -- evacuate_restored, reflex_resumed), docs/ACTIONS.md (deconstruct, place, insert, walk),
--- PROTOCOL.md §6.5 (только честная игра), §6.7 (живое — только видимое).
+-- PROTOCOL.md §6.5 (только честная игра), §6.7 (живое — только видимое), §6.11 (качество).
 --
---   evacuate { area:{left_top, right_bottom} (сторона ≤ 96) │ center:{x, y} + radius (1..48),
+--   evacuate { area:{left_top, right_bottom} (сторона ≤ 128) │ center:{x, y} + radius (1..64),
 --              names?:[имя постройки] (≤ 32; только эти, в этом порядке), threat_radius?=40 (10..120),
 --              return_after_s?=180 (30..1800), rebuild?=true }
 --   Один на помощника. Включить или сменить при hold хозяина нельзя (owner_hold); убрать или сменить
 --   область, пока идёт эвакуация или постройки в карманах ждут возврата (фаза не watch), — bad_args.
+--   Включить или сменить область запросом агента можно, только если центр области не дальше MAX_DIST
+--   клеток от тела (too_far с расстоянием). Кнопка «Охранять здесь» в окне хозяина (M.owner_guard) —
+--   слово хозяина: без этого предела, без hold, «спросить» не нужно, «нельзя» всё равно запрещает.
 --
 -- * Снимок. При включении (и при смене области или names) мод запоминает постройки своей силы в
 --   области: имя, предмет, позиция, направление, вход/выход подземной ленты и погрузчика, рецепт
---   (сборочные машины), качество, модули внутри. Без предмета для постановки, некопаемое, техника с
---   водителем и персонажи в снимок не идут. Больше MAX_ENTITIES — отказ limit. Снимок — простые
---   таблицы в storage.evacuate[helper], сейв он переживает.
+--   (сборочные машины), качество, модули внутри (с качеством) и настройки, которые игрок может
+--   скопировать (Shift+ПКМ/ЛКМ) или унести чертежом: фильтры и режим фильтра манипуляторов и
+--   погрузчиков, приоритеты и фильтр разделителей, логистические секции сундуков-запросчиков и буферов,
+--   параметры комбинаторов, условия цепей, ограничение сундука, качество рецепта, провода (красный,
+--   зелёный, медный — к каким постройкам и разъёмам, в том числе к себе же).
+--   Без предмета для постановки, некопаемое, техника с водителем и персонажи в снимок не идут.
+--   Больше MAX_ENTITIES — отказ limit. Снимок — простые таблицы в storage.evacuate[helper], сейв он
+--   переживает.
 -- * Угроза — враг силы, враждебной силе тела (кусаки, пентаподы, разрушитель и его сегменты; черви
 --   стоят на месте, гнёзда сами не ходят — не угроза), ближе threat_radius к краю области и видимый
 --   помощнику. Любой такой враг считается, в том числе кусаки, что стоят у своего гнезда: у гнёзд
@@ -26,26 +34,34 @@
 --   снимка — ценные первыми (порядок names, иначе машины и буры, потом турели и энергия, сундуки,
 --   манипуляторы, трубы, ленты, столбы). Не трогаются (kept): постройки, разбор которых хозяин
 --   теперь запретил (perms «нельзя»), и сундуки с содержимым (оно не влезет в карманы). Постройки,
---   которой уже нет, — lost. После — отступление обычной ходьбой прочь от врага (точки — как у flee).
+--   которой уже нет, — lost; если её взял другой помощник (она у него в storage.evacuate как taken
+--   или его задача разбора её ждёт) — молча пропускается: области двух помощников могут пересекаться,
+--   каждый возвращает своё. После — отступление обычной ходьбой прочь от врага (точки — как у flee).
 --   Идёт и при hold хозяина: это защита, как flee. Пока идёт отступление flee, разбор ждёт; flee
 --   прервал разбор больше MAX_FLEE_CUTS раз — враг уже у построек, эвакуация кончается (reason
 --   "threatened"), остальное — left. Агент снял задачи разбора сам — эвакуация кончается (reason
 --   "cancelled", его дело он решает сам; "owner_stop" — их снял «стоп» хозяина).
 -- * Возврат. Врага нет return_after_s подряд, hold нет → (rebuild) задачи `place` по снимку из
---   карманов (рецепт — тем же place), модули — задачей `insert`. Ставится только то, что разобрало
---   это тело (taken); разрушенное (lost) не ставится и не просится. Постройки другого качества мод
---   не ставит (quality — они в карманах). Чего нет в карманах — evacuate_missing{items}. Стройку
---   хозяин запретил (build «нельзя») — ничего не ставится, всё в left. Настройки, которые place не
---   возвращает (фильтры, запросы, провода, комбинаторы), теряются: такие постройки — в reset.
---   «Стоп» хозяина посреди возврата — возврат ждёт его слова и потом продолжается с того, что
---   осталось. Потом снятые задачи ставятся снова: reflex_resumed{type:"evacuate"} (как после flee:
---   агент поставил своё — возврат молча отменяется; hold — reason "owner_hold"). Враг снова у
---   области во время возврата — задачи постановки снимаются, эвакуация заново.
+--   карманов (рецепт и качество — тем же place), модули — задачами `insert` (по качеству). Ставится
+--   только то, что разобрало это тело (taken); разрушенное (lost) не ставится и не просится. Карманы
+--   считаются по (имя, качество): чего нет — evacuate_missing{items} (ключ "имя" или "имя@качество").
+--   Стройку хозяин запретил (build «нельзя») — ничего не ставится, всё в left. Настройки снимка
+--   мод возвращает поставленной постройке сам, провода — когда весь возврат кончился и обе постройки
+--   стоят (вернул или не трогал); провод к постройке, которой больше нет, и настройка, которую движок
+--   не принял, — постройка в reset (почему — reset_why). «Стоп» хозяина посреди возврата — возврат ждёт
+--   его слова и потом продолжается с того, что осталось. Потом снятые задачи ставятся снова:
+--   reflex_resumed{type:"evacuate"} (как после flee: агент поставил своё — возврат молча отменяется;
+--   hold — reason "owner_hold"). Враг снова у области во время возврата — задачи постановки
+--   снимаются, эвакуация заново.
+-- * Снять охрану кнопкой хозяина (M.owner_unguard): в фазе watch рефлекс уходит из набора сразу;
+--   иначе — после возврата (идущий разбор кончается reason "unguarded", новых эвакуаций до того нет,
+--   разобранное не бросается в карманах), итог evacuate_restored несёт off:true.
 -- * События (громкие): evacuate_started{area, threat:{name, pos, dist}},
 --   evacuated{taken, lost, left?, kept?, reason?}, evacuate_missing{items},
---   evacuate_restored{placed, missing, failed?, left?, quality?, reset?, reason?};
---   taken/lost/left/kept/placed/failed/quality/reset — {имя постройки = число}, missing/items —
---   {имя предмета = число}. left в evacuate_restored — что осталось в карманах; reason "dropped" —
+--   evacuate_restored{placed, missing, failed?, left?, reset?, reset_why?, off?, reason?};
+--   taken/lost/left/kept/placed/failed/reset — {имя постройки = число}, missing/items —
+--   {ключ предмета = число}, reset_why — {имя постройки = [причина]} ("wire_to_gone", "wire",
+--   "settings", "modules", "lossy"). left в evacuate_restored — что осталось в карманах; reason "dropped" —
 --   снимок забыт (рефлекс убрали, сменили область в спокойной фазе, удалили помощника), а
 --   разобранное осталось в карманах; "owner_forbids" — стройку запретил хозяин.
 -- * Разрешения хозяина — при включении (scripts/core/reflexes.lua def.perms): разбор построек
@@ -57,6 +73,7 @@ local err = require("scripts.core.err")
 local events = require("scripts.core.events")
 local jobs = require("scripts.core.jobs")
 local perms = require("scripts.core.perms")
+local reflexes = require("scripts.core.reflexes")
 local vis = require("scripts.core.vis")
 local inv = require("scripts.lib.inventory")
 local B = require("scripts.lib.build")
@@ -69,9 +86,12 @@ M.name = "reflexes.evacuate"
 M.REQ = "reflex:evacuate"      -- req задач разбора, постановки и отступления (виден в `jobs`)
 M.RESUME_REQ = "resume:evacuate"
 M.MAX_ENTITIES = 200           -- построек в снимке
-M.MAX_RADIUS = 48
-M.MAX_SIDE = 96
+M.MAX_RADIUS = 64
+M.MAX_SIDE = 128
 M.MAX_NAMES = 32
+M.MAX_DIST = 150               -- центр области от тела, когда evacuate включает агент
+M.GUARD_RADIUS = 50            -- кнопка хозяина: радиус по умолчанию и его границы
+M.GUARD_MIN, M.GUARD_MAX = 8, 64
 M.BATCH = 8                    -- своих задач в очереди тела одновременно
 M.MAX_FAILS = 2                -- столько раз не разобралась — дальше не пробуем
 M.MAX_FLEE_CUTS = 3            -- столько раз flee прервал разбор — дальше не лезем к врагу
@@ -81,6 +101,8 @@ M.RESUME_MAX = 4
 M.SCAN = 200                   -- событий за один просмотр буфера
 M.WATCH_EVERY = 60             -- тиков между проверками угрозы, пока всё спокойно
 M.FORCES_EVERY = 3600          -- тиков между пересчётами враждебных сил
+M.MAX_WIRES = 64               -- проводов одной постройки в снимке
+M.MAX_FILTERS = 64             -- ячеек фильтра одной постройки в снимке
 M.THREAT_TYPES = { "unit", "spider-unit", "segmented-unit", "segment" }
 
 -- Ценность постройки по типу: меньше — разбирается раньше.
@@ -99,21 +121,50 @@ M.RANK = {
 M.RANK_OTHER = 4
 
 local CONTAINERS = { container = true, ["logistic-container"] = true }
--- постройки, у которых всё дело — в настройках (place их не вернёт)
-local SETTINGS_TYPES = {
-  ["constant-combinator"] = true, ["decider-combinator"] = true, ["arithmetic-combinator"] = true,
-  ["selector-combinator"] = true, ["programmable-speaker"] = true, ["power-switch"] = true,
-  ["display-panel"] = true,
+-- постройки, чьи настройки мод не переносит (текст, звук): возвращаются без них, reset "lossy"
+-- (и прочие, чьи настройки снимок не знает: имя и лимит станции, сигналы роботопорта и семафоров,
+-- бесконечные сундуки и трубы, посадочная площадка и хаб платформы)
+local LOSSY_TYPES = {
+  ["programmable-speaker"] = true, ["display-panel"] = true, ["train-stop"] = true, roboport = true,
+  ["rail-signal"] = true, ["rail-chain-signal"] = true, ["infinity-container"] = true, ["infinity-pipe"] = true,
+  ["cargo-landing-pad"] = true, ["space-platform-hub"] = true,
 }
 -- вход/выход: create_entity{type=...} (place args.type)
 local IO_TYPES = { ["underground-belt"] = "belt_to_ground_type", loader = "loader_type", ["loader-1x1"] = "loader_type" }
 
+-- настройки постройки (свойства LuaEntity) по типу, в порядке записи
+local ENTITY_PROPS = {
+  inserter = { "use_filters", "inserter_filter_mode", "inserter_stack_size_override", "inserter_spoil_priority" },
+  loader = { "use_filters", "loader_filter_mode" },
+  ["loader-1x1"] = { "use_filters", "loader_filter_mode" },
+  splitter = { "splitter_input_priority", "splitter_output_priority" },
+  ["lane-splitter"] = { "splitter_input_priority", "splitter_output_priority" },
+  ["logistic-container"] = { "request_from_buffers" },
+  ["power-switch"] = { "power_switch_state" },
+}
+local FILTER_TYPES = { inserter = true, loader = true, ["loader-1x1"] = true }
+local SPLITTERS = { splitter = true, ["lane-splitter"] = true }
+-- комбинаторы: весь смысл — в parameters
+local COMBINATORS = { ["arithmetic-combinator"] = true, ["decider-combinator"] = true, ["selector-combinator"] = true }
+-- условия и режимы цепей обычных построек (LuaGenericOnOffControlBehavior и наследники); что у
+-- постройки не бывает, движок не даёт прочесть — такое поле не попадает в снимок
+local CB_PROPS = {
+  "circuit_enable_disable", "circuit_condition", "connect_to_logistic_network", "logistic_condition",
+  "circuit_set_filters", "circuit_read_hand_contents", "circuit_hand_read_mode", "circuit_set_stack_size",
+  "circuit_stack_control_signal", "read_contents", "read_contents_mode", "circuit_read_resources",
+  "resource_read_mode", "circuit_set_recipe", "circuit_read_contents", "include_in_crafting", "include_fuel",
+  "circuit_read_ingredients", "circuit_read_recipe_finished", "circuit_recipe_finished_signal",
+  "circuit_read_working", "circuit_working_signal", "use_colors", "color_mode", "output_signal",
+}
+
 -- ------------------------------------------------------------------ состояние
 
 --- storage.evacuate[helper] = { key, surface, box, list = {запись снимка, ...}, phase, ... }
---- запись снимка: { name, item, count, pos, dir, io?, unit, quality, recipe?, modules?, lossy?, rank,
----                  state, fails, cuts, kept? }
---- state: "present" (стоит) │ "taken" (разобрал это тело, в карманах) │ "lost" (уничтожена до разбора).
+--- запись снимка: { name, item, count, pos, dir, io?, unit, quality, recipe?, modules?, settings?,
+---                  wires?, lossy?, rank, state, fails, cuts, kept? }
+--- modules — {ключ предмета = число} (inv.qkey: "имя" │ "имя@качество").
+--- state: "present" (стоит) │ "taken" (разобрал это тело, в карманах) │ "lost" (уничтожена до разбора)
+---        │ "other" (её взял другой помощник — вернёт он).
 --- phase: "watch" │ "evac" │ "retreat" │ "away" │ "restore".
 local function all()
   local s = storage.evacuate
@@ -156,6 +207,7 @@ local function box_dist(p, b)
 end
 
 local function prop(obj, key)
+  if obj == nil then return nil end
   local ok, v = pcall(function() return obj[key] end)
   if ok then return v end
   return nil
@@ -178,6 +230,226 @@ local function count_state(st, state)
   return out
 end
 
+-- ------------------------------------------------------------------ настройки построек
+
+--- Имя прототипа: строка │ LuaPrototype │ {name=…} → строка │ nil.
+local function nm(x)
+  if type(x) == "string" then return x end
+  local v = prop(x, "name")
+  if type(v) == "string" then return v end
+  return nil
+end
+
+--- Фильтр предмета (строка, ItemFilter, ItemIDAndQualityIDPair, LuaItemPrototype) → {name, quality?, comparator?}.
+local function plain_filter(f)
+  if f == nil then return nil end
+  if type(f) == "string" then return { name = f } end
+  local name = nm(prop(f, "name"))
+  if name == nil then name = nm(f) end
+  if name == nil then return nil end
+  local out = { name = name }
+  local q = nm(prop(f, "quality"))
+  if q ~= nil then out.quality = q end
+  local c = prop(f, "comparator")
+  if type(c) == "string" then out.comparator = c end
+  return out
+end
+
+local function read_props(obj, keys)
+  local out = {}
+  for _, k in ipairs(keys) do
+    local v = util.plain(prop(obj, k))
+    if v ~= nil then out[k] = v end
+  end
+  return or_nil(out)
+end
+
+--- Логистические секции (LuaLogisticSections или секции постоянного комбинатора) → список │ nil.
+local function read_sections(holder)
+  local n = prop(holder, "sections_count")
+  if type(n) ~= "number" or n <= 0 then return nil end
+  local out = {}
+  for i = 1, n do
+    local ok, s = pcall(function() return holder.get_section(i) end)
+    if ok and s ~= nil and prop(s, "is_manual") ~= false then
+      local g = prop(s, "group")
+      out[#out + 1] = {
+        group = type(g) == "string" and g or "", active = prop(s, "active"), multiplier = prop(s, "multiplier"),
+        filters = util.plain(prop(s, "filters")) or {},
+      }
+    end
+  end
+  return or_nil(out)
+end
+
+--- Записать секции; → true │ false (что-то движок не принял).
+local function write_sections(holder, list)
+  local ok_all = true
+  for i, rec in ipairs(list) do
+    local ok = pcall(function()
+      local group = rec.group ~= "" and rec.group or nil
+      local s
+      if i <= holder.sections_count then s = holder.get_section(i) else s = holder.add_section(group) end
+      if s == nil then error("no section") end
+      if group ~= nil and s.group ~= group then s.group = group end
+      if group == nil and next(rec.filters or {}) ~= nil then s.filters = rec.filters end
+      if rec.active ~= nil then s.active = rec.active end
+      if rec.multiplier ~= nil then s.multiplier = rec.multiplier end
+    end)
+    if not ok then ok_all = false end
+  end
+  return ok_all
+end
+
+--- Настройки управления цепью (LuaControlBehavior) → таблица │ nil. wired — у постройки есть
+--- красные или зелёные провода (без них условия цепи ничего не значат).
+local function read_cb(e, wired)
+  local ok, cb = pcall(function() return e.get_control_behavior() end)
+  if not ok or cb == nil then return nil end
+  if COMBINATORS[e.type] then
+    local p = util.plain(prop(cb, "parameters"))
+    return p ~= nil and { parameters = p } or nil
+  end
+  if e.type == "constant-combinator" then
+    return { enabled = prop(cb, "enabled"), sections = read_sections(cb) }
+  end
+  if not wired and prop(cb, "connect_to_logistic_network") ~= true then return nil end
+  local props = read_props(cb, CB_PROPS)
+  return props ~= nil and { props = props } or nil
+end
+
+local function read_settings(e, wired)
+  local out = {}
+  local keys = ENTITY_PROPS[e.type]
+  if keys ~= nil then out.props = read_props(e, keys) end
+  if FILTER_TYPES[e.type] then
+    local n = prop(e, "filter_slot_count")
+    if type(n) == "number" and n > 0 then
+      local list = {}
+      for i = 1, math.min(n, M.MAX_FILTERS) do
+        local ok, f = pcall(function() return e.get_filter(i) end)
+        local pf = ok and plain_filter(f) or nil
+        if pf ~= nil then list[#list + 1] = { i = i, f = pf } end
+      end
+      out.filters = or_nil(list)
+    end
+  end
+  if SPLITTERS[e.type] then out.splitter_filter = plain_filter(prop(e, "splitter_filter")) end
+  if e.type == "logistic-container" then
+    local ok, s = pcall(function() return e.get_logistic_sections() end)
+    if ok and s ~= nil then out.sections = read_sections(s) end
+  end
+  if CONTAINERS[e.type] then
+    -- ограничение сундука (красный крестик в инвентаре)
+    local ok, bar = pcall(function()
+      local i = e.get_inventory(defines.inventory.chest)
+      if i == nil or not i.supports_bar() then return nil end
+      local b = i.get_bar()
+      if b <= #i then return b end
+      return nil
+    end)
+    if ok and type(bar) == "number" then out.bar = bar end
+  end
+  if e.type == "assembling-machine" then
+    -- рецепт place ставит обычного качества; другое качество рецепта — здесь
+    local ok, r, q = pcall(function() return e.get_recipe() end)
+    local qn = ok and r ~= nil and q ~= nil and inv.quality_name(q) or inv.NORMAL
+    local rn = ok and r ~= nil and (type(r) == "string" and r or prop(r, "name")) or nil
+    if qn ~= inv.NORMAL and type(rn) == "string" then out.recipe_quality = { name = rn, quality = qn } end
+  end
+  out.cb = read_cb(e, wired)
+  return or_nil(out)
+end
+
+--- Вернуть настройки снимка поставленной постройке; → true │ false (что-то движок не принял).
+local function apply_settings(e, s)
+  local ok_all = true
+  local function try(fn)
+    if not pcall(fn) then ok_all = false end
+  end
+  for _, k in ipairs(ENTITY_PROPS[e.type] or {}) do
+    local v = s.props and s.props[k]
+    if v ~= nil then try(function() e[k] = v end) end
+  end
+  for _, x in ipairs(s.filters or {}) do
+    if not pcall(function() e.set_filter(x.i, x.f) end) then
+      try(function() e.set_filter(x.i, x.f.name) end)
+    end
+  end
+  if s.splitter_filter ~= nil then
+    if not pcall(function() e.splitter_filter = s.splitter_filter end) then
+      try(function() e.splitter_filter = s.splitter_filter.name end)
+    end
+  end
+  if s.bar ~= nil then
+    try(function()
+      local i = e.get_inventory(defines.inventory.chest)
+      if i == nil then error("no inventory") end
+      i.set_bar(s.bar)
+    end)
+  end
+  if s.recipe_quality ~= nil then
+    try(function() e.set_recipe(s.recipe_quality.name, s.recipe_quality.quality) end)
+  end
+  if s.sections ~= nil then
+    local ok, holder = pcall(function() return e.get_logistic_sections() end)
+    if not ok or holder == nil or not write_sections(holder, s.sections) then ok_all = false end
+  end
+  if s.cb ~= nil then
+    local ok, cb = pcall(function() return e.get_or_create_control_behavior() end)
+    if not ok or cb == nil then
+      ok_all = false
+    else
+      if s.cb.parameters ~= nil then try(function() cb.parameters = s.cb.parameters end) end
+      if s.cb.enabled ~= nil then try(function() cb.enabled = s.cb.enabled end) end
+      if s.cb.sections ~= nil and not write_sections(cb, s.cb.sections) then ok_all = false end
+      for _, k in ipairs(CB_PROPS) do
+        local v = s.cb.props and s.cb.props[k]
+        if v ~= nil then try(function() cb[k] = v end) end
+      end
+    end
+  end
+  return ok_all
+end
+
+-- ------------------------------------------------------------------ провода
+
+local function player_origin(w)
+  local wo = defines.wire_origin
+  local o = prop(w, "origin")
+  return o == nil or wo == nil or wo.player == nil or o == wo.player
+end
+
+local function is_copper(c)
+  local wt = defines.wire_type
+  local t = prop(c, "wire_type")
+  return wt ~= nil and t ~= nil and t == wt.copper
+end
+
+--- Провода игрока от постройки: {{c, tc, name, pos}, ...} │ nil, и есть ли среди них красные/зелёные.
+local function read_wires(e)
+  local ok, cons = pcall(function() return e.get_wire_connectors(false) end)
+  if not ok or type(cons) ~= "table" then return nil, false end
+  local out, circuit = {}, false
+  for cid, c in pairs(cons) do
+    local ok2, list = pcall(function() return c.connections end)
+    if ok2 and type(list) == "table" and type(cid) == "number" then
+      for _, w in ipairs(list) do
+        if #out >= M.MAX_WIRES then break end
+        local t = prop(w, "target")
+        local owner, tid = prop(t, "owner"), prop(t, "wire_connector_id")
+        -- провод к себе же (выход комбинатора на его вход) — к другому разъёму той же постройки
+        if player_origin(w) and owner ~= nil and prop(owner, "valid") ~= false and type(tid) == "number"
+            and (owner ~= e or tid ~= cid) then
+          out[#out + 1] = { c = cid, tc = tid, name = owner.name, pos = util.xy(owner.position) }
+          if not is_copper(c) then circuit = true end
+        end
+      end
+    end
+  end
+  return or_nil(out), circuit
+end
+
 -- ------------------------------------------------------------------ снимок
 
 --- Постройки области, которые рефлекс разбирает: своей силы, копаемые, с предметом для постановки.
@@ -197,38 +469,6 @@ local function scan(h, box, names)
   return out
 end
 
---- Есть ли у постройки настройки, которые place не вернёт: провода, фильтры, приоритеты, запросы.
-local function settings_lost(e)
-  if SETTINGS_TYPES[e.type] then return true end
-  local ok, cons = pcall(function() return e.get_wire_connectors(false) end)
-  if ok and type(cons) == "table" then
-    for _, c in pairs(cons) do
-      local n = prop(c, "connection_count")
-      if type(n) == "number" and n > 0 then return true end
-    end
-  end
-  if (e.type == "inserter" or e.type == "loader" or e.type == "loader-1x1") and prop(e, "use_filters") == true then
-    return true
-  end
-  if e.type == "splitter" then
-    if prop(e, "splitter_filter") ~= nil then return true end
-    for _, k in ipairs({ "splitter_input_priority", "splitter_output_priority" }) do
-      local v = prop(e, k)
-      if v ~= nil and v ~= "none" then return true end
-    end
-  end
-  if e.type == "logistic-container" then
-    local ok2, n = pcall(function()
-      local s = e.get_logistic_sections()
-      local total = 0
-      for i = 1, s.sections_count do total = total + s.get_section(i).filters_count end
-      return total
-    end)
-    if ok2 and type(n) == "number" and n > 0 then return true end
-  end
-  return false
-end
-
 local function record(e, order)
   local it = B.place_items(e.prototype)[1]
   local en = {
@@ -236,8 +476,7 @@ local function record(e, order)
     unit = e.unit_number, state = "present", fails = 0, cuts = 0,
     rank = order[e.name] or M.RANK[e.type] or M.RANK_OTHER,
   }
-  local q = prop(e, "quality")
-  en.quality = type(q) == "table" and q.name or (type(q) == "string" and q) or "normal"
+  en.quality = inv.quality_name(prop(e, "quality"))
   local io = IO_TYPES[e.type] and prop(e, IO_TYPES[e.type]) or nil
   if io == "input" or io == "output" then en.io = io end
   if e.type == "assembling-machine" then
@@ -245,8 +484,12 @@ local function record(e, order)
     if ok and r ~= nil then en.recipe = type(r) == "string" and r or prop(r, "name") end
   end
   local ok, mi = pcall(function() return e.get_module_inventory() end)
-  if ok and mi ~= nil then en.modules = or_nil(inv.counts(mi)) end
-  if settings_lost(e) then en.lossy = true end
+  if ok and mi ~= nil then en.modules = or_nil(inv.counts_q(mi)) end
+  local wired
+  en.wires, wired = read_wires(e)
+  local ok2, s = pcall(read_settings, e, wired)
+  if ok2 then en.settings = s else en.lossy = true end
+  if LOSSY_TYPES[e.type] then en.lossy = true end
   return en
 end
 
@@ -391,6 +634,113 @@ local function has_contents(e)
   return ok and empty == false
 end
 
+local function same_spot(a, b)
+  return a.name == b.name and a.pos ~= nil and b.pos ~= nil and a.pos.x == b.pos.x and a.pos.y == b.pos.y
+end
+
+--- Постройку записи en взял (или сейчас разбирает) другой помощник своей охраной: у него в снимке
+--- она taken либо его задача разбора по ней ещё идёт. Сопоставление — по номеру или имени и месту.
+local function taken_by_other(id, st, en)
+  for other, s in pairs(all()) do
+    if other ~= id and type(s) == "table" and s.surface == st.surface and type(s.list) == "table" then
+      local busy = {}
+      for _, p in ipairs(s.pending or {}) do
+        if p.kind == "take" and p.idx ~= nil then busy[p.idx] = true end
+      end
+      for i, x in ipairs(s.list) do
+        if (x.state == "taken" or (x.state == "present" and busy[i]))
+            and x.name == en.name and ((en.unit ~= nil and x.unit == en.unit) or same_spot(x, en)) then
+          return true
+        end
+      end
+    end
+  end
+  return false
+end
+
+--- Постройки нет на месте: взял другой помощник — "other" (молча), иначе — lost.
+local function gone(id, st, en)
+  if taken_by_other(id, st, en) then
+    en.state = "other"
+  else
+    en.state = "lost"
+    add(st.lost, en.name)
+  end
+end
+
+-- ------------------------------------------------------------------ возврат настроек
+
+--- Постройка поставлена без части настроек: в reset (одна на постройку) и причина в reset_why.
+local function mark_reset(st, idx, why)
+  local en = st.list[idx]
+  st.reset = st.reset or {}
+  st.reset_idx = st.reset_idx or {}
+  st.reset_why = st.reset_why or {}
+  if not st.reset_idx[idx] then
+    st.reset_idx[idx] = true
+    add(st.reset, en.name)
+  end
+  local list = st.reset_why[en.name] or {}
+  st.reset_why[en.name] = list
+  for _, w in ipairs(list) do
+    if w == why then return end
+  end
+  list[#list + 1] = why
+  table.sort(list)
+end
+
+local function find_at(h, name, pos)
+  local list = h.surface.find_entities_filtered{ position = pos, radius = 0.5, name = name, force = h.force }
+  for _, e in ipairs(list) do
+    if e.valid then return e end
+  end
+  return nil
+end
+
+--- Провода поставленных построек — к тем, что стоят (вернул или не трогал). Провод к постройке,
+--- которой больше нет, — reset "wire_to_gone"; движок не соединил — reset "wire".
+local function rewire(h, st)
+  for _, idx in ipairs(st.rewire or {}) do
+    local en = st.list[idx]
+    local e = en and en.state == "present" and en.wires ~= nil and (entity_of(h, en) or standing(h, en)) or nil
+    if e ~= nil then
+      for _, w in ipairs(en.wires) do
+        local t = (w.name == en.name and w.pos.x == en.pos.x and w.pos.y == en.pos.y) and e or find_at(h, w.name, w.pos)
+        if t == nil then
+          mark_reset(st, idx, "wire_to_gone")
+        else
+          local ok, a, b = pcall(function()
+            return e.get_wire_connector(w.c, true), t.get_wire_connector(w.tc, true)
+          end)
+          if not ok or a == nil or b == nil then
+            mark_reset(st, idx, "wire")
+          else
+            local ok2, already = pcall(function() return a.is_connected_to(b) end)
+            if not (ok2 and already == true) then
+              local ok3, done = pcall(function() return a.connect_to(b, false) end)
+              if not ok3 or done == false then mark_reset(st, idx, "wire") end
+            end
+          end
+        end
+      end
+    end
+  end
+  st.rewire = nil
+end
+
+--- Постройка встала: настройки снимка — ей сразу, провода — в конце возврата.
+local function restored(h, st, idx)
+  local en = st.list[idx]
+  if en.lossy then mark_reset(st, idx, "lossy") end
+  if en.wires ~= nil then
+    st.rewire = st.rewire or {}
+    st.rewire[#st.rewire + 1] = idx
+  end
+  if en.settings == nil then return end
+  local e = entity_of(h, en)
+  if e == nil or not apply_settings(e, en.settings) then mark_reset(st, idx, "settings") end
+end
+
 -- ------------------------------------------------------------------ итоги задач
 
 local CANCEL = { cancelled = true, no_helper = true, owner_hold = true }
@@ -426,12 +776,10 @@ local function on_result(id, h, st, p, ev)
         en.state = "taken"
         add(st.taken, en.name)
       else
-        en.state = "lost" -- исчезла сама (или её разобрал кто-то другой), пока тело шло
-        add(st.lost, en.name)
+        gone(id, st, en) -- исчезла сама (или её разобрал кто-то другой), пока тело шло
       end
     elseif d.code == "not_found" then
-      en.state = "lost"
-      add(st.lost, en.name)
+      gone(id, st, en)
     elseif CANCEL[d.code] then
       on_cut(id, st, p, en)
     else
@@ -444,15 +792,24 @@ local function on_result(id, h, st, p, ev)
       en.fails, en.cuts = 0, 0
       if type(d.detail) == "table" and type(d.detail.unit_number) == "number" then en.unit = d.detail.unit_number end
       add(st.placed, en.name)
-      if en.lossy then add(st.reset, en.name) end
+      restored(h, st, p.idx)
       if en.modules ~= nil then st.inserts[#st.inserts + 1] = p.idx end
     elseif d.code == "no_items" then
-      add(st.missing, en.item, en.count)
+      add(st.missing, inv.qkey(en.item, en.quality), en.count)
     elseif CANCEL[d.code] then
       on_cut(id, st, p, en)
     else
       en.fails = en.fails + 1
       add(st.failed, en.name)
+    end
+  elseif p.kind == "insert" and en ~= nil then
+    -- модули: снятую отступлением или «стоп» задачу — заново, иначе не встало — постройка в reset
+    local left = done and type(d.detail) == "table" and d.detail.left or nil
+    if not done and CANCEL[d.code] and (fleeing(id) or jobs.held(id) ~= nil) then
+      st.inserts = st.inserts or {}
+      st.inserts[#st.inserts + 1] = p.idx
+    elseif not done or (type(left) == "table" and next(left) ~= nil) then
+      mark_reset(st, p.idx, "modules")
     end
   end
 end
@@ -504,15 +861,42 @@ local function resumed(id, made, reason)
   events.emit(id, "reflex_resumed", { type = "evacuate", jobs = made, reason = reason }, { loud = true })
 end
 
-local function finish_return(id, h, st, tick)
+--- Снимок забыт, а разобранное этим телом ещё в карманах: сказать громко, что не вернётся.
+local function drop(id, st, off)
+  local left = count_state(st, "taken")
+  if next(left) == nil then return end
+  events.emit(id, "evacuate_restored", { placed = {}, missing = {}, left = left, reason = "dropped", off = off },
+    { loud = true })
+end
+
+--- Охрану сняли кнопкой хозяина, а возврат кончился: evacuate уходит из набора тела.
+local function remove_self(id)
+  local set = type(storage.reflexes) == "table" and storage.reflexes[id] or nil
+  if type(set) == "table" then
+    local out = {}
+    for _, r in ipairs(set) do
+      if r.type ~= "evacuate" then out[#out + 1] = r end
+    end
+    storage.reflexes[id] = out
+  end
+  all()[id] = nil
+end
+
+local function finish_return(id, h, st, tick, told)
   local saved = st.saved
+  local off = st.remove_after
   st.phase = "watch"
   st.saved, st.quiet, st.todo, st.pending, st.inserts = nil, nil, nil, {}, nil
-  st.placed, st.missing, st.failed, st.reset, st.quality, st.going_on = nil, nil, nil, nil, nil, nil
+  st.placed, st.missing, st.failed, st.reset, st.reset_why, st.reset_idx = nil, nil, nil, nil, nil, nil
+  st.quality, st.going_on, st.rewire = nil, nil, nil
   st.owner_stopped = nil
   for _, en in ipairs(st.list) do
     -- следующая волна врагов — новая попытка для всего, что стоит
     if en.state == "present" then en.fails, en.cuts, en.kept = 0, 0, nil end
+  end
+  if off then
+    if not told then drop(id, st, true) end
+    remove_self(id)
   end
   if saved == nil or saved[1] == nil then return end
   if not idle(id) then return end -- агент уже решил сам
@@ -520,7 +904,7 @@ local function finish_return(id, h, st, tick)
   local made = {}
   for _, t in ipairs(saved) do
     local ok, res = pcall(jobs.op_act, { ["do"] = t["do"], args = t.args, replace = false },
-      { helper_id = id, request_id = M.RESUME_REQ, entity = h, tick = tick })
+      flee.resume_ctx(t, { helper_id = id, request_id = M.RESUME_REQ, entity = h, tick = tick }))
     if ok then made[#made + 1] = { job = res.job, ["do"] = t["do"] } end
   end
   resumed(id, made, made[1] == nil and "rejected" or nil)
@@ -604,7 +988,11 @@ local function finish_evac(id, h, st, p, tick, reason)
 end
 
 local function pump_evac(id, h, st, p, tick)
+  st.todo, st.pending = st.todo or {}, st.pending or {}
+  st.taken, st.lost, st.left, st.kept = st.taken or {}, st.lost or {}, st.left or {}, st.kept or {}
   collect(id, h, st)
+  -- хозяин снял охрану: дальше не разбирать, разобранное вернуть, когда станет тихо
+  if st.remove_after and st.aborted == nil then st.aborted = "unguarded" end
   if st.aborted ~= nil then
     local reason = st.aborted
     st.aborted = nil
@@ -617,8 +1005,7 @@ local function pump_evac(id, h, st, p, tick)
     local en = st.list[idx]
     local e = entity_of(h, en)
     if e == nil then
-      en.state = "lost"
-      add(st.lost, en.name)
+      gone(id, st, en)
     else
       local ok, res = act(id, h, tick, "deconstruct",
         { target = { unit_number = e.unit_number, pos = util.pos(e.position) } }, st.first, true)
@@ -640,6 +1027,13 @@ local function start_evac(id, h, st, p, threat, tick)
   local todo = {}
   for i, en in ipairs(st.list) do
     en.kept = nil
+    if en.state == "other" then
+      -- её взял другой помощник; вернул — она снова наша забота
+      local e = standing(h, en)
+      if e ~= nil then
+        en.state, en.unit, en.fails, en.cuts = "present", e.unit_number, 0, 0
+      end
+    end
     if en.state == "present" and en.fails < M.MAX_FAILS then
       local e = entity_of(h, en)
       -- разрешения хозяина могли смениться после включения; сундук с содержимым забьёт карманы
@@ -666,13 +1060,19 @@ end
 
 -- ------------------------------------------------------------------ возврат построек
 
+local function sorted_why(map)
+  if map == nil or next(map) == nil then return nil end
+  return util.plain(map)
+end
+
 local function finish_restore(id, h, st, tick, reason)
+  rewire(h, st) -- поставленные стоят при любом итоге: их провода — тоже
   events.emit(id, "evacuate_restored", {
     placed = st.placed, missing = st.missing, failed = or_nil(st.failed),
-    left = or_nil(count_state(st, "taken")), quality = or_nil(st.quality), reset = or_nil(st.reset),
-    reason = reason,
+    left = or_nil(count_state(st, "taken")), reset = or_nil(st.reset), reset_why = sorted_why(st.reset_why),
+    off = st.remove_after and true or nil, reason = reason,
   }, { loud = true })
-  finish_return(id, h, st, tick)
+  finish_return(id, h, st, tick, true)
 end
 
 local function same_map(a, b)
@@ -691,8 +1091,7 @@ local function start_restore(id, h, st, p, tick)
   st.going_on = nil
   st.placed = going_on and st.placed or {}
   st.failed = going_on and st.failed or {}
-  st.reset = going_on and st.reset or {}
-  st.quality = {}
+  if not going_on then st.reset, st.reset_why, st.reset_idx, st.rewire = {}, {}, {}, nil end
   st.phase = "restore"
   st.pending, st.inserts = {}, {}
   st.cursor = events.last_seq()
@@ -700,25 +1099,22 @@ local function start_restore(id, h, st, p, tick)
     st.todo, st.missing = {}, {}
     return finish_restore(id, h, st, tick, "owner_forbids")
   end
-  local have = inv.counts(h.get_main_inventory())
+  -- карманы по (имя, качество): ключ inv.qkey
+  local have = inv.counts_q(h.get_main_inventory())
   local todo, missing = {}, {}
-  local function take(name, n)
-    local got = math.min(have[name] or 0, n)
-    have[name] = (have[name] or 0) - got
-    if got < n then add(missing, name, n - got) end
+  local function take(key, n)
+    local got = math.min(have[key] or 0, n)
+    have[key] = (have[key] or 0) - got
+    if got < n then add(missing, key, n - got) end
     return got == n
   end
   for i, en in ipairs(st.list) do
-    if en.state == "taken" and standing(h, en) ~= nil then
+    if (en.state == "taken" or en.state == "other") and standing(h, en) ~= nil then
       en.state = "present" -- уже стоит: поставил хозяин или другой помощник
     end
-    if en.state == "taken" then
-      if en.quality ~= nil and en.quality ~= "normal" then
-        add(st.quality, en.name) -- мод ставит только обычное качество: эта постройка ждёт в карманах
-      elseif take(en.item, en.count or 1) then
-        todo[#todo + 1] = i
-        for m, n in pairs(en.modules or {}) do take(m, n) end
-      end
+    if en.state == "taken" and take(inv.qkey(en.item, en.quality), en.count or 1) then
+      todo[#todo + 1] = i
+      for m, n in pairs(en.modules or {}) do take(m, n) end
     end
   end
   st.todo = todo
@@ -729,7 +1125,37 @@ local function start_restore(id, h, st, p, tick)
   st.missing_told = or_nil(util.plain(missing))
 end
 
+--- Модули в поставленную машину: по задаче insert на каждое качество, что есть в карманах
+--- (нехватка уже в evacuate_missing).
+local function queue_modules(id, h, st, tick, idx)
+  local en = st.list[idx]
+  if en.unit == nil then return end
+  local main = h.get_main_inventory()
+  local by_q = {}
+  for key, n in pairs(en.modules or {}) do
+    local name, q = inv.split_qkey(key)
+    local k = math.min(n, inv.count(main, name, q))
+    if k > 0 then
+      by_q[q] = by_q[q] or {}
+      by_q[q][name] = k
+    end
+  end
+  for q, items in pairs(by_q) do
+    local ok, res = act(id, h, tick, "insert", {
+      target = { unit_number = en.unit, pos = util.pos(en.pos) }, items = items,
+      quality = q ~= inv.NORMAL and q or nil,
+    })
+    if ok then
+      st.pending[#st.pending + 1] = { job = res.job, idx = idx, kind = "insert" }
+    else
+      mark_reset(st, idx, "modules")
+    end
+  end
+end
+
 local function pump_restore(id, h, st, p, tick)
+  st.todo, st.inserts = st.todo or {}, st.inserts or {}
+  st.placed, st.failed, st.missing = st.placed or {}, st.failed or {}, st.missing or {}
   collect(id, h, st)
   if st.aborted == "owner_stop" then
     -- «стоп» хозяина: возврат ждёт его слова и потом продолжится с того, что осталось
@@ -749,23 +1175,17 @@ local function pump_restore(id, h, st, p, tick)
   local threat = find_threat(id, h, st, p, tick)
   if threat ~= nil then
     cancel_pending(id, h, st)
+    rewire(h, st) -- уже поставленные, которые в этот набег не разберут, не остаются без проводов
+    if st.remove_after then
+      -- охрану сняли: заново не разбирать, вернуть остальное, когда снова станет тихо
+      st.phase, st.todo, st.inserts, st.quiet, st.going_on = "away", nil, nil, nil, true
+      return
+    end
     return start_evac(id, h, st, p, threat, tick)
   end
   if fleeing(id) or jobs.held(id) ~= nil then return end -- возврат при hold ждёт
-  -- модули в поставленные машины: что есть в карманах (нехватка уже в evacuate_missing)
   while st.inserts[1] ~= nil and #st.pending < M.BATCH do
-    local idx = table.remove(st.inserts, 1)
-    local en = st.list[idx]
-    local main = h.get_main_inventory()
-    local items = {}
-    for m, n in pairs(en.modules or {}) do
-      local k = math.min(n, inv.count(main, m))
-      if k > 0 then items[m] = k end
-    end
-    if next(items) ~= nil and en.unit ~= nil then
-      local ok, res = act(id, h, tick, "insert", { target = { unit_number = en.unit, pos = util.pos(en.pos) }, items = items })
-      if ok then st.pending[#st.pending + 1] = { job = res.job, idx = idx, kind = "insert" } end
-    end
+    queue_modules(id, h, st, tick, table.remove(st.inserts, 1))
   end
   local todo = st.todo
   while #st.pending < M.BATCH and todo[1] ~= nil do
@@ -773,6 +1193,7 @@ local function pump_restore(id, h, st, p, tick)
     local en = st.list[idx]
     local ok, res = act(id, h, tick, "place", {
       item = en.item, pos = { x = en.pos.x, y = en.pos.y }, direction = en.dir, recipe = en.recipe, type = en.io,
+      quality = en.quality ~= inv.NORMAL and en.quality or nil,
     })
     if not ok then
       local code = err.normalize(res)
@@ -816,8 +1237,8 @@ function M.check(id, h, p, tick)
   if phase == "away" then
     if threat ~= nil then
       st.quiet = nil
-      -- разбор снял «стоп» хозяина: пока hold стоит, заново не начинать
-      local stopped = st.owner_stopped and jobs.held(id) ~= nil
+      -- разбор снял «стоп» хозяина: пока hold стоит, заново не начинать; охрану сняли — тоже
+      local stopped = (st.owner_stopped and jobs.held(id) ~= nil) or st.remove_after
       if has_present(st) and not fleeing(id) and not stopped then start_evac(id, h, st, p, threat, tick) end
       return
     end
@@ -848,11 +1269,31 @@ local function same(a, b)
   return a ~= nil and b ~= nil and key_of(a) == key_of(b) and a.rebuild == b.rebuild
 end
 
---- Снимок забыт, а разобранное этим телом ещё в карманах: сказать громко, что не вернётся.
-local function drop(id, st)
-  local left = count_state(st, "taken")
-  if next(left) == nil then return end
-  events.emit(id, "evacuate_restored", { placed = {}, missing = {}, left = left, reason = "dropped" }, { loud = true })
+--- Агент включает охрану только там, где тело: центр области не дальше MAX_DIST (запрос по RCON —
+--- ctx.perm_gate; свои вызовы мода и кнопка хозяина — без предела).
+local function near_enough(v, ctx)
+  local h = ctx and ctx.entity
+  if ctx == nil or ctx.perm_gate ~= true or h == nil or not h.valid then return end
+  local b = M.box_of(v)
+  local c = { x = (b.left_top.x + b.right_bottom.x) / 2, y = (b.left_top.y + b.right_bottom.y) / 2 }
+  local d = util.dist(util.xy(h.position), c)
+  if d > M.MAX_DIST then
+    err.raise("too_far", string.format("evacuate: the area center is %d tiles from the helper (at most %d); walk there first",
+      math.floor(d + 0.5), M.MAX_DIST), { distance = util.round1(d), max = M.MAX_DIST })
+  end
+end
+
+--- Ключи разрешений для этих параметров (без учёта прежних).
+local function perm_keys(v, ctx)
+  local keys = {}
+  if v.rebuild then keys[1] = "perm-build" end
+  local h = ctx and ctx.entity
+  if h == nil or not h.valid then
+    perms.add(keys, "perm-deconstruct-owner")
+    return keys
+  end
+  for _, e in ipairs(scan(h, M.box_of(v), v.names)) do perms.dig_keys(e, keys) end
+  return keys
 end
 
 M.reflexes = {
@@ -871,20 +1312,15 @@ M.reflexes = {
     -- разбор построек снимка и (rebuild) стройка; те же параметры повторно — без вопроса
     perms = function(v, ctx, old)
       if same(v, old) then return {} end
-      local keys = {}
-      if v.rebuild then keys[1] = "perm-build" end
-      local h = ctx and ctx.entity
-      if h == nil or not h.valid then
-        perms.add(keys, "perm-deconstruct-owner")
-        return keys
-      end
-      for _, e in ipairs(scan(h, M.box_of(v), v.names)) do perms.dig_keys(e, keys) end
-      return keys
+      -- дальняя область: отказ до просмотра её построек (что там стоит, агенту не сообщается)
+      if old == nil or key_of(v) ~= key_of(old) then near_enough(v, ctx) end
+      return perm_keys(v, ctx)
     end,
     -- набор ещё не записан: отказ оставляет прежний
     guard = function(id, v, old, ctx)
       local changed = v == nil or old == nil or key_of(v) ~= key_of(old)
-      if v ~= nil and (old == nil or not same(v, old)) and jobs.held(id) ~= nil then
+      local word = ctx ~= nil and ctx.owner_word == true -- кнопка хозяина: это его слово
+      if not word and v ~= nil and (old == nil or not same(v, old)) and jobs.held(id) ~= nil then
         err.raise("owner_hold", "evacuate: the owner said stop; wait for his next word before switching it on or changing it")
       end
       local st = M.state(id)
@@ -896,6 +1332,7 @@ M.reflexes = {
         err.raise("bad_args", "evacuate: an evacuation is under way (phase " .. st.phase .. ", " .. n
           .. " buildings in the pockets); keep the same area and names until evacuate_restored")
       end
+      if v ~= nil and changed then near_enough(v, ctx) end
     end,
     on_set = function(id, v, old, ctx)
       local st = M.state(id)
@@ -921,5 +1358,82 @@ M.reflexes = {
     end,
   },
 }
+
+-- ------------------------------------------------------------------ кнопки хозяина (core/panel.lua)
+
+local function evac_of(id)
+  for _, r in ipairs(reflexes.get(id) or {}) do
+    if r.type == "evacuate" then return r end
+  end
+  return nil
+end
+
+--- Набор тела без evacuate (только поля схем) и прежний evacuate.
+local function set_without(id)
+  local out, old = {}, nil
+  for _, r in ipairs(reflexes.public(reflexes.get(id) or {})) do
+    if r.type == "evacuate" then old = r else out[#out + 1] = r end
+  end
+  return out, old
+end
+
+--- Есть ли у тела охрана (evacuate в наборе).
+function M.guarding(id)
+  return evac_of(id) ~= nil
+end
+
+--- «Охранять здесь»: evacuate вокруг center с radius телу id — слово хозяина: «спросить» не нужно,
+--- hold не мешает, предела MAX_DIST нет; «нельзя» в настройках мода запрещает. Прочие рефлексы
+--- тела и прежние threat_radius, return_after_s, rebuild остаются.
+--- → true │ nil, code, text, data.
+function M.owner_guard(id, h, center, radius)
+  local r = math.floor(tonumber(radius) or M.GUARD_RADIUS)
+  if r < M.GUARD_MIN then r = M.GUARD_MIN elseif r > M.GUARD_MAX then r = M.GUARD_MAX end
+  local set, old = set_without(id)
+  local v = {
+    type = "evacuate", center = { x = util.round1(center.x), y = util.round1(center.y) }, radius = r,
+    threat_radius = old and old.threat_radius or nil, return_after_s = old and old.return_after_s or nil,
+    rebuild = old and old.rebuild,
+  }
+  if v.rebuild == nil then v.rebuild = true end
+  local ok, keys = pcall(perm_keys, v, { entity = h })
+  if not ok then
+    local code, text, data = err.normalize(keys)
+    return nil, code, text, data
+  end
+  for _, k in ipairs(keys) do
+    if perms.get(k) == "deny" then
+      return nil, "owner_forbids", "запрещено в настройках мода: " .. perms.label(k), { perm = (k:gsub("^perm%-", "")) }
+    end
+  end
+  set[#set + 1] = v
+  local ok2, e = pcall(reflexes.op_reflexes, { set = set }, { helper_id = id, entity = h, owner_word = true, tick = game.tick })
+  if not ok2 then
+    local code, text, data = err.normalize(e)
+    return nil, code, text, data
+  end
+  local st = M.state(id)
+  if st ~= nil then st.remove_after = nil end
+  return true, nil, nil, { center = v.center, radius = r }
+end
+
+--- «Снять охрану»: в спокойной фазе evacuate уходит из набора сразу ("removed"); идёт эвакуация или
+--- постройки ждут возврата — уйдёт после возврата ("later"); охраны нет — "none".
+--- → результат │ nil, code, text.
+function M.owner_unguard(id, h)
+  if evac_of(id) == nil then return "none" end
+  local st = M.state(id)
+  if st ~= nil and st.phase ~= nil and st.phase ~= "watch" then
+    st.remove_after = true
+    return "later"
+  end
+  local set = set_without(id)
+  local ok, e = pcall(reflexes.op_reflexes, { set = set }, { helper_id = id, entity = h, owner_word = true, tick = game.tick })
+  if not ok then
+    local code, text = err.normalize(e)
+    return nil, code, text
+  end
+  return "removed"
+end
 
 return M

@@ -9,7 +9,7 @@ M.CODES = {
   not_found = true, not_reachable = true, no_items = true, cannot_place = true,
   not_charted = true, not_visible = true, reserved = true, path_failed = true, stuck = true, no_space = true,
   cancelled = true, owner_hold = true, too_large = true, internal = true,
-  owner_forbids = true, needs_owner_ok = true,
+  owner_forbids = true, needs_owner_ok = true, too_far = true,
 }
 
 local MAX_TEXT = 300

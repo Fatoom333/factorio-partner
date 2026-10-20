@@ -518,7 +518,9 @@ local function engine_mine(h)
   h._mine_progress = h._mine_progress + 0.5 / 60
   if h._mine_progress < mp.mining_time then return end
   h._mine_progress = 0
-  for _, p in ipairs(prods) do inv.insert{ name = p.name, count = p.amount or p.amount_max or 1 } end
+  -- как в игре: постройка ложится в карманы предметом своего качества
+  local q = t.type ~= "resource" and t.quality and t.quality.name or nil
+  for _, p in ipairs(prods) do inv.insert{ name = p.name, count = p.amount or p.amount_max or 1, quality = q } end
   C.mined = (C.mined or 0) + 1
   if t.type == "resource" then
     t.amount = (t.amount or 1) - 1

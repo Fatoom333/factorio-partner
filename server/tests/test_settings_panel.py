@@ -512,6 +512,13 @@ def test_panel_event_schema():
     assert V.panel_event({"action": "auto", "on": True, "goal": "«к ракете»"})["goal"] == '"к ракете"'
     assert V.panel_event({"action": "thoughts", "on": "yes"}) is None
     assert V.panel_event({"action": "hold"}) == {"action": "hold"}
+    assert V.panel_event({"action": "guard", "helper": "h1", "center": {"x": 1, "y": 2}, "radius": 50}) == (
+        {"action": "guard", "helper": "h1", "radius": 50})
+    assert V.panel_event({"action": "guard", "helper": "h1", "refused": "owner_forbids", "why": "x"}) == (
+        {"action": "guard", "helper": "h1", "refused": "owner_forbids"})
+    assert V.panel_event({"action": "unguard", "helper": "h1", "later": True}) == (
+        {"action": "unguard", "helper": "h1", "later": True})
+    assert V.panel_event({"action": "guard", "helper": "../x", "radius": 900}) == {"action": "guard"}
 
 
 # ---------------------------------------------------------------- «запусти N» from the game chat

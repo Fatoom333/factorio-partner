@@ -145,12 +145,14 @@ partner_act {"do":"plan","args":{"steps":[{"do":"get_items","args":{"items":{"tr
 - Событие `task` со `status:"cancelled"` — задание снято (стратегом, хозяином, загрузкой сейва): брось его,
   `report` не нужен.
 - Охрана построек от врагов — рефлекс `evacuate` в `partner_reflex` (любые враги, не только черви):
-  `{type:"evacuate", area|center+radius ≤ 48, names?, threat_radius, return_after_s, rebuild}`. Он
+  `{type:"evacuate", area (сторона ≤ 128)|center+radius ≤ 64, names?, threat_radius, return_after_s, rebuild}`
+  — центр области не дальше 150 клеток от тела (`too_far` — сначала подойди). Он
   разбирает постройки и ставит обратно сам; включение — по разрешениям `deconstruct-owner` и `build`
   (раздел 6а). Не мешай ему задачами: события `evacuate_started`, `evacuated`, `evacuate_restored`.
   `evacuate` в наборе один. Пока идёт эвакуация или постройки ждут возврата в карманах, его нельзя убрать
   из набора или сменить ему область (`bad_args` с причиной) — при замене набора оставляй `evacuate` как
-  есть. При «стоп» хозяина включить или сменить его нельзя (`owner_hold`).
+  есть. При «стоп» хозяина включить или сменить его нельзя (`owner_hold`). `evacuate`, который хозяин
+  поставил кнопкой «Охранять здесь» (`owner_panel{action:"guard"}`), не убирай и не меняй.
 
 ## 5. Ожидание
 - `partner_wait`: `timeout` до 55 (пока дел нет — максимум). Пустой ответ (`timed_out:true`) — молча

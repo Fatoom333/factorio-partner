@@ -58,7 +58,7 @@ def test_contract_parsers_see_the_tables():
     assert lint.mcp_tools()["partner_wait"] == {"timeout", "quiet", "since"}
     assert lint.mcp_tools()["partner_brief"] == set()
     codes = lint.error_codes()
-    assert len(codes) == 25 and "owner_forbids" in codes and "needs_owner_ok" in codes and "no_space" in codes and "owner_hold" in codes and "internal" in codes
+    assert len(codes) == 26 and "owner_forbids" in codes and "needs_owner_ok" in codes and "no_space" in codes and "owner_hold" in codes and "internal" in codes
     assert {"job_failed", "player_said", "game_reloaded", "helper_lost"} <= set(lint.loud_events())
     reflexes = lint.reflex_types()
     assert reflexes["flee"]["radius"] == (4.0, 32.0) and reflexes["watch"]["every_s"] == (1.0, 600.0)

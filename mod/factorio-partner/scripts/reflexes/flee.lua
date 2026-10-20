@@ -195,7 +195,16 @@ end
 --- Поставить задачу ходьбы к первой годной точке. Кандидаты всегда считаются от нынешнего
 --- места тела и от threat; tried — точки этого перехода, к которым дойти уже не вышло
 --- (пропускаются). → true | false, причина.
---- Задачи помощника, которые снимет отступление: {{do, args}, ...} (без задач рефлексов).
+--- Запись снимка помнит гейт разрешений задачи: задача агента и после возврата к делу — под ним.
+local function gated(t, rec)
+  if t.perm_gate == true then
+    rec.perm_gate = true
+    rec.owner_ok = type(t.owner_ok) == "table" and util.copy(t.owner_ok) or nil
+  end
+  return rec
+end
+
+--- Задачи помощника, которые снимет отступление: {{do, args, perm_gate?, owner_ok?}, ...} (без задач рефлексов).
 local function snapshot(id)
   local out = {}
   local list = {}
@@ -211,7 +220,7 @@ local function snapshot(id)
         and mod ~= nil and mod.resume_args ~= nil then
       -- план (actions/plan.lua) продолжается с текущего шага, а не с начала
       local ok, args = pcall(mod.resume_args, t)
-      if ok and type(args) == "table" then out[#out + 1] = { ["do"] = t["do"], args = args } end
+      if ok and type(args) == "table" then out[#out + 1] = gated(t, { ["do"] = t["do"], args = args }) end
     elseif not (type(req) == "string" and req:sub(1, 7) == "reflex:") and type(t.args) == "table" then
       local args = util.copy(t.args)
       local done = t.progress and t.progress.done
@@ -219,10 +228,20 @@ local function snapshot(id)
           and type(done) == "number" and done > 0 then
         args.count = math.max(1, args.count - done) -- вернуться — докопать остаток
       end
-      out[#out + 1] = { ["do"] = t["do"], args = args }
+      out[#out + 1] = gated(t, { ["do"] = t["do"], args = args })
     end
   end
   return out
+end
+
+--- Контекст повторной постановки задачи из снимка: запрос агента остаётся под гейтом разрешений
+--- хозяина (perm_gate и owner_ok той задачи), свой вызов мода — нет.
+function M.resume_ctx(t, ctx)
+  if t.perm_gate == true then
+    ctx.perm_gate = true
+    ctx.owner_ok = type(t.owner_ok) == "table" and t.owner_ok or nil
+  end
+  return ctx
 end
 
 -- Для других рефлексов (evacuate): точки отступления, проверка точки и снимок задач для возврата.
@@ -421,7 +440,7 @@ local function resume_check(id, entity, st, tick)
   local made = {}
   for _, t in ipairs(r.tasks) do
     local ok, res = pcall(jobs.op_act, { ["do"] = t["do"], args = t.args, replace = false },
-      { helper_id = id, request_id = M.RESUME_REQ, entity = entity, tick = tick })
+      M.resume_ctx(t, { helper_id = id, request_id = M.RESUME_REQ, entity = entity, tick = tick }))
     if ok then made[#made + 1] = { job = res.job, ["do"] = t["do"] } end
   end
   resumed(id, made, made[1] == nil and "rejected" or nil)

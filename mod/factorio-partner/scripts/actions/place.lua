@@ -4,11 +4,13 @@
 -- args: item (предмет из инвентаря), pos, direction? = 0 (defines.direction, 0..15),
 --       recipe? (только для сборочных машин: рецепт своей силы, открытый, подходящей категории),
 --       auto_supply? = false (нет предмета в инвентаре — сначала добыть его как `get_items`),
---       type? = "input" │ "output" (только подземная лента и погрузчик: вход или выход).
+--       type? = "input" │ "output" (только подземная лента и погрузчик: вход или выход),
+--       quality? (только свои вызовы мода — возврат построек рефлексом evacuate; запрос по RCON с ним —
+--       bad_args): качество постройки, предмет этого качества — только из карманов тела, без auto_supply.
 -- done.detail: {unit_number, name, pos}.
 -- Ход (честность §6.5): сам подходит на build_distance → LuaControl.can_place_entity
 -- (досягаемость + коллизии) → surface.create_entity{force, raise_built=true, quality="normal"}
--- → remove_item (quality normal); не списалось → постройка убирается, `no_items`.
+-- → remove_item (того же качества); не списалось → постройка убирается, `no_items`.
 -- Если мешает само тело помощника — отходит в сторону и пробует снова (до 2 раз).
 -- Ошибки: bad_args (не предмет-постройка, предмет с данными, плохой рецепт), no_items,
 -- not_charted, reserved (область держит другой помощник), not_visible, cannot_place,
@@ -19,6 +21,7 @@ local B = require("scripts.lib.build")
 local G = require("scripts.lib.getitems")
 
 local perms = require("scripts.core.perms")
+local err = require("scripts.core.err")
 
 local M = {}
 M.name = "place"
@@ -34,7 +37,16 @@ M.schema = {
   recipe = { type = "string", max = 100 },
   auto_supply = { type = "bool", default = false },
   type = { type = "enum", values = { "input", "output" } },
+  quality = { type = "string", max = 50 },
 }
+
+--- quality — только свой вызов мода: в запросе по RCON (ctx.perm_gate) его нет (PROTOCOL §6.11).
+function M.check_args(a, ctx)
+  if a.quality ~= nil and ctx ~= nil and ctx.perm_gate == true then
+    err.raise("bad_args", "args.quality: unknown field")
+  end
+  return a
+end
 
 -- постройки со входом и выходом (create_entity{type=...})
 local IO_TYPES = { ["underground-belt"] = true, loader = true, ["loader-1x1"] = true }
@@ -79,6 +91,12 @@ function M.start(task, ctx)
   if a.type ~= nil and not IO_TYPES[ep.type] then
     return B.failed("bad_args", "args.type: only for underground belts and loaders")
   end
+  local q = a.quality or B.NORMAL
+  if q ~= B.NORMAL then
+    if task.perm_gate or not inv.known_quality(q) then return B.failed("bad_args", "args.quality: unknown quality") end
+    if a.auto_supply then return B.failed("bad_args", "args.quality: only from the inventory, without auto_supply") end
+  end
+  task.quality = q
   -- сколько предметов стоит постройка (обычно 1)
   local need = 1
   for _, it in ipairs(B.place_items(ep)) do
@@ -86,7 +104,7 @@ function M.start(task, ctx)
   end
   if not B.charted(h, a.pos) then return B.failed("not_charted", "pos is in an uncharted chunk") end
   B.check_free(ctx, B.footprint(ep, a.pos, a.direction))
-  if inv.count(h.get_main_inventory(), a.item) < need then
+  if inv.count(h.get_main_inventory(), a.item, q) < need then
     if not a.auto_supply then return B.failed("no_items", "no " .. a.item .. " in the inventory") end
     G.begin(task, ctx, { [a.item] = need }, {})
   end
@@ -117,7 +135,8 @@ function M.tick(task, ctx)
     return r
   end
   if not B.visible(ctx, a.pos) then return fail(task, ctx, "not_visible", "pos is not visible") end
-  if inv.count(h.get_main_inventory(), a.item) < task.need then
+  local q = task.quality or B.NORMAL
+  if inv.count(h.get_main_inventory(), a.item, q) < task.need then
     stop(task, ctx)
     return B.failed("no_items", "no " .. a.item .. " in the inventory", G.with_supply(task))
   end
@@ -132,15 +151,15 @@ function M.tick(task, ctx)
   end
   local e = h.surface.create_entity{
     name = task.entity_name, position = a.pos, direction = a.direction, force = h.force,
-    raise_built = true, quality = B.NORMAL, type = a.type,
+    raise_built = true, quality = q, type = a.type,
   }
   if e == nil or not e.valid then
     return fail(task, ctx, "cannot_place", task.entity_name .. " cannot be placed here")
   end
-  local removed = h.remove_item{ name = a.item, count = task.need, quality = B.NORMAL }
+  local removed = h.remove_item{ name = a.item, count = task.need, quality = q }
   if removed < task.need then
     -- откат: постройка без списанного предмета — это предмет из воздуха
-    if removed > 0 then h.insert{ name = a.item, count = removed, quality = B.NORMAL } end
+    if removed > 0 then h.insert{ name = a.item, count = removed, quality = q } end
     e.destroy{ raise_destroy = true }
     return fail(task, ctx, "no_items", "no " .. a.item .. " in the inventory")
   end

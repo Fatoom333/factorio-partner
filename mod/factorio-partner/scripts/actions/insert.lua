@@ -13,6 +13,9 @@
 -- target = "armor" — модули брони в сетку надетой брони (как armor_grid{put}, scripts/lib/armor.lua):
 -- без подхода, нехватка предметов не мешает остальным (не влезшее — left и not_placed с причиной);
 -- не поставлено ничего — failed с кодом по первой причине.
+-- quality? — только свои вызовы мода (модули в постройку, которую вернул рефлекс evacuate; запрос по
+-- RCON с ним — bad_args): все items этого качества, только из карманов тела, без auto_supply.
+local err = require("scripts.core.err")
 local inv = require("scripts.lib.inventory")
 local G = require("scripts.lib.getitems")
 local armor = require("scripts.lib.armor")
@@ -23,13 +26,22 @@ M.schema = {
   target = { type = { "target", "string" }, values = { "armor" }, required = true },
   items = { type = "items", required = true, min_kinds = 1 },
   auto_supply = { type = "bool", default = false },
+  quality = { type = "string", max = 50 },
 }
 
-local function missing_of(h, items)
+--- quality — только свой вызов мода: в запросе по RCON (ctx.perm_gate) его нет (PROTOCOL §6.11).
+function M.check_args(a, ctx)
+  if a.quality ~= nil and ctx ~= nil and ctx.perm_gate == true then
+    err.raise("bad_args", "args.quality: unknown field")
+  end
+  return a
+end
+
+local function missing_of(h, items, quality)
   local main = h.get_main_inventory()
   local missing = {}
   for name, n in pairs(items) do
-    local have = inv.count(main, name)
+    local have = inv.count(main, name, quality)
     if have < n then missing[name] = n - have end
   end
   return missing
@@ -53,6 +65,17 @@ end
 function M.start(task, ctx)
   local a = task.args
   inv.check_items(a.items, "args.items")
+  local q = a.quality or inv.NORMAL
+  if q ~= inv.NORMAL then
+    if task.perm_gate or not inv.known_quality(q) then return inv.failed("bad_args", "args.quality: unknown quality") end
+    if a.auto_supply or a.target == "armor" then
+      return inv.failed("bad_args", "args.quality: only from the inventory into a building, without auto_supply")
+    end
+    for name in pairs(a.items) do
+      if inv.has_data(name) then return inv.failed("bad_args", "args.items." .. name .. ": items with data are normal only") end
+    end
+  end
+  task.quality = q
   if a.target == "armor" then
     task.armor = true
     if a.auto_supply and next(missing_of(ctx.entity, a.items)) ~= nil then
@@ -71,7 +94,7 @@ function M.start(task, ctx)
         .. ": items with data go only into a chest, vehicle or wagon inventory")
     end
   end
-  local missing = missing_of(ctx.entity, a.items)
+  local missing = missing_of(ctx.entity, a.items, q)
   if next(missing) ~= nil then
     if not a.auto_supply then
       return inv.failed("no_items", "helper does not have the items", { missing = missing })
@@ -100,14 +123,14 @@ function M.tick(task, ctx)
   if r ~= true then return r end
 
   -- в досягаемости: перепроверить наличие (могло измениться, пока шли)
-  local missing = missing_of(h, task.args.items)
+  local missing = missing_of(h, task.args.items, task.quality)
   if next(missing) ~= nil then
     return inv.failed("no_items", "helper does not have the items", G.with_supply(task, { missing = missing }))
   end
   local main = h.get_main_inventory()
   local inserted, left, split = {}, {}, false
   for name, n in pairs(task.args.items) do
-    local moved, whole = inv.move(main, { entity = t }, name, n, h)
+    local moved, whole = inv.move(main, { entity = t }, name, n, h, task.quality)
     if whole then split = true end
     inv.add(inserted, name, moved)
     inv.add(left, name, n - moved)

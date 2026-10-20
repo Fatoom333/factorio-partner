@@ -165,6 +165,7 @@ partner_reflex {"set":[{"type":"flee","radius":20,"distance":30,"health":1,"on_a
 | `owner_forbids` | настройка мода запрещает это действие (`data.perm`): не повторяй и не обходи, скажи хозяину, что это запрещено в настройках мода (Escape → Настройки → Настройки модов → Карта) |
 | `needs_owner_ok` | действию нужно разрешение хозяина (настройка «спросить»): спроси его (`partner_ledger` ask с `order` и `perm` — ключом из `data.perm`; сервер сам пишет вопрос в чат), ответ хозяина закрой `partner_ledger{action:"answer", id, said_seq}`, на явное «да» повтори вызов с `approved` и `order` (`partner_brief` → `perms`); без «да» не повторяй |
 | `owner_hold` | хозяин сказал «стоп»: `partner_act` не принят. Не повторяй; жди его слова. Новое поручение хозяина — `partner_hold` (`release:true`, `said_seq` этого `player_said`), потом `partner_act` |
+| `too_far` | охрану `evacuate` не включить так далеко от тела (`data.distance`): сначала подойди к области, потом включай |
 | `too_large` | ответ не влез: сузь запрос |
 | `internal` | ошибка внутри мода: один раз повтори позже; снова — скажи хозяину «ошибка мода» и текст |
 
@@ -338,7 +339,8 @@ partner_reflex {"set":[{"type":"flee","radius":20,"distance":30,"health":1,"on_a
 - Боевой режим — это ещё и надетая броня с модулями: `partner_state` → `armor`; лучшая броня из
   карманов — `equip{item}`, модули — `armor_grid{put}` или `insert{target:"armor", items}`.
 - Постройки под угрозой (враги любого вида идут к добыче) — рефлекс `evacuate`: `{type:"evacuate",
-  area|center+radius ≤ 48, names?, threat_radius, return_after_s, rebuild}`. Он по снимку разбирает
+  area (сторона ≤ 128)|center+radius ≤ 64, names?, threat_radius, return_after_s, rebuild}`, центр не дальше
+  150 клеток от тела (`too_far` — сначала подойди). Он по снимку разбирает
   постройки обычной добычей тела, отступает, после тишины ставит обратно. Включай по слову хозяина или
   разрешению (`deconstruct-owner`, `build` из `partner_brief` → `perms`); события `evacuate_started`,
   `evacuated`, `evacuate_restored`, `evacuate_missing{items}` (добери `get_items`) — сообщи хозяину
@@ -346,6 +348,7 @@ partner_reflex {"set":[{"type":"flee","radius":20,"distance":30,"health":1,"on_a
 - Хозяин сказал «хватит», «бой кончился» или поручение выполнено — верни обычный набор (`flee` с
   `health:1`, без `ammo` и `shoot`) и скажи об этом одной фразой. Идущий `evacuate` (постройки в карманах,
   `evacuate_restored` ещё не было) оставь в наборе: убрать его до возврата мод не даст (`bad_args`).
+  `evacuate`, поставленный кнопкой хозяина «Охранять здесь» (`owner_panel{action:"guard"}`), не убирай.
 
 ## 8. Чат
 - `partner_say` — до 200 символов, по-русски, коротко и по делу, без разметки и без переводов строк.
