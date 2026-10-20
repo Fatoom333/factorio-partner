@@ -230,11 +230,14 @@ local function foreign_fuel(e, fueled)
 end
 
 --- Свободные печи своей силы рядом: видимые, открытые чанки, берут категорию, пустые, без манипуляторов
---- хозяина, без чужого топлива, не заняты другим помощником. → список по возрастанию расстояния.
-local function free_furnaces(ctx, radius, category, fueled)
+--- хозяина, без чужого топлива, не заняты другим помощником. Круг поиска — вокруг center (точка, где
+--- задачу дали: тело по дороге уходит копать руду или топливо), без center — вокруг тела.
+--- → список по возрастанию расстояния от центра.
+local function free_furnaces(ctx, radius, category, fueled, center)
   local h = ctx.entity
+  local at = center or util.xy(h.position)
   local out = {}
-  local list = h.surface.find_entities_filtered{ type = "furnace", force = h.force, position = h.position, radius = radius }
+  local list = h.surface.find_entities_filtered{ type = "furnace", force = h.force, position = at, radius = radius }
   for _, e in ipairs(list) do
     if e.valid and inv.charted(h, e.position) and inv.visible(ctx, e.position) then
       local ok, cats = pcall(function() return e.prototype.crafting_categories end)
@@ -242,7 +245,7 @@ local function free_furnaces(ctx, radius, category, fueled)
       if ok and type(cats) == "table" and cats[category] and src and res and src.is_empty() and res.is_empty()
           and not (e.unit_number ~= nil and reserve.machine_holder(ctx.helper_id, e.unit_number) ~= nil)
           and not foreign_fuel(e, fueled) and not owner_linked(h, e) then
-        out[#out + 1] = { e = e, d = util.dist(util.xy(h.position), util.xy(e.position)) }
+        out[#out + 1] = { e = e, d = util.dist(at, util.xy(e.position)) }
       end
     end
   end
@@ -365,7 +368,7 @@ end
 local function furnaces_for(S, category)
   local f = S.furn[category]
   if f == nil then
-    f = free_furnaces(S.ctx, S.radius, category, S.fueled)
+    f = free_furnaces(S.ctx, S.radius, category, S.fueled, S.origin)
     S.furn[category] = f
   end
   return f
@@ -484,7 +487,7 @@ local function make_plan(g, task, ctx)
   local main = h.get_main_inventory()
   local S = {
     h = h, ctx = ctx, idx = idx_of(g, ctx), blocked = g.blocked, reasons = g.reasons, radius = g.radius,
-    mineable = g.mineable, furn = {}, fueled = g.fueled, budget = { n = 0, max = M.MAX_CALLS }, choice = {},
+    mineable = g.mineable, furn = {}, fueled = g.fueled, origin = g.origin, budget = { n = 0, max = M.MAX_CALLS }, choice = {},
     pocket = inv.counts(main), stock = {}, collect = {},
     steps = {}, short = {}, visiting = {}, nlog = 0, lt = {}, lk = {}, lo = {},
   }
@@ -524,10 +527,10 @@ end
 local smelt = {}
 smelt.name = "smelt"
 
---- t.args = {recipe, item, count (крафтов), yield, time, category, ingredient, amount, radius}
+--- t.args = {recipe, item, count (крафтов), yield, time, category, ingredient, amount, radius, fueled, origin}
 function smelt.start(t, ctx)
   local a = t.args
-  local fs = free_furnaces(ctx, a.radius, a.category, a.fueled)
+  local fs = free_furnaces(ctx, a.radius, a.category, a.fueled, a.origin)
   local list = {}
   for i = 1, #fs do
     if #list >= M.MAX_FURNACES then break end
@@ -742,7 +745,8 @@ local function start_step(g, task, ctx, step)
     if rec == nil then return inv.failed("not_found", "recipe " .. step.recipe .. " disappeared"), c end
     local ing = rec.ingr[1]
     args = { recipe = step.recipe, item = step.item, count = step.count, yield = step.yield, time = rec.time,
-      category = rec.category, ingredient = ing.name, amount = ing.amount, radius = g.radius, fueled = g.fueled }
+      category = rec.category, ingredient = ing.name, amount = ing.amount, radius = g.radius, fueled = g.fueled,
+      origin = g.origin }
   end
   c.t = new_child(task, ctx, kind, args)
   local ok, res = pcall(MODS[kind].start, c.t, ctx)
@@ -836,6 +840,8 @@ function M.begin(task, ctx, want, opts)
     want = util.copy(want), from = { inventory = {}, storage = {}, crafted = {}, smelted = {}, mined = {} },
     blocked = {}, reasons = {}, start = inv.counts_of(main, want), radius = opts.radius or M.DEFAULT_RADIUS,
     mineable = {}, replans = 0, fueled = {},
+    -- печи ищутся вокруг точки, где задачу дали: шаг «копать» уводит тело от печи
+    origin = util.xy(h.position),
   }
   for name, n in pairs(want) do add(g.from.inventory, name, math.min(n, g.start[name] or 0)) end
   task.supply = g

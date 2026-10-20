@@ -39,7 +39,7 @@ def _load(name):
 P = _load("build_place")
 FURNACE = "stone-furnace"
 CHEST = "wooden-chest"
-TAG = "fp_live_block"
+TAG = "fp-live-block"
 SEARCH = 8
 # (имя, dx, dy, сторона): левая верхняя клетка от клетки якоря; печи 2×2 не касаются друг друга
 BLOCK = ((FURNACE, 0, 0, 2), (FURNACE, 3, 0, 2), (CHEST, 6, 0, 1))
@@ -47,7 +47,15 @@ SNAP_HALF = 24                # половина стороны окна сни�
 SNAP_STEP = 10                # окна `map` радиуса 10: в ответе не больше 100 сущностей
 
 
-def _entities(block=BLOCK):
+def _use_chest(name):
+    """Какой именно сундук (или другая постройка 1×1) ставится в блоке: зависит от запасов стенда."""
+    global CHEST, BLOCK
+    CHEST = name
+    BLOCK = ((FURNACE, 0, 0, 2), (FURNACE, 3, 0, 2), (CHEST, 6, 0, 1))
+
+
+def _entities(block=None):
+    block = BLOCK if block is None else block
     return [{"name": n, "dx": dx, "dy": dy} for n, dx, dy, _ in block]
 
 
@@ -108,8 +116,12 @@ def run(client) -> dict:
     result = {"log_must_not_match": LOG_MUST_NOT_MATCH}
     if not P.start(client, result):
         return result
-    if not (P.get_item(client, FURNACE, 2, result, "get_furnace") and P.get_item(client, CHEST, 2, result, "get_chest")):
-        return P.setup_failed(result, "на складах хозяина нет ни печей и сундуков, ни сырья для них")
+    if not P.get_item(client, FURNACE, 2, result, "get_furnace"):
+        return P.setup_failed(result, "на складах хозяина нет ни печей, ни камня для них")
+    chest = P.get_chests(client, result, 2)       # сундук любого вида из того, что есть (дерево, железо, сталь)
+    if chest is None:
+        return P.setup_failed(result, "на складах хозяина нет ни сундуков, ни сырья для них")
+    _use_chest(chest)
     base = P.helper_state(client)["pos"]
     anchor0 = {"x": int(base["x"] // 1), "y": int(base["y"] // 1)}
     pockets = {n: P.helper_count(client, n) for n in (FURNACE, CHEST)}

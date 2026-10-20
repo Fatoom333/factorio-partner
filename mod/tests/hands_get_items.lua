@@ -375,6 +375,18 @@ S.suite("hands_get_items", {
       S.eq(d.detail.from, { mined = { ["iron-ore"] = 3 }, smelted = { ["iron-plate"] = 3 } })
       S.eq(C.counts(W.main)["iron-plate"], 3)
   end },
+  { "своя печь рядом, малый радиус, топливо копать далеко: после добычи печь та же, плиты выплавлены", function()
+      local W = prepare{ items = { ["iron-ore"] = 5 } }
+      prototypes.item.coal.type = "item"
+      C.resource("coal", { x = 40.5, y = 0.5 }, 100)
+      local f = furnace({ x = 3.5, y = 0.5 })
+      local d, kind = C.wait(get{ items = { ["iron-plate"] = 5 }, radius = 4 })
+      S.eq(kind, "job_done", S.dump(d))
+      S.eq(d.detail.have, { ["iron-plate"] = 5 })
+      S.ok(d.detail.from.mined and (d.detail.from.mined.coal or 0) > 0, "топливо добыто: " .. S.dump(d))
+      S.eq(d.detail.from.smelted, { ["iron-plate"] = 5 })
+      S.eq(f.smelted, 5)
+  end },
   { "руками: камень", function()
       local W = prepare()
       C.resource("stone", { x = 4.5, y = 0.5 }, 100)

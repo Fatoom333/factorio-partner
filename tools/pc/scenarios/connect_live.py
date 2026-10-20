@@ -40,6 +40,7 @@ def _load(name):
 B = _load("_belt")
 P = _load("build_place")
 HELPER = B.HELPER
+P.HELPER = HELPER          # общие помощники build_place работают с тем же помощником, что и этот сценарий
 BELT_NAMES = ("transport-belt", "fast-transport-belt", "express-transport-belt", "underground-belt",
               "fast-underground-belt", "express-underground-belt")
 POLES = ("small-electric-pole", "medium-electric-pole", "big-electric-pole", "substation")
@@ -128,7 +129,7 @@ def part_belt(client, result, reasons, t, origin):
     a, b = pair
     span = max(abs(a[0] - b[0]), abs(a[1] - b[1]))
     part["points"] = {"from": list(a), "to": list(b), "span": span}
-    args = {"kind": "belt", "from": {"pos": B.center(a)}, "to": {"pos": B.center(b)}}
+    args = {"kind": "belt", "from": {"pos": B.center(a)}, "to": {"pos": B.center(b)}, "belt": "transport-belt"}
     areas = [B.area_of([a, b], pad=SNAP_PAD)]
     before = _snap_all(client, areas, BELT_NAMES)
     part["before"] = len(before)
@@ -156,6 +157,10 @@ def part_belt(client, result, reasons, t, origin):
             areas.append(dd["area"])
             before = _snap_all(client, areas, BELT_NAMES)
 
+        need = {k: v for k, v in (dd.get("need") or {}).items() if isinstance(v, int) and v > 0}
+        if need:
+            # склады стенда далеко от места прокладки: принести заранее с широким радиусом
+            part["prefetch"] = B.brief(B.act(client, "get_items", {"items": need, "radius": 128}))
         real = B.act(client, "connect_entities", dict(args, build=True, auto_supply=True))
         rd = B.detail_of(real)
         part["real"] = B.brief(real)
@@ -245,7 +250,7 @@ def _get_consumer(client, result):
     """Манипулятор в карманы: склад или `get_items` (крафт с промежуточными). → bool."""
     if P.helper_count(client, CONSUMER) >= 1:
         return True
-    r = B.act(client, "get_items", {"items": {CONSUMER: 1}, "radius": 64})
+    r = B.act(client, "get_items", {"items": {CONSUMER: 1}, "radius": 128})
     result["consumer_get"] = B.brief(r)
     return P.helper_count(client, CONSUMER) >= 1
 
@@ -291,6 +296,7 @@ def part_power(client, result, reasons, t, origin):
             return
         unit = B.detail_of(r).get("unit_number")
         placed = (CONSUMER, pos["x"], pos["y"], unit)
+        part["prefetch"] = B.brief(B.act(client, "get_items", {"items": {"medium-electric-pole": 3}, "radius": 128}))
         real = B.act(client, "connect_entities",
                      {"kind": "power", "from": {"pos": B.center(f)}, "to": {"target": {"unit_number": unit, "pos": pos}},
                       "build": True, "auto_supply": True})
