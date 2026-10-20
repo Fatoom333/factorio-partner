@@ -679,7 +679,7 @@ async def test_brief_notes_come_only_from_forge(cfg, fake, monkeypatch):
 
     def brief_notes(config):
         got["config"] = config
-        return {"profile": "vulkan-start", "notes": "Люблю ровные ряды буров.", "truncated": False}
+        return {"profile": "sample-save", "notes": "Люблю ровные ряды буров.", "truncated": False}
     name = install_forge(monkeypatch, "fake_forge_notes", brief_notes=brief_notes)
     # a notes.md lying in forge_home must NOT be picked up by the server itself
     prof = cfg.forge_home / "profiles" / "other"
@@ -689,7 +689,7 @@ async def test_brief_notes_come_only_from_forge(cfg, fake, monkeypatch):
              poll_interval=0.01, forge_module=name)
     r = await c.op_brief("h1", KEY)
     assert "Честность" in r["rules"] and r["notes"] == "Люблю ровные ряды буров."
-    assert r["profile"] == "vulkan-start" and r["helper"] == "h1" and "notes_missing" not in r
+    assert r["profile"] == "sample-save" and r["helper"] == "h1" and "notes_missing" not in r
     assert got["config"] is c.cfg
     await c.close()
 
@@ -711,7 +711,7 @@ async def test_brief_notes_truncated_and_reason(cfg, fake, monkeypatch):
 
 async def test_brief_without_forge_has_no_profile_guessing(core, cfg, tmp_path):
     # even a forge checkout with an active-profile marker and a notes.md is not looked at
-    prof = cfg.forge_home / "profiles" / "vulkan-start"
+    prof = cfg.forge_home / "profiles" / "sample-save"
     prof.mkdir(parents=True)
     (prof / "notes.md").write_text("не читать", encoding="utf-8")
     r = await core.op_brief("h1", KEY)

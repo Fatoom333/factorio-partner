@@ -257,7 +257,7 @@ def test_brief_rules_are_short_and_point_to_the_agent_prompt():
 
 async def test_brief_has_rules_link_notes_and_style(cfg, fake, home, monkeypatch):
     mod = types.ModuleType("fake_forge_r33")
-    mod.brief_notes = lambda config: {"profile": "vulkan-start", "notes": "Лава слева.", "truncated": False}
+    mod.brief_notes = lambda config: {"profile": "sample-save", "notes": "Лава слева.", "truncated": False}
     monkeypatch.setitem(sys.modules, "fake_forge_r33", mod)
     (home / "style.md").write_text("Коротко.", encoding="utf-8")
     c = Core(cfg, make_bridge(cfg), forge_module="fake_forge_r33")
@@ -295,7 +295,7 @@ def _old_forge(monkeypatch, refuse=("notes", "list-profiles"), stderr=USAGE, rc=
         if argv[0] in refuse:
             return subprocess.CompletedProcess(argv, rc, b"", stderr)
         if argv[0] == "list-profiles":
-            return subprocess.CompletedProcess(argv, 0, b"* vulkan-start (from X)\n", b"")
+            return subprocess.CompletedProcess(argv, 0, b"* sample-save (from X)\n", b"")
         raise AssertionError(argv)
 
     monkeypatch.setattr(forge, "_run_forge", run)

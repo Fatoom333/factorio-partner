@@ -53,6 +53,9 @@ class World:
                 self.stock[raw] -= max(0, n - self.inv.get(raw, 0))     # недостающее сырьё берётся со склада
                 self.inv[raw] = max(0, self.inv.get(raw, 0) - n)
             self.inv[item] = target
+            if self.stock.get("copper-cable", 0) >= target * 3:     # промежуточный со склада
+                return self._done("get_items", {"have": {item: target}, "from": {
+                    "crafted": {item: target}, "storage": {"copper-cable": target * 3}}})
             return self._done("get_items", {"have": {item: target},
                                             "from": {"crafted": {item: target, "copper-cable": target * 3}}})
         if item in ("assembling-machine-1", "small-electric-pole", "burner-mining-drill"):
@@ -197,7 +200,7 @@ def test_all_three_parts_pass(fake_rcon):
 
 
 def test_ready_item_on_storage_is_setup_failure_for_craft(fake_rcon):
-    res = run(World(ready={"electronic-circuit": 10, "inserter": 10}), fake_rcon)
+    res = run(World(ready={c[0]: 10 for c in load().CRAFT_CANDIDATES}), fake_rcon)
     assert res["ok"] is False and res["error"]["kind"] == "setup"
     assert "готовое уже есть" in res["setup_failed"]["craft"]
     assert res["smelt"].get("item") == "stone-brick"        # остальные части шли дальше
@@ -289,11 +292,66 @@ def test_craft_uses_radius_where_raw_was_found(fake_rcon):
     assert ("get_items", {"items": {"electronic-circuit": 5}, "radius": 128}) in w.acts
 
 
-def test_craft_skips_candidates_with_ready_middle(fake_rcon):
-    # промежуточный copper-cable лежит на складе: его в crafted не будет, поэтому выбирается другой предмет
+def test_craft_prefers_candidate_without_middle_anywhere(fake_rcon):
+    # промежуточный copper-cable лежит на складе: схема берёт кандидата, чей промежуточный придётся крафтить
     w = World(ready={"copper-cable": 50})
     res = run(w, fake_rcon)
     assert res["craft"]["item"] == "inserter", res["craft"]
+    assert res["craft"]["middle_from"] == "crafted" and res["craft"]["chain_checked"] is True
+
+
+def test_craft_fails_when_middle_not_crafted(fake_rcon, monkeypatch):
+    # цепочку рецептов проверяем: без промежуточного в from.crafted — провал
+    w = World()
+    orig = w._done
+
+    def done(do, detail):
+        if do == "get_items":
+            detail["from"].get("crafted", {}).pop("copper-cable", None)
+        return orig(do, detail)
+    monkeypatch.setattr(w, "_done", done)
+    res = run(w, fake_rcon)
+    assert res["ok"] is False and any("без промежуточного copper-cable" in x for x in res.get("reasons", [])), res
+
+
+def test_craft_spare_candidate_with_middle_on_storage(fake_rcon):
+    # у единственного кандидата промежуточный лежит на складе: он берётся запасным, промежуточный — из from.storage
+    w = World(ready={"copper-cable": 50})
+    cands = tuple(c for c in load().CRAFT_CANDIDATES if c[0] == "electronic-circuit")
+    res = run(w, fake_rcon, CRAFT_CANDIDATES=cands)
+    craft = res["craft"]
+    assert craft["item"] == "electronic-circuit" and craft["middle_from"] == "storage", craft
+    assert craft["chain_checked"] is False and "не проверена" in craft["note"]
+    assert not any(x.startswith("craft:") for x in res.get("reasons", [])), res
+
+
+def test_craft_spare_fails_when_middle_on_storage_not_taken(fake_rcon, monkeypatch):
+    w = World(ready={"copper-cable": 50})
+    orig = w._done
+
+    def done(do, detail):
+        if do == "get_items":
+            detail["from"].pop("storage", None)
+        return orig(do, detail)
+    monkeypatch.setattr(w, "_done", done)
+    cands = tuple(c for c in load().CRAFT_CANDIDATES if c[0] == "electronic-circuit")
+    res = run(w, fake_rcon, CRAFT_CANDIDATES=cands)
+    assert any("не в detail.from.storage" in x for x in res.get("reasons", [])), res
+
+
+def test_craft_skipped_only_when_item_itself_is_on_storage(fake_rcon):
+    w = World(ready={"electronic-circuit": 3})
+    res = run(w, fake_rcon)
+    assert res["craft"]["item"] == "inserter", res["craft"]
+
+
+def test_smelt_asks_with_small_radius_near_own_furnace(fake_rcon):
+    w = World()
+    res = run(w, fake_rcon)
+    asks = [a for do, a in w.acts if do == "get_items" and list(a["items"]) in (["iron-plate"], ["copper-plate"], ["stone-brick"])]
+    assert asks and all(a["radius"] <= 6 for a in asks), asks
+    assert res["smelt"]["radius"] == asks[-1]["radius"]
+    assert res["smelt"]["furnace_dist"] <= 5
 
 
 def test_new_candidates_are_reachable(fake_rcon):

@@ -21,7 +21,7 @@
 Каждый опрос пишет в выборку состояние тела (`state`: задача, idle_ticks, busy_share, tick). В ответе:
 `body` (игровые минуты, последние idle_ticks/busy_share, доля опросов с задачей), `module_errors`
 (рост за прогон).
-Остальные переменные: FP_BENCH_HELPER (имя помощника, по умолчанию h1), FP_BENCH_WAIT_S,
+Остальные переменные: FP_BENCH_ITEM (какие пластины достают, по умолчанию iron-plate), FP_BENCH_HELPER (имя помощника, по умолчанию h1), FP_BENCH_WAIT_S,
 FP_BENCH_DIR (каталог снимка, по умолчанию временный).
 Только конверты `/partner <JSON>` через live_client (TESTING.md §3).
 """
@@ -56,19 +56,26 @@ def _env_float(name, default):
 HELPER = os.environ.get("FP_BENCH_HELPER") or "h1"
 WAIT_S = _env_float("FP_BENCH_WAIT_S", 900)
 POLL_S = 5.0
+STOCK_WAIT_S = 60.0          # сколько ждать видимости пластин на складах хозяина
 SETTLE_TICKS = 120          # столько тиков простоя после достигнутой цели — и можно завершать
 FINISH_MARGIN_S = 30.0      # запас до конца времени сценария на итоговую проверку
-PLATE = "iron-plate"
+PLATE = os.environ.get("FP_BENCH_ITEM") or "iron-plate"   # на сейве без железа — другой предмет (steel-plate)
+ITEM_RU = {"iron-plate": "железных пластин", "steel-plate": "стальных пластин", "copper-plate": "медных пластин"}
 PLATES_GOAL = 50
 CHESTS_GOAL = 2
 CHEST_NAMES = ("wooden-chest", "iron-chest", "steel-chest")
-IRON_CHEST_PLATES = 8
+IRON_CHEST_PLATES = 8 if PLATE == "iron-plate" else 0   # только железо уходит в железный сундук
 CHEST_RADIUS = 16           # `map` отдаёт не больше 32
 SAMPLES_KEPT = 20
 
-TASK = ("Поручение: достань {plates} железных пластин (бери со складов хозяина) и поставь {chests} сундука "
+TASK = ("Поручение: достань {plates} {item_ru} (бери со складов хозяина) и поставь {chests} сундука "
         "рядом с тем местом, где ты сейчас стоишь (в пределах {radius} клеток). Сундуки — любые: готовые "
         "со склада или собранные руками. Закончишь — коротко напиши, что сделано.")
+
+
+def task_text():
+    return TASK.format(plates=PLATES_GOAL, chests=CHESTS_GOAL, radius=CHEST_RADIUS,
+                       item_ru=ITEM_RU.get(PLATE, PLATE))
 
 
 def bench_dir():
@@ -160,8 +167,19 @@ def prepare(client, result):
     if not H.spawn(client, result, HELPER):
         result["ok"] = False
         return None
-    stock = client.call_ok("stock", {"radius": 64, "items": [PLATE], "limit": 50}, HELPER)
-    have = as_dict(stock.get("total")).get(PLATE, 0)
+    # индекс складов строится постепенно после появления помощника: ждём, пока пластины станут видны
+    have = 0
+    for radius, wait_s in ((64, STOCK_WAIT_S), (128, 20.0)):
+        def look(radius=radius):
+            data = client.call_ok("stock", {"radius": radius, "items": [PLATE], "limit": 50}, HELPER)
+            look.n = as_dict(data.get("total")).get(PLATE, 0)
+            return look.n >= PLATES_GOAL
+        look.n = 0
+        client.poll(look, wait_s, 2.0)
+        have = max(have, look.n)
+        result.setdefault("stock_scan", []).append({"radius": radius, "plates": look.n})
+        if have >= PLATES_GOAL:
+            break
     result["stock_plates"] = have
     base = snapshot(client)
     if have + base["plates"] < PLATES_GOAL:
@@ -177,7 +195,7 @@ def prepare(client, result):
         pass
     with open(os.path.join(bench_dir(), "ready"), "w", encoding="utf-8") as f:
         f.write(HELPER)
-    result["task"] = TASK.format(plates=PLATES_GOAL, chests=CHESTS_GOAL, radius=CHEST_RADIUS)
+    result["task"] = task_text()
     result["baseline"] = {"pos": base["pos"], "plates": base["plates"], "chests": len(base["chests"]), "tick": base["tick"]}
     return base
 

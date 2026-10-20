@@ -114,3 +114,48 @@ def test_wrapper_script_is_generic():
     assert "pilot_bench" in text and "-Local" in text and "bench.pilot_agent" in text
     import re
     assert not re.search(r"[A-Za-z]:[\/]+(Users|Temp)", text)       # пути машины — только в local/ и pc.local.json
+
+
+def test_task_file_overrides_scenario_task(tmp_path, monkeypatch):
+    task = tmp_path / "task.txt"
+    task.write_text("\ufeffсвоё поручение\n", encoding="utf-8")
+    ns = argparse.Namespace(task=None, task_file=str(task), session="s.json", helper="h1", out=str(tmp_path),
+                            claude="claude", model="m", mcp_config="x", effort=None, max_minutes=1,
+                            max_turns=1, watch_pid=0, stop_file=None, cwd=str(tmp_path))
+    (tmp_path / "s.json").write_text(json.dumps({"helpers": [{"id": "h1", "prompt": "p"}]}), encoding="utf-8")
+    ns.session = str(tmp_path / "s.json")
+    seen = {}
+
+    class Boom(Exception):
+        pass
+
+    def fake_popen(cmd, **kw):
+        raise Boom()
+
+    monkeypatch.setattr(pilot_agent.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(pilot_agent, "compose_prompt", lambda a, b: seen.setdefault("task", b) or "")
+    with pytest.raises(Boom):
+        pilot_agent.run_agent(ns)
+    assert seen["task"].strip() == "своё поручение"
+
+
+def test_pc_agent_scripts_are_generic():
+    import re
+    for name in ("run-pilot-bench.ps1", os.path.join("bench", "pc-pilot.ps1")):
+        path = os.path.join(PC_DIR, name)
+        assert open(path, "rb").read().startswith(b"\xef\xbb\xbf")
+        text = open(path, encoding="utf-8-sig").read()
+        assert not re.search(r"Vulkan|vulkan|Торт|wolfy", text)
+    text = open(os.path.join(PC_DIR, "run-pilot-bench.ps1"), encoding="utf-8-sig").read()
+    assert "pc-pilot.ps1" in text and "'local', 'pc'" in text
+
+
+def test_pc_pilot_never_resets_the_pc_copy():
+    """Замер не откатывает папку проекта на ПК: только перемотка, -Sync — явным ключом, код сверяется."""
+    pilot = open(os.path.join(PC_DIR, "bench", "pc-pilot.ps1"), encoding="utf-8-sig").read()
+    assert "reset" not in pilot and "--ff-only" in pilot and "--is-ancestor" in pilot
+    assert "$ExpectCommit" in pilot and "pc_commit" in pilot and "stand_commit" in pilot
+    bench = open(os.path.join(PC_DIR, "run-pilot-bench.ps1"), encoding="utf-8-sig").read()
+    call = next(line for line in bench.splitlines() if "pc-pilot.ps1 -Stage" in line)
+    assert "-Sync" not in call and "-ExpectCommit $StandCommit" in call
+    assert "if ($Sync) { $remoteCmd += ' -Sync' }" in bench

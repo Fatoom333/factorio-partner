@@ -2,11 +2,15 @@
 
 Ход (сервер без окна, хозяин офлайн; три независимые части, у каждой своё «не вышло подготовить»):
 1. Крафт с промежуточными (CRAFT_CANDIDATES): выбирается предмет, готового которого нет ни у помощника,
-   ни на складах, и промежуточного продукта тоже нет, при том что сырья (у помощника и на складах)
-   хватает. Радиус берётся тот (64 или 128), в котором `stock` нашёл всё сырьё, и тот же радиус
-   передаётся в `get_items`. `get_items` → job_done, `detail.have` не меньше нужного,
-   `detail.from.crafted` содержит и сам предмет, и промежуточный продукт, `from.storage` самого
-   предмета нет.
+   ни на складах радиуса, при том что сырья (у помощника и на складах) хватает. Радиус берётся тот
+   (64 или 128), в котором `stock` нашёл всё сырьё, и тот же радиус передаётся в `get_items`.
+   `get_items` → job_done, `detail.have` не меньше нужного, `detail.from.crafted` содержит сам предмет,
+   `from.storage` самого предмета нет. Предпочитается кандидат, промежуточного продукта которого нет ни
+   в карманах, ни на складах радиуса: тогда `from.crafted` обязан содержать и промежуточный — это
+   проверка цепочки рецептов (`middle_from: crafted`). Если такого кандидата нет, берётся запасной:
+   промежуточный на складе — он обязан быть в `from.storage` (`middle_from: storage`), в карманах —
+   он не проверяется (`middle_from: pockets`); в обоих случаях в результате `chain_checked: false` —
+   цепочка рецептов этим прогоном не проверена.
 2. Плавка (SMELT_CANDIDATES): на тестовой базе все печи хозяина подключены к манипуляторам, и
    `get_items` честно отвечает `no_furnace`. Поэтому помощник сам ставит свою каменную печь рядом
    (печь со склада или крафт из камня, `place` на свободном стыке клеток: печь 2×2). Продукта
@@ -55,7 +59,8 @@ SMELT_CANDIDATES = (("iron-plate", "iron-ore", 1, 5), ("copper-plate", "copper-o
                     ("stone-brick", "stone", 2, 5))
 FURNACE = "stone-furnace"
 # где искать место для печи 2×2 (её центр на стыке клеток): смещения от клетки помощника
-CORNERS = ((5, 0), (0, 5), (-5, 0), (0, -5), (6, 6), (-6, 6), (6, -6), (-6, -6), (9, 0), (0, 9), (-9, 0), (0, -9))
+CORNERS = ((3, 0), (0, 3), (-3, 0), (0, -3), (4, 4), (-4, 4), (4, -4), (-4, -4), (5, 0), (0, 5), (-5, 0), (0, -5),
+           (6, 6), (-6, 6), (6, -6), (-6, -6), (9, 0), (0, 9), (-9, 0), (0, -9))
 # (рецепт, сырьё, сырья на крафт, сколько крафтов): долгая партия, чтобы было что снимать
 CANCEL_CANDIDATES = (("iron-gear-wheel", "iron-plate", 2, 40), ("pipe", "iron-plate", 1, 60),
                      ("copper-cable", "copper-plate", 1, 80))
@@ -64,6 +69,7 @@ SETTLE_S = 3.0                # сколько ждать после сняти�
 JOB_START_WAIT_S = 20.0
 FAIL_WAIT_S = 20.0
 SETUP_SHORTFALL = ("no_furnace", "no_fuel")
+SMELT_MAX_RADIUS = 12         # дальше печь «вплотную» уже не считается
 
 
 def _ask(client, item, target, radius, result, key):
@@ -82,25 +88,42 @@ def _shortfall_codes(detail):
 
 # ---------------------------------------------------------------- 1. крафт с промежуточными
 def _pick_craft(client, result, seen):
-    """Первый кандидат, у которого сырья хватает, а готового и промежуточного нет ни в карманах, ни на
-    складах радиуса. → (item, middle, n, radius) | None."""
+    """Кандидат, у которого сырья хватает, а самого предмета нет ни в карманах, ни на складах радиуса.
+    Первым — тот, у кого и промежуточного нет нигде (его крафт проверяет цепочку рецептов); иначе первый
+    запасной. → (item, middle, n, radius, middle_from) | None; middle_from — crafted | storage | pockets."""
+    spare = None
     for item, middle, raw, n in CRAFT_CANDIDATES:
-        if P.helper_count(client, item) or P.helper_count(client, middle):
-            seen.append(f"{item}: готовое или {middle} уже в карманах")
+        if P.helper_count(client, item):
+            seen.append(f"{item}: готовое уже в карманах")
             continue
         for radius in (64, 128):
             total = client.call_ok("stock", {"radius": radius, "items": [item, middle, *raw], "limit": 50},
                                    HELPER).get("total") or {}
-            if total.get(item, 0) or total.get(middle, 0):
-                seen.append(f"{item}: готовое уже есть ({total.get(item, 0)}) или {middle} ({total.get(middle, 0)})")
+            if total.get(item, 0):
+                seen.append(f"{item}: готовое уже есть на складе ({total.get(item, 0)})")
                 break
             short = [r for r, need in raw.items() if P.helper_count(client, r) + total.get(r, 0) < need]
             if not short:
-                result.setdefault("scan", []).append({"radius": radius, "total": total, "for": item})
-                return item, middle, n, radius
+                if P.helper_count(client, middle):
+                    middle_from = "pockets"
+                elif total.get(middle, 0):
+                    middle_from = "storage"
+                else:
+                    middle_from = "crafted"
+                scan = {"radius": radius, "total": total, "for": item}
+                if middle_from == "crafted":
+                    result.setdefault("scan", []).append(scan)
+                    return item, middle, n, radius, middle_from
+                seen.append(f"{item}: {middle} уже есть ({middle_from}) — запасной")
+                if spare is None:
+                    spare = (scan, (item, middle, n, radius, middle_from))
+                break
         else:
             seen.append(f"{item}: не хватает сырья")
-    return None
+    if spare is None:
+        return None
+    result.setdefault("scan", []).append(spare[0])
+    return spare[1]
 
 
 def part_craft(client, result, reasons):
@@ -110,7 +133,11 @@ def part_craft(client, result, reasons):
     if pick is None:
         part["setup_failed"] = "нет предмета для крафта с промежуточными: " + "; ".join(seen)
         return
-    item, middle, n, radius = pick
+    item, middle, n, radius, middle_from = pick
+    part.update(middle_from=middle_from, chain_checked=middle_from == "crafted")
+    if middle_from != "crafted":
+        part["note"] = (f"промежуточный {middle} уже был ({middle_from}): цепочка рецептов этим прогоном "
+                        "не проверена; " + "; ".join(seen))
     r, d = _ask(client, item, n, radius, result, "craft_call")
     src = d.get("from") or {}
     have = P.helper_count(client, item)
@@ -123,8 +150,10 @@ def part_craft(client, result, reasons):
     crafted = src.get("crafted") or {}
     if crafted.get(item, 0) <= 0:
         reasons.append(f"craft: detail.from.crafted без {item}: {src}")
-    if middle not in crafted:
+    if middle_from == "crafted" and crafted.get(middle, 0) <= 0:
         reasons.append(f"craft: detail.from.crafted без промежуточного {middle}: {src}")
+    if middle_from == "storage" and (src.get("storage") or {}).get(middle, 0) <= 0:
+        reasons.append(f"craft: промежуточный {middle} лежал на складе, но не в detail.from.storage: {src}")
     if (src.get("storage") or {}).get(item):
         reasons.append(f"craft: {item} взят со склада, хотя его там не было: {src}")
 
@@ -153,6 +182,13 @@ def _get_furnace(client, result):
     if P.helper_count(client, "stone") >= 5:
         result["smelt_furnace_craft"] = P.brief(P.act(client, "craft", {"recipe": FURNACE, "count": 1}))
     return P.helper_count(client, FURNACE) >= 1
+
+
+def _smelt_radius(base, pos):
+    """Маленький радиус для `get_items` плавки: только-только до своей печи (центр на `pos`) и ни метром
+    дальше, чтобы чужие склады и печи базы не участвовали. Запас на размер печи 2×2 и клетку помощника."""
+    dist = ((pos["x"] - base["x"]) ** 2 + (pos["y"] - base["y"]) ** 2) ** 0.5
+    return max(1, min(SMELT_MAX_RADIUS, int(dist) + 2)), round(dist, 1)
 
 
 def _place_furnace(client, result):
@@ -208,13 +244,16 @@ def part_smelt(client, result, reasons):
             if not _get_ore(client, ore, per * n, result):
                 seen.append(f"{product}: руду {ore} достать не удалось")
                 continue
-            r, d = _ask(client, product, n, 64, result, "smelt_call")
+            radius, dist = _smelt_radius(P.helper_state(client)["pos"], placed[1])
+            part.update(radius=radius, furnace_dist=dist)
+            r, d = _ask(client, product, n, radius, result, "smelt_call")
             src = d.get("from") or {}
             have = P.helper_count(client, product)
             part.update(item=product, ore=ore, source=src, after=have)
             if r["kind"] != "job_done":
                 if _shortfall_codes(d) & set(SETUP_SHORTFALL):
-                    part["setup_failed"] = f"плавка {product}: {d.get('shortfall')}"
+                    part["setup_failed"] = (f"плавка {product}: {d.get('shortfall')} (radius {radius}, своя печь "
+                                            f"в {dist} клетках, руда {ore} в карманах: {P.helper_count(client, ore)})")
                 else:
                     reasons.append(f"smelt: get_items не done: {r['kind']} {P.code_of(r)}")
                 return

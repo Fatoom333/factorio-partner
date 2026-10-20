@@ -3,7 +3,7 @@
 Запуск (из tools/pc):
     python -m bench.pilot_agent run    --model sonnet --cwd <каталог> --mcp-config <mcp.json> --session <session.json>
                                        --helper h1 --out <каталог прогона> [--max-minutes 15] [--max-turns 120]
-                                       [--watch-pid PID] [--stop-file ФАЙЛ] [--claude claude]
+                                       [--watch-pid PID] [--stop-file ФАЙЛ] [--task-file ФАЙЛ] [--claude claude]
     python -m bench.pilot_agent record --manifest <manifest.json> --label sonnet-1 --model sonnet
                                        [--transcript ..] [--result ..] [--until ISO] [--usage-before N] [--usage-after N]
 
@@ -167,6 +167,9 @@ def run_agent(args: argparse.Namespace) -> Dict[str, Any]:
     with open(args.session, "r", encoding="utf-8-sig") as f:
         session = json.load(f)
     task = args.task
+    if not task and getattr(args, "task_file", None):
+        with open(args.task_file, "r", encoding="utf-8-sig") as f:
+            task = f.read().strip()
     if not task:
         task = _scenario_task()
     prompt = compose_prompt(helper_prompt(session, args.helper), task)
@@ -222,7 +225,7 @@ def _scenario_task() -> str:
     assert spec is not None and spec.loader is not None
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
-    return mod.TASK.format(plates=mod.PLATES_GOAL, chests=mod.CHESTS_GOAL, radius=mod.CHEST_RADIUS)
+    return mod.task_text()
 
 
 def record(args: argparse.Namespace) -> Dict[str, Any]:
@@ -260,6 +263,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     r.add_argument("--helper", default="h1")
     r.add_argument("--out", required=True)
     r.add_argument("--task", help="текст поручения (по умолчанию — из сценария pilot_bench)")
+    r.add_argument("--task-file", dest="task_file", help="файл с текстом поручения (когда сценарии рядом нет)")
     r.add_argument("--max-minutes", type=float, default=DEFAULT_MAX_MINUTES)
     r.add_argument("--max-turns", type=int, default=DEFAULT_MAX_TURNS)
     r.add_argument("--watch-pid", type=int, default=0)

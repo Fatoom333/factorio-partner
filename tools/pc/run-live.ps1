@@ -31,8 +31,10 @@ param(
     [ValidateSet('factorio-partner', 'partner-test')]
     [string[]]$Mods,
 
-    [ValidatePattern('^[A-Za-z0-9._-]{1,64}\.zip$')]
-    [string]$Save = 'Vulkan-Start-test.zip',
+    # Копия сейва для стенда (имя zip в папке сохранений ПК). Пусто — ключ `save` из tools/pc/pc.local.json;
+    # нет и его — ошибка (рабочий сейв игрока по умолчанию не берётся).
+    [ValidatePattern('^([A-Za-z0-9._-]{1,64}\.zip)?$')]
+    [string]$Save = '',
 
     [ValidateRange(10, 7200)]
     [int]$TimeoutSec = 600,
@@ -68,6 +70,16 @@ $ErrorActionPreference = 'Stop'
 $env:PYTHONIOENCODING = 'utf-8'
 
 $Here = Split-Path -Parent $MyInvocation.MyCommand.Path
+if (-not $Save) {
+    $pcCfgPath = Join-Path $Here 'pc.local.json'
+    if (Test-Path -LiteralPath $pcCfgPath) {
+        $pcCfg = Get-Content -LiteralPath $pcCfgPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        if ($pcCfg.PSObject.Properties['save'] -and $pcCfg.save) { $Save = [string]$pcCfg.save }
+    }
+    if ($Save -notmatch '^[A-Za-z0-9._-]{1,64}\.zip$') {
+        throw 'не задан сейв стенда: параметр -Save или ключ save в tools/pc/pc.local.json'
+    }
+}
 $Remote = "D:\Temp\fp-live-$Slot"          # только цифра слота, путь фиксированный
 $RemoteFwd = "D:/Temp/fp-live-$Slot"
 $PayloadRemote = "D:/Temp/fp-live-$Slot.payload.zip"

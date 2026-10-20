@@ -18,6 +18,7 @@ PILOT = "pilot"
 STRATEGIST = "strategist"
 ROLES = (VOICE, PILOT, STRATEGIST)
 NOT_ALLOWED = "not_allowed"
+BUDGET = "budget"
 
 # tools that only read (the game, the server's notes, the inbox) whatever the arguments
 _READS = frozenset({
@@ -57,7 +58,7 @@ ALLOWED: dict[str, frozenset[str]] = {
 # which events a role's partner_wait hands over (docs/MCP.md «Роли»); None — every event, as before
 WAKE: dict[str, frozenset[str] | None] = {
     PILOT: None,
-    VOICE: frozenset({"player_said", "owner_stop", "owner_resume", "game_reloaded"}),
+    VOICE: frozenset({"player_said", "owner_stop", "owner_resume", "game_reloaded", "budget_low"}),
     STRATEGIST: frozenset({"order", "plan_done", "owner_stop", "owner_resume", "game_reloaded",
                            "died", "helper_lost", "package_verified", "package_unmet"}),
 }
@@ -103,6 +104,22 @@ def require(role: str, tool: str, args: dict | None = None) -> None:
         cap = capability(tool, args)
         what = tool if cap == tool else f"{tool} ({_WRITE_FORM.get(tool, 'write')})"
         raise PartnerError(NOT_ALLOWED, f"{what} is not allowed for role {role}")
+
+
+def budget_gate(level: str, role: str, tool: str, args: dict | None = None) -> None:
+    """The plan-limit watchdog (budget.py, docs/MCP.md «Сторож лимита»), after ``require``.
+
+    ``voice_only``: the pilot and the strategist keep reading and ``partner_cancel`` /
+    ``partner_hold`` (stopping and holding the body costs nothing); every other write is refused.
+    ``strategist_off``: the strategist may not put or resume build packages. Other levels pass."""
+    if level == "voice_only" and role in (PILOT, STRATEGIST):
+        cap = capability(tool, args)
+        if cap not in READ and tool not in ("partner_cancel", "partner_hold"):
+            raise PartnerError(BUDGET, f"{tool}: the plan limit is nearly spent, only the mod and "
+                                       "the voice work now (partner_cancel and partner_hold stay)")
+    elif level in ("strategist_off", "voice_only") and role == STRATEGIST             and capability(tool, args) == "partner_ledger.write":
+        raise PartnerError(BUDGET, "partner_ledger put/resume: the plan limit passed its first "
+                                   "threshold, the strategist sets no new goals")
 
 
 _WRITE_FORM = {"partner_notes": "add/remove/confirm", "partner_hold": "release",

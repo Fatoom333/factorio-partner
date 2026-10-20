@@ -224,7 +224,7 @@ BP = "0eNqrVkrKKU0tKsrMK1GyqlYqLU7NUbJSSs4vzUtRqq0FAHhoCfo="
 
 
 class FakeForge:
-    def __init__(self, active="vulkan-start", findings=(), rc=0, blueprint=BP, write=True, raise_on=None):
+    def __init__(self, active="sample-save", findings=(), rc=0, blueprint=BP, write=True, raise_on=None):
         self.active, self.findings, self.rc = active, list(findings), rc
         self.blueprint, self.write, self.raise_on = blueprint, write, raise_on
         self.calls = []
@@ -275,7 +275,7 @@ def test_plan_ok(tmp_path, fake):
     plans = tmp_path / "plans"
     assert (plans / f"{out['plan']}.txt").read_text(encoding="utf-8") == BP
     meta = json.loads((plans / f"{out['plan']}.json").read_text(encoding="utf-8"))
-    assert meta["profile"] == "vulkan-start" and meta["flow"] == "south"
+    assert meta["profile"] == "sample-save" and meta["flow"] == "south"
     assert BP not in json.dumps(meta)
     # временная папка убрана, остались только план и метаданные
     assert sorted(p.name for p in plans.iterdir()) == sorted([out["plan"] + ".txt", out["plan"] + ".json"])
@@ -293,7 +293,7 @@ def test_plan_ignores_process_env(tmp_path, fake, monkeypatch):
     monkeypatch.setenv("FP_HOME", str(tmp_path / "env-home"))
     monkeypatch.setenv("FP_FORGE", "D:/forge-env")
     monkeypatch.setenv("FP_FORGE_PROFILE", "krastorio2")
-    out = _plan(mining(), tmp_path / "home", "C:/cfg-forge", "vulkan-start")
+    out = _plan(mining(), tmp_path / "home", "C:/cfg-forge", "sample-save")
     assert "plan" in out and f.calls[0][0] == "C:/cfg-forge"
     assert (tmp_path / "home" / "plans" / f"{out['plan']}.txt").is_file()
     assert not (tmp_path / "env-home").exists()
@@ -384,8 +384,8 @@ def test_run_forge_invocation(tmp_path, monkeypatch):
         return subprocess.CompletedProcess(cmd, 0, b"", b"")
 
     monkeypatch.setattr(forge.subprocess, "run", fake_run)
-    forge._run_forge(str(root), ["notes", "vulkan-start"], tmp_path, 7)
-    assert seen["cmd"] == [str(py), "-I", "-X", "utf8", "-m", "factorio_forge.cli", "notes", "vulkan-start"]
+    forge._run_forge(str(root), ["notes", "sample-save"], tmp_path, 7)
+    assert seen["cmd"] == [str(py), "-I", "-X", "utf8", "-m", "factorio_forge.cli", "notes", "sample-save"]
     kw = seen["kw"]
     assert kw["shell"] is False and kw["timeout"] == 7 and kw["cwd"] == str(tmp_path)
     assert kw["stdin"] is subprocess.DEVNULL and kw["env"]["PYTHONUTF8"] == "1"
@@ -414,12 +414,12 @@ def _notes_forge(monkeypatch, stdout: str, rc=0, stderr=b""):
 
 
 def test_brief_notes_reads_file(tmp_path, monkeypatch):
-    prof = tmp_path / "профили" / "vulkan-start"
+    prof = tmp_path / "профили" / "sample-save"
     prof.mkdir(parents=True)
     (prof / "notes.md").write_bytes("\ufeff# заметки\nленты слева\n".encode("utf-8"))
     calls = _notes_forge(monkeypatch, f"profile:   {prof}\nnotes:     {prof / 'notes.md'}\n")
     out = _notes(None, "C:/forge")
-    assert out == {"profile": "vulkan-start", "notes": "# заметки\nленты слева\n", "truncated": False}
+    assert out == {"profile": "sample-save", "notes": "# заметки\nленты слева\n", "truncated": False}
     assert calls == [["notes"]]
     _notes("krastorio2", "C:/forge")
     assert calls[-1] == ["notes", "krastorio2"]
@@ -453,7 +453,7 @@ def test_brief_notes_missing_and_errors(tmp_path, monkeypatch):
 
 def test_plan_uses_config_forge_home(tmp_path, fake):
     f = fake()
-    cfg = _Cfg(tmp_path / "cfg-home", Path("C:/cfg-forge"), "vulkan-start", Path("C:/fhome"))
+    cfg = _Cfg(tmp_path / "cfg-home", Path("C:/cfg-forge"), "sample-save", Path("C:/fhome"))
     a = mining()
     out = forge.plan("mining", a["resource"], None, None, config=cfg)
     assert "plan" in out, out

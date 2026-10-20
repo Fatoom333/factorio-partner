@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import glob
 import json
 import os
+import re
 import zipfile
 
 import pytest
@@ -107,7 +109,7 @@ def test_cli(tmp_path, capsys):
     assert pack.main(["scenario-mods", "--name", "e_chart", "--plain"]) == 0
     assert capsys.readouterr().out.strip() == "partner-test"
     assert pack.main(["payload", "--slot", "2", "--scenario", "e_chart", "--out", str(tmp_path / "p.zip"),
-                      "--mods", "partner-test", "--save", "Vulkan-Start.zip", "--timeout-sec", "300"]) == 0
+                      "--mods", "partner-test", "--save", "work.zip", "--timeout-sec", "300"]) == 0
     assert pack.main(["payload", "--slot", "2", "--scenario", "e_chart", "--out", str(tmp_path / "q.zip"),
                       "--mods", "evil"]) == 2
 
@@ -146,10 +148,26 @@ def test_local_config_is_gitignored():
         assert "pc.local.json" in f.read().split()
 
 
-def test_default_save_is_test_copy(tmp_path):
-    """Стенд по умолчанию берёт копию Vulkan-Start-test.zip, а не рабочий сейв игрока."""
-    assert pack.DEFAULTS["save"] == "Vulkan-Start-test.zip"
+def test_default_save_is_stand_save(tmp_path):
+    """Стенд по умолчанию берёт отдельный сейв стенда, а не рабочий сейв игрока."""
+    assert pack.DEFAULTS["save"] == "partner-stand.zip"
     cfg = pack.build_payload(1, "e_chart", str(tmp_path / "p.zip"), local_config=str(tmp_path / "none.json"))
-    assert cfg["save"] == "Vulkan-Start-test.zip"
-    with open(os.path.join(os.path.dirname(pack.__file__), "run-live.ps1"), encoding="utf-8") as f:
-        assert "Vulkan-Start-test.zip" in f.read()
+    assert cfg["save"] == "partner-stand.zip"
+
+
+def _launch_scripts():
+    here = os.path.dirname(pack.__file__)
+    return sorted(glob.glob(os.path.join(here, "*.ps1")) + glob.glob(os.path.join(here, "bench", "*.ps1")))
+
+
+def test_launch_scripts_do_not_hardcode_a_save():
+    """Имя сейва в скриптах запуска не зашито: параметр -Save или ключ save в pc.local.json."""
+    scripts = _launch_scripts()
+    assert any(p.endswith("run-live.ps1") for p in scripts) and any(p.endswith("run-roles-hour.ps1") for p in scripts)
+    for path in scripts:
+        with open(path, encoding="utf-8-sig") as f:
+            text = f.read()
+        assert not re.search(r"\$Save\s*=\s*'[^']+'", text), path        # нет значения по умолчанию
+        assert "Vulkan" not in text and "vulkan" not in text, path
+        if "[string]$Save" in text:
+            assert "pc.local.json" in text, path

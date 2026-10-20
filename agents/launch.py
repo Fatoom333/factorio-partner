@@ -42,7 +42,10 @@ TRANSPORT_CODES = ("transport_timeout", "game_paused")
 SERVER_NAME = "partner"               # имя MCP-сервера = префикс инструментов mcp__partner__*
 # переменные окружения, которые уходят процессу MCP-сервера (docs/MCP.md «Доступ и настройки»)
 PASS_ENV = ("FP_HOME", "FP_RCON_HOST", "FP_RCON_PORT", "FP_RCON_PASSWORD_FILE",
-            "FP_FORGE", "FP_FORGE_PROFILE", "FACTORIO_FORGE_HOME")
+            "FP_FORGE", "FP_FORGE_PROFILE", "FACTORIO_FORGE_HOME",
+            # сторож лимита плана (budget.py) и место правил, памяти и пакетов сейва (savenotes.py)
+            "FP_BUDGET_FILE", "FP_BUDGET_WARN", "FP_BUDGET_STOP", "FP_BUDGET_WEEK_STOP",
+            "FP_BUDGET_MAX_AGE", "FP_NOTES_DIR", "FP_SAVE_NAME")
 STYLE_SOURCE = Path(__file__).resolve().parent / "style.md"
 KNOWLEDGE_DIR = Path(__file__).resolve().parent / "knowledge"
 # справка стратегу: приходит в первом сообщении запуска (партнёр-стратег файлов не читает)

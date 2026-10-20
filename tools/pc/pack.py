@@ -48,7 +48,7 @@ SKIP_EXT = {".zip", ".pyc"}
 FIXED_TIME = (2026, 1, 1, 0, 0, 0)
 
 DEFAULTS = {
-    "save": "Vulkan-Start-test.zip",
+    "save": "partner-stand.zip",
     "factorio_exe": r"D:\Program Files (x86)\Steam\steamapps\common\Factorio\bin\x64\factorio.exe",
     "factorio_data": r"C:\FactorioData",  # заглушка: свой путь к данным Factorio — в tools/pc/pc.local.json
     "pc_python": r"D:\Temp\partner-rcon\venv\Scripts\python.exe",

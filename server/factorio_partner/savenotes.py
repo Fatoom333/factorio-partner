@@ -112,6 +112,31 @@ def clean_rule(text) -> str:
     return t
 
 
+# Самостоятельный режим: правило сейва ровно в одной из двух форм — «AUTO» или «AUTO: цель», маркер
+# только заглавными. Маркер пишет голос, поэтому обычные правила вроде «auto refuel turrets» или
+# «AUTO-sort» режим не включают. Пишется обычным путём правил (подтверждение «да»), снимается
+# удалением правила; отдельного хранилища нет.
+AUTO_RE = re.compile(r"^AUTO(?::\s*(\S.*))?$")
+DATE_SUFFIX_RE = re.compile(r"\s*\(\d{4}-\d{2}-\d{2}\)\s*$")
+MAX_GOAL = 100
+
+
+def auto_match(text: str):
+    """Совпадение маркера AUTO для текста правила (дата записи в конце не мешает) или ``None``."""
+    return AUTO_RE.match(DATE_SUFFIX_RE.sub("", text))
+
+
+def auto_state(save: str) -> dict:
+    """``{on, goal, rule}`` по правилам сейва. Режим включён, пока в rules.md есть правило с маркером
+    AUTO; ``goal`` — цель, если хозяин её назвал; ``rule`` — номер правила (его снимает ``remove``)."""
+    for n, line in enumerate(load(save, "rules"), 1):
+        m = auto_match(_item(n, line, "rules")["text"])
+        if m:
+            goal = (m.group(1) or "").strip(" .")
+            return {"on": True, "goal": goal[:MAX_GOAL] or None, "rule": n}
+    return {"on": False, "goal": None, "rule": None}
+
+
 def op(save: str, kind, action, text=None, n=None, quote: str | None = None) -> dict:
     if kind not in KINDS:
         raise PartnerError("bad_args", "kind: one of " + ", ".join(KINDS))
@@ -122,6 +147,9 @@ def op(save: str, kind, action, text=None, n=None, quote: str | None = None) -> 
         t = clean_rule(text) if kind == "rules" else _clean(text)
         if len(items) >= MAX_ITEMS[kind]:
             raise PartnerError("limit", f"{kind}: at most {MAX_ITEMS[kind]} entries; remove one first")
+        if kind == "rules" and auto_match(t) and auto_state(save)["on"]:
+            raise PartnerError("bad_args", "text: самостоятельный режим уже включён — сначала снять его "
+                               "правило (remove), потом записать новое")
         said = ""
         if quote is not None:
             q = " ".join(quote.split()).replace("«", '"').replace("»", '"')[:MAX_QUOTE]

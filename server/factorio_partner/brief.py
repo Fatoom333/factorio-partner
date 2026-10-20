@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from . import savenotes
 from .config import Config
 
 MAX_NOTES = 8000            # bytes; forge.brief_notes already cuts to this, here it is only a guard
@@ -77,6 +78,9 @@ def build_brief(cfg: Config, notes: dict | None = None) -> dict:
     """Rules + notes of the save profile + style. ``notes`` is the answer of ``forge.brief_notes``."""
     out: dict = {"rules": RULES, "rules_full": RULES_FULL}
     _notes_part(out, notes)
+    # самостоятельный режим: берётся из правил этого сейва (то же имя сейва, что у partner_notes)
+    profile = notes.get("profile") if isinstance(notes, dict) else None
+    out["auto"] = savenotes.auto_state(savenotes.save_name(cfg, profile))
     style, cut = _read(cfg.home / "style.md", MAX_STYLE)
     if style is not None:
         out["style"] = style + ("\n…(обрезано)" if cut else "")

@@ -190,6 +190,14 @@ def test_mcp_config_has_server_partner_no_admin_no_secrets():
     assert server["env"] == {"FP_RCON_PORT": "27015", "FP_RCON_PASSWORD_FILE": "pw.txt"}
 
 
+
+def test_mcp_config_passes_budget_and_notes_env():
+    env = {"FP_BUDGET_FILE": "b.json", "FP_BUDGET_WARN": "70", "FP_BUDGET_STOP": "85",
+           "FP_BUDGET_WEEK_STOP": "95", "FP_BUDGET_MAX_AGE": "600", "FP_NOTES_DIR": "notes",
+           "FP_SAVE_NAME": "run-1", "FP_BUDGET_OTHER": "x"}
+    assert launch.mcp_config(env, "py")["mcpServers"]["partner"]["env"] == {
+        k: v for k, v in env.items() if k != "FP_BUDGET_OTHER"}
+
 # ---- мод ---------------------------------------------------------------------------------
 
 def test_character_launch_sequence_and_files(tmp_path, capsys):

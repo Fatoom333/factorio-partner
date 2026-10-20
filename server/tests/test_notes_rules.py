@@ -13,17 +13,17 @@ def notes_dir(tmp_path, monkeypatch):
 
 
 def test_add_list_remove_and_file_on_disk(notes_dir):
-    N.op("vulkan-start", "rules", "add", "мусор (камень, уголь) — в бак у [gps=10,20]")
-    N.op("vulkan-start", "rules", "add", "  ночью\nне ходить   на север  ")
-    out = N.op("vulkan-start", "rules", "list")
+    N.op("sample-save", "rules", "add", "мусор (камень, уголь) — в бак у [gps=10,20]")
+    N.op("sample-save", "rules", "add", "  ночью\nне ходить   на север  ")
+    out = N.op("sample-save", "rules", "list")
     assert [i["n"] for i in out["items"]] == [1, 2]
     assert out["items"][1]["text"].startswith("ночью не ходить на север (")
-    text = (notes_dir / "vulkan-start" / "rules.md").read_text(encoding="utf-8")
-    assert text.startswith("# Правила хозяина для помощника (vulkan-start)")
+    text = (notes_dir / "sample-save" / "rules.md").read_text(encoding="utf-8")
+    assert text.startswith("# Правила хозяина для помощника (sample-save)")
     assert "1. мусор" in text
-    out = N.op("vulkan-start", "rules", "remove", n=1)
+    out = N.op("sample-save", "rules", "remove", n=1)
     assert len(out["items"]) == 1 and out["items"][0]["n"] == 1
-    assert N.load("vulkan-start", "memo") == []
+    assert N.load("sample-save", "memo") == []
 
 
 def test_hand_edited_file_is_read(notes_dir):
@@ -63,9 +63,9 @@ def test_save_name_never_leaves_the_folder(monkeypatch):
     monkeypatch.delenv("FP_SAVE_NAME", raising=False)
     assert N.save_name(Cfg(), "..") == "default"
     assert N.save_name(Cfg(), "../x") == "default"
-    assert N.save_name(Cfg(), "vulkan-start") == "vulkan-start"
+    assert N.save_name(Cfg(), "sample-save") == "sample-save"
     monkeypatch.setenv("FP_SAVE_NAME", "my.save_1")
-    assert N.save_name(Cfg(), "vulkan-start") == "my.save_1"
+    assert N.save_name(Cfg(), "sample-save") == "my.save_1"
 
 
 # ---------------------------------------------------------------- rules only on the owner's word
