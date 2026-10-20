@@ -340,7 +340,7 @@ def build_server(core: Core, admin: bool = False, packages: bool = True) -> Fast
                                              "(стратег, одна последняя); ask — вопрос хозяину (стратег; пилот — о своём "
                                              "теле); thoughts — включить или выключить показ мыслей стратега (голос, "
                                              "on + said_seq); scale — «запусти / добавь / убери N помощников» "
-                                             "(голос, n + tasks)")] = "list",
+                                             "(голос, n + tasks + said_seq сообщения хозяина)")] = "list",
                              package: Annotated[dict[str, Any] | None, Field(
                                  description="для put: {name, anchor, priority?, steps, on_fail?, verify, note?, order?}")] = None,
                              id: Annotated[str | None, Field(  # noqa: A002

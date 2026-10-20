@@ -433,6 +433,34 @@ def package_leave_keys(data: dict, scope: str, pkg: dict) -> list[str]:
     return leave_keys(q, PACKAGE_LEAVE_DEFAULT)
 
 
+def package_bind_problem(data: dict, scope: str, qid: str, pid: str | None) -> str | None:
+    """One «да» is one use: a question that gave leave to single calls gives none to a package, and
+    a question bound to an open package gives none to another one (a closed one frees it).
+    ``pid`` — the package asking (None — a new one)."""
+    q = next((x for x in questions_of(data, scope) if x["id"] == qid), None)
+    if q is None:
+        return f"approved: нет вопроса {qid} (partner_ledger list → questions)"
+    used = q.get("uses")
+    if isinstance(used, int) and not isinstance(used, bool) and used > 0:
+        return (f"approved: разрешение по {qid} уже использовано для отдельных вызовов; для пакета "
+                "спроси хозяина заново")
+    bound = q.get("package")
+    if isinstance(bound, str) and bound != pid:
+        other = find(data, bound)
+        if other is not None and other.get("status") in OPEN:
+            return (f"approved: разрешение по {qid} уже отдано пакету {bound}; один ответ хозяина — "
+                    "один пакет")
+    if pid is not None and bound != pid:
+        return f"approved: разрешение по {qid} не этого пакета ({pid})"
+    return None
+
+
+def bind_package(data: dict, scope: str, qid: str, pid: str) -> None:
+    q = next((x for x in questions_of(data, scope) if x["id"] == qid), None)
+    if q is not None:
+        q["package"] = pid
+
+
 def find_question(data: dict, qid: str, scopes) -> tuple[str, dict] | None:
     """The question ``qid`` in the first of ``scopes`` that holds it -> (scope, question)."""
     for sc in scopes:
@@ -462,6 +490,9 @@ def call_leave_problem(data: dict, scopes, qid: str, oid: str, at: float | None 
     if not leave_keys(q):
         return (f"approved: вопрос {qid} не называет, что разрешить; спроси заново с perm — ключи "
                 "разрешений из partner_brief.perms.ask (например perm:[\"take_lines\"])")
+    if q.get("package"):
+        return (f"approved: разрешение по {qid} отдано пакету {q['package']}; для отдельного вызова "
+                "спроси хозяина заново")
     used = q.get("uses")
     if isinstance(used, int) and not isinstance(used, bool) and used >= CALL_LEAVE_USES:
         return (f"approved: разрешение по {qid} уже использовано ({CALL_LEAVE_USES} вызова); "
@@ -491,11 +522,13 @@ def rescale_of(data: dict) -> dict | None:
 
 
 def set_rescale(data: dict, n: int, tasks: list, src: str, tick: int | None,
-                seq: int | None = None) -> dict:
+                seq: int | None = None, owner_said: str | None = None) -> dict:
     """A new request replaces the old one: the owner's last word counts."""
     r = {"n": n, "tasks": list(tasks), "from": src, "tick": tick, "at": now()}
     if seq is not None:
         r["seq"] = seq
+    if isinstance(owner_said, str):
+        r["owner_said"] = owner_said[:500]
     data["rescale"] = r
     return dict(r)
 

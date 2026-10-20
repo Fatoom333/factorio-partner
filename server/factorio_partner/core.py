@@ -63,6 +63,8 @@ ORDERS_TAKEN_KEEP = 5           # orders that left the inbox, kept for partner_b
 PENDING_MAX = 64                # server-made notices queued per (helper, role)
 SETTINGS_TTL = 10.0             # s: the mod's settings are read again after this
 SCALE_SAID_MAX_AGE = 120 * 60   # ticks: «запусти N» needs a message of the owner this fresh
+# the owner's message behind «запусти N» names a start, an addition or a removal of helpers
+SCALE_WORDS_RE = re.compile(r"(запуст|добав|убер|убра|остав|сними|сократ|start|add|remove|spawn|launch|keep)")
 PANEL_KEEP = 5                  # the owner's last presses in his window, for partner_brief.work
 PANEL_MEMORY = 512              # seq of owner_panel events already handled
 YES_RE = re.compile(r"^\s*(да|ага|подтверждаю|yes|y|ok|ок|\+)\s*[.!]*\s*$", re.IGNORECASE)
@@ -1544,24 +1546,35 @@ class Core:
             shared = self._shared()
             if act == "scale":
                 for f, v in (("package", package), ("id", id), ("rev", rev), ("text", text), ("on", on),
-                             ("said_seq", said_seq), ("order", order)):
+                             ("order", order)):
                     if v is not None:
                         raise V.bad(f, "not with action=scale")
                 if n is None:
                     raise V.bad("n", "required: how many helpers the owner wants (1..5)")
                 cnt, clamped = V.rescale_n("n", n)
                 tl = V.rescale_tasks("tasks", tasks)
-                said = await self._recent_owner_said()
-                if said is None:
+                if said_seq is None:
+                    raise V.bad("said_seq", "seq of the owner's message that asks for the restart "
+                                            "(player_said, owner:true) is required")
+                said = V.integer(1, 2**53)("said_seq", said_seq)
+                if said <= (self.start_seq or 0):
+                    raise PartnerError("bad_args", "said_seq: the message came before the server started or "
+                                                   "the save was loaded; ask the owner again")
+                words, said_tick = await self._order_said(h, said)
+                now_tick = self.bridge.last_tick
+                if _is_int(now_tick) and _is_int(said_tick) and now_tick - said_tick > SCALE_SAID_MAX_AGE:
                     raise PartnerError("bad_args", "scale: only on a message of the owner of the last 2 "
                                                    "minutes («запусти / добавь / убери N помощников»)")
+                if not SCALE_WORDS_RE.search(words.lower().replace("ё", "е")):
+                    raise PartnerError("bad_args", "scale: the owner's message does not ask to start, add or "
+                                                   "remove helpers («запусти / добавь / убери N помощников»)")
                 if said in self._scale_used:
                     raise PartnerError("bad_args", "scale: this message of the owner already asked for a "
                                                    "restart; wait for his next one")
                 self._scale_used[said] = None
                 while len(self._scale_used) > ORDER_MEMORY:
                     self._scale_used.popitem(last=False)
-                r = self._set_rescale(cnt, tl, "chat", said)
+                r = self._set_rescale(cnt, tl, "chat", said, words)
                 out = {"rescale": {"n": r["n"], "tasks": r["tasks"], "from": "chat"},
                        "helpers_now": len(self.helper_ids())}
                 if clamped:
@@ -1662,7 +1675,18 @@ class Core:
                         clean["order_tick"] = otick
                 r = None if rev is None else V.integer(0, 2**53)("rev", rev)
                 tick = self.bridge.last_tick
-                p = led.mutate(lambda d: L.add(d, h, clean, tick, r))
+
+                def add(d):
+                    if "approved" not in clean:
+                        return L.add(d, h, clean, tick, r)
+                    # one «да» — one package: checked and bound in the same write
+                    why = L.package_bind_problem(d, side, clean["approved"], None)
+                    if why is not None:
+                        raise PartnerError("bad_args", why)
+                    q = L.add(d, h, clean, tick, r)
+                    L.bind_package(d, side, clean["approved"], q["id"])
+                    return q
+                p = led.mutate(add)
                 return self._stamp({"package": L.compact(p), "rev": led.data()["rev"]})
             pid = V.ident("id", id) if id is not None else None
             if pid is None:
@@ -1688,40 +1712,13 @@ class Core:
             return self._stamp({"package": p, "rev": led.data()["rev"]})
         return await self._tool("partner_ledger", helper, key, a, run)
 
-    async def _recent_owner_said(self) -> int | None:
-        """Seq of the owner's last message (player_said, owner:true) of the last
-        SCALE_SAID_MAX_AGE ticks in this timeline, read from the mod; None — there is none."""
-        top = self.bridge.last_seq if _is_int(self.bridge.last_seq) else 0
-        cur = max(self.start_seq or 0, top - EVENTS_LIMIT)
-        best = None
-        now_tick = self.bridge.last_tick
-        for _ in range(3):
-            data = await self._mod("events", {"since": cur, "limit": EVENTS_LIMIT}, None)
-            evs = [e for e in _as_list(data.get("events")) if isinstance(e, dict) and _is_int(e.get("seq"))
-                   and e["seq"] > cur]
-            if _is_int(data.get("tick")):
-                now_tick = data["tick"]
-            for ev in evs:
-                cur = max(cur, ev["seq"])
-                d = ev.get("data")
-                if (ev.get("kind") == "player_said" and isinstance(d, dict) and d.get("owner") is True
-                        and ev["seq"] > (self.start_seq or 0)):
-                    best = ev
-            if not data.get("more") or not evs:
-                break
-        if best is None:
-            return None
-        if _is_int(self.bridge.last_tick) and (not _is_int(now_tick) or self.bridge.last_tick > now_tick):
-            now_tick = self.bridge.last_tick
-        if _is_int(now_tick) and _is_int(best.get("tick")) and now_tick - best["tick"] > SCALE_SAID_MAX_AGE:
-            return None
-        return best["seq"]
-
-    def _set_rescale(self, n: int, tasks: list, src: str, seq: int | None) -> dict:
+    def _set_rescale(self, n: int, tasks: list, src: str, seq: int | None, owner_said: str | None = None) -> dict:
         """Record the owner's request to restart on ``n`` helpers and wake every role: each finishes
-        its shift; the dispatcher (key host) restarts them (partner_rescale)."""
+        its shift; the dispatcher (key host) restarts them (partner_rescale). ``owner_said`` — the
+        owner's own words (read from the mod), kept so the dispatcher sees them next to the voice's
+        ``n`` and ``tasks``."""
         tick = self.bridge.last_tick
-        r = self.ledger().mutate(lambda d: L.set_rescale(d, n, tasks, src, tick, seq))
+        r = self.ledger().mutate(lambda d: L.set_rescale(d, n, tasks, src, tick, seq, owner_said))
         ev = {"seq": self.bridge.last_seq, "tick": tick, "helper": None, "kind": "rescale", "loud": True,
               "data": {"n": r["n"], "tasks": r["tasks"], "from": src}}
         for k in list(self.cursors):
@@ -1743,7 +1740,7 @@ class Core:
             else:
                 r = led.mutate(L.clear_rescale)
             out: dict = {"rescale": None if r is None else
-                         {k: r.get(k) for k in ("n", "tasks", "from", "tick")},
+                         {k: r.get(k) for k in ("n", "tasks", "from", "tick", "owner_said") if k in r},
                          "helpers_now": len(self.helper_ids())}
             if act == "done":
                 out["done"] = r is not None

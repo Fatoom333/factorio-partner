@@ -517,52 +517,61 @@ def test_panel_event_schema():
 
 async def test_voice_scale_on_a_fresh_owner_message(core, fake, body):
     await core.op_wait("h1", KEY, timeout=0)
-    owner_said(fake, "добавь двух: один на руду, другой на печи")
-    out = await core.op_ledger("h1", VKEY, "scale", n=3, tasks=[{"to": "h2", "text": "руда"}, {"text": "печи"}])
+    ev = owner_said(fake, "добавь двух: один на руду, другой на печи")
+    out = await core.op_ledger("h1", VKEY, "scale", n=3, tasks=[{"to": "h2", "text": "руда"}, {"text": "печи"}],
+                               said_seq=ev["seq"])
     assert out["rescale"] == {"n": 3, "tasks": [{"text": "руда", "to": "h2"}, {"text": "печи"}], "from": "chat"}
     for key in (KEY, VKEY, SKEY):
         assert (await core.op_brief("h1", key))["rescale"]["n"] == 3
     w = await core.op_wait("h1", KEY, timeout=0)
     assert any(e["kind"] == "rescale" for e in w["events"])
+    # the dispatcher sees the owner's own words next to the voice's n and tasks
+    got = await core.op_rescale("h1", HKEY, "get")
+    assert got["rescale"]["owner_said"] == "добавь двух: один на руду, другой на печи"
     # one message — one restart
-    e = await refused(core.op_ledger("h1", VKEY, "scale", n=2))
+    e = await refused(core.op_ledger("h1", VKEY, "scale", n=2, said_seq=ev["seq"]))
     assert e.code == "bad_args" and "already" in e.text
 
 
 async def test_owner_message_from_before_the_start_is_not_scale(core, fake, body):
-    owner_said(fake, "запусти двух")            # said before the server started
-    assert (await refused(core.op_ledger("h1", VKEY, "scale", n=2))).code == "bad_args"
+    ev = owner_said(fake, "запусти двух")            # said before the server started
+    assert (await refused(core.op_ledger("h1", VKEY, "scale", n=2, said_seq=ev["seq"]))).code == "bad_args"
 
 
-async def test_voice_scale_without_a_recent_owner_message_is_refused(core, fake, body):
+async def test_voice_scale_without_the_owners_message_is_refused(core, fake, body):
     await core.op_wait("h1", KEY, timeout=0)
     e = await refused(core.op_ledger("h1", VKEY, "scale", n=2))
-    assert e.code == "bad_args" and "2 minutes" in e.text
-    fake.mod.emit("player_said", {"player": "Other", "owner": False, "text": "запусти пять"}, helper=None)
-    assert (await refused(core.op_ledger("h1", VKEY, "scale", n=5))).code == "bad_args"
-    owner_said(fake, "запусти двух")
+    assert e.code == "bad_args" and "said_seq" in e.text
+    other = fake.mod.emit("player_said", {"player": "Other", "owner": False, "text": "запусти пять"}, helper=None)
+    assert (await refused(core.op_ledger("h1", VKEY, "scale", n=5, said_seq=other["seq"]))).code == "bad_args"
+    # a message of the owner about something else is no request to restart
+    chat = owner_said(fake, "как дела?")
+    e = await refused(core.op_ledger("h1", VKEY, "scale", n=5, said_seq=chat["seq"]))
+    assert e.code == "bad_args" and "does not ask" in e.text
+    old = owner_said(fake, "запусти двух")
     fake.mod.tick += 121 * 60
-    assert (await refused(core.op_ledger("h1", VKEY, "scale", n=2))).code == "bad_args"
+    e = await refused(core.op_ledger("h1", VKEY, "scale", n=2, said_seq=old["seq"]))
+    assert e.code == "bad_args" and "2 minutes" in e.text
     assert L.rescale_of(core.ledger().data()) is None
 
 
 async def test_scale_is_clamped_and_voice_only(core, fake, body):
     await core.op_wait("h1", KEY, timeout=0)
-    owner_said(fake, "запусти десять")
-    out = await core.op_ledger("h1", VKEY, "scale", n=10)
+    ev = owner_said(fake, "запусти десять")
+    out = await core.op_ledger("h1", VKEY, "scale", n=10, said_seq=ev["seq"])
     assert out["rescale"]["n"] == 5 and out["clamped"] is True
     for key in (KEY, SKEY):
-        owner_said(fake, "убери всех")
-        assert (await refused(core.op_ledger("h1", key, "scale", n=1))).code == "not_allowed"
-    owner_said(fake, "запусти")
-    assert (await refused(core.op_ledger("h1", VKEY, "scale", n="два"))).code == "bad_args"
+        ev = owner_said(fake, "убери всех")
+        assert (await refused(core.op_ledger("h1", key, "scale", n=1, said_seq=ev["seq"]))).code == "not_allowed"
+    ev = owner_said(fake, "запусти")
+    assert (await refused(core.op_ledger("h1", VKEY, "scale", n="два", said_seq=ev["seq"]))).code == "bad_args"
     assert (await refused(core.op_ledger("h1", VKEY, "list", n=2))).code == "bad_args"
 
 
 async def test_rescale_is_host_only(core, fake, body):
     await core.op_wait("h1", KEY, timeout=0)
-    owner_said(fake, "запусти троих")
-    await core.op_ledger("h1", VKEY, "scale", n=3)
+    ev = owner_said(fake, "запусти троих")
+    await core.op_ledger("h1", VKEY, "scale", n=3, said_seq=ev["seq"])
     for key in (KEY, VKEY, SKEY):
         assert (await refused(core.op_rescale("h1", key, "get"))).code == "not_allowed"
     got = await core.op_rescale("h1", HKEY, "get")
@@ -579,3 +588,37 @@ async def test_rescale_is_host_only(core, fake, body):
 async def test_admin_settings_passes_the_mods_answer(core, fake):
     mod_settings(fake, agents={"helpers": 3})
     assert (await core.admin_settings())["data"] == {"agents": {"helpers": 3}}
+
+
+# ---------------------------------------------------------------- one «да» — one use
+
+async def test_one_yes_gives_leave_to_one_open_package(core, fake, body):
+    o, q = await strategist_leave(core, fake, perm=["take_lines"])
+    p = (await core.op_ledger("h1", SKEY, "put", take_package(o, q)))["package"]
+    e = await refused(core.op_ledger("h1", SKEY, "put", dict(take_package(o, q), name="ещё схемы")))
+    assert e.code == "bad_args" and "уже отдано пакету" in e.text
+    # the same «да» is no leave for a single call either
+    e = await refused(core.op_act("h1", KEY, "get_items", TAKE_LINES, approved=q["id"], order=o["id"]))
+    assert e.code == "bad_args" and "отдано пакету" in e.text
+    # once the package is closed the owner's answer may go to its corrected copy
+    await core.op_ledger("h1", SKEY, "cancel", id=p["id"])
+    await core.op_ledger("h1", SKEY, "put", dict(take_package(o, q), name="схемы, ещё раз"))
+
+
+async def test_yes_spent_on_calls_gives_no_leave_to_a_package(core, fake, body):
+    o, q = await strategist_leave(core, fake, perm=["take_lines"])
+    await core.op_act("h1", KEY, "get_items", TAKE_LINES, approved=q["id"], order=o["id"])
+    e = await refused(core.op_ledger("h1", SKEY, "put", take_package(o, q)))
+    assert e.code == "bad_args" and "отдельных вызовов" in e.text
+
+
+async def test_package_leave_bound_to_another_package_is_refused_when_it_goes(core, fake, body):
+    o, q = await strategist_leave(core, fake, perm=["take_chests"])
+    p = (await core.op_ledger("h1", SKEY, "put", take_package(o, q)))["package"]
+    # the file is edited by hand: the question now names another package
+    scope = core.ledger().get("h1", p["id"])["leave_scope"]
+    core.ledger().mutate(lambda d: L.bind_package(d, scope, q["id"], "pk999"))
+    await core.op_inbox("h1", SKEY, ack=[o["id"]])
+    await core.packages.step()
+    assert not [r for r in fake.mod.requests if r.get("op") == "act" and r.get("owner_ok")]
+    assert core.ledger().get("h1", p["id"])["status"] != "running"

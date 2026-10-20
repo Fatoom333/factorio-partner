@@ -563,6 +563,8 @@ class PackageBridge:
                 scope = p.get("leave_scope") if p.get("leave_scope") in (h, R.SHARED) else h
                 data = self.ledger().data()
                 why = L.leave_problem(data, scope, p, p.get("order_tick"), max_age=L.PACKAGE_LEAVE_MAX_AGE)
+                if why is None:
+                    why = L.package_bind_problem(data, scope, p.get("approved"), p.get("id"))
                 if why is not None and V.needs_leave(steps):
                     raise PartnerError("bad_args", why)
                 owner_ok = L.package_leave_keys(data, scope, p) if why is None else None
