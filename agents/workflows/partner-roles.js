@@ -48,6 +48,9 @@ const startCursor = Number.isInteger(cfg.cursor) && cfg.cursor >= 0 ? cfg.cursor
 // Конец игры для всех ролей сразу: хозяин отпустил (говорит голос), тела или связи нет.
 let allStop = false
 const GLOBAL_STOP_RE = /(тел[аоу]\s+(нет|потеря|погибл)|потер\S*\s+тел|нет\s+тела|связ[иь]\s+нет|нет\s+связи|потер\S*\s+связ|access denied|transport_timeout|хозяин\S*\s+отпустил|отбой)/i
+// Связь пропала (сервер перезапускался): смена роли перезапускается, не больше LINK_RETRIES раз подряд.
+const LINK_LOST_RE = /(связ\S*\s+пропал|нет\s+связи|связ[иь]\s+нет|потер\S*\s+связ|no such tool|сервер\S*\s+отключ|инструмент\S*\s+(нет|пропал))/i
+const LINK_RETRIES = 3
 
 function shiftPrompt(role, prompt, shift, notes, cursor) {
   const lines = [prompt]
@@ -86,6 +89,7 @@ async function loop(role) {
   const prompt = helper.roles[role].prompt
   let notes = ''
   let cursor = startCursor
+  let linkFails = 0
   for (let shift = 1; shift <= MAX_SHIFTS; shift++) {
     if (allStop) {
       return { role, shifts: shift - 1, status: 'остановлено другой ролью', last: notes }
@@ -107,6 +111,16 @@ async function loop(role) {
     }
     notes = redact(out, role)
     cursor = cursorOf(out, cursor)
+    const linkLost = LINK_LOST_RE.test(notes) && !/(access denied|transport_timeout|хозяин\S*\s+отпустил|отбой)/i.test(notes)
+    if (linkLost) {
+      linkFails++
+      if (linkFails <= LINK_RETRIES) {
+        log(`${helper.id}: ${ROLE_LABELS[role]} — связь пропала, смена ${shift + 1} (попытка ${linkFails} из ${LINK_RETRIES})`)
+        continue
+      }
+    } else {
+      linkFails = 0
+    }
     if (verdict(out) === 'стоп') {
       // «стоп» голоса — хозяин отпустил или нет тела/связи: конец для всех;
       // стоп пилота или стратега кончает только их петлю, если причина не в теле и не в связи

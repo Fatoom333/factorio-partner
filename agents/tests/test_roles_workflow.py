@@ -153,3 +153,28 @@ def test_bad_args():
     bad = helper()
     del bad["roles"]["strategist"]
     assert "strategist" in run({"helpers": [bad]})["error"]
+
+
+@needs_node
+def test_link_lost_restarts_the_shift():
+    # сервер перезапускался: голос ушёл «стоп, нет связи» — смена голоса начинается заново, остальные не стоят
+    replies = {"partner-voice": ["СМЕНА: стоп\nПричина: нет связи, инструментов нет",
+                                 "СМЕНА: стоп\nПричина: хозяин отпустил"],
+               "partner-pilot": ["СМЕНА: дальше\nПричина: x", "СМЕНА: стоп\nПричина: отбой"],
+               "partner-strategist": ["СМЕНА: дальше\nПричина: x", "СМЕНА: стоп\nПричина: отбой"]}
+    out = run({"helpers": [helper()]}, replies)
+    assert len([c for c in out["calls"] if c["type"] == "partner-voice"]) == 2
+    assert any("связь пропала" in line for line in out["logs"])
+    res = {r["role"]: r for r in out["result"]["roles"]}
+    assert res["voice"]["status"] == "стоп" and res["voice"]["shifts"] == 2
+
+
+@needs_node
+def test_link_lost_gives_up_after_retries():
+    replies = {"partner-voice": ["СМЕНА: стоп\nПричина: связь пропала, перезапуск"] * 6,
+               "partner-pilot": ["СМЕНА: дальше\nПричина: x"] * 6,
+               "partner-strategist": ["СМЕНА: дальше\nПричина: x"] * 6}
+    out = run({"helpers": [helper()]}, replies)
+    assert len([c for c in out["calls"] if c["type"] == "partner-voice"]) == 4   # 1 + 3 повтора
+    res = {r["role"]: r for r in out["result"]["roles"]}
+    assert res["voice"]["status"] == "стоп"
