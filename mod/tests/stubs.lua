@@ -559,9 +559,17 @@ end
 function S.entity(surface, opts)
   local proto = prototypes.entity[opts.name] or {}
   S._next_unit = S._next_unit + 1
+  -- create_entity{type=...} у подземной ленты и погрузчика — вход или выход, а не тип сущности
+  local io_field = (proto.type == "underground-belt" and "belt_to_ground_type")
+      or ((proto.type == "loader" or proto.type == "loader-1x1") and "loader_type") or nil
+  local io
+  if io_field ~= nil then
+    io = opts.type or "input"
+    if io ~= "input" and io ~= "output" then error("create_entity: bad type " .. tostring(io), 3) end
+  end
   local e = {
     name = opts.name,
-    type = opts.type or proto.type or opts.name,
+    type = (io_field == nil and opts.type) or proto.type or opts.name,
     position = norm_pos(opts.position) or { x = 0, y = 0 },
     direction = opts.direction or 0,
     surface = surface,
@@ -572,6 +580,7 @@ function S.entity(surface, opts)
     quality = { name = "normal", level = 0 },
     prototype = proto,
   }
+  if io_field ~= nil then e[io_field] = io end
   if e.type == "character" then
     e.inventories = {
       [defines.inventory.character_main] = S.inventory{ size = 80 },

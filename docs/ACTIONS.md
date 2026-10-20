@@ -22,7 +22,7 @@
 | `armor_grid` | `put?: items, take?: items` (хотя бы одно) | `{placed?, not_placed?, taken?, not_taken?, armor}` |
 | `rotate` | `target, direction:0│4│8│12` | `{name, pos, direction, was}` |
 | `set_recipe` | `target, recipe?` | `{name, pos, recipe, was, returned: items, spilled?}` |
-| `place` | `item, pos, direction?:0..15, recipe?, auto_supply?=false` | `{unit_number, name, pos}` |
+| `place` | `item, pos, direction?:0..15, recipe?, auto_supply?=false, type?:"input"│"output"` (только подземная лента и погрузчик) | `{unit_number, name, pos}` |
 | `build_blueprint` | `blob, anchor:pos, direction?:0│4│8│12, mode?="auto", force?="forced", search?=16, rotate?=false, mirror?=false, partial?=false, dry_run?:bool, auto_supply?=false` | `{ghosts:int, tiles:int, skipped:[...], skipped_total, tiles_skipped, on_liquid:int, liquids?, fit?, to_remove?, to_remove_total?, missing: items}` + поля `build_ghosts` |
 | `build_layout` | `anchor:pos, entities:[{name, dx, dy │ cx, cy, direction?, recipe?, type?, insert?}] (1..100) │ blob, direction?:0│4│8│12, search?=0, rotate?=false, on_resource?, ports?:[…] (≤ 16), tag?, mode?="auto", auto_supply?=false, keep_ghosts?=false, dry_run?:bool` | `{site, placed:[...], placed_total, failed:[{i, name, pos, code, why?}], failed_total, need, missing, to_remove, to_remove_total, ports?, dry_run?}` + поля `build_ghosts` |
 | `build_ghosts` | `area?│radius?=64, mode?="auto", auto_supply?=false` | `{built:int, tiles_built:int, left:int, removed:int, not_removed:int, blocked:[...], blocked_total, missing: items}` |
@@ -957,6 +957,7 @@ pos, dir?, items?│fluid?}], dry_run?}` + поля `build_ghosts` после с
 | `mine` | `chop` | цель — не руда (дерево, камень); руда проверки не требует |
 | `walk`, `approach` (и цель `follow`) | `walk-far` | цель дальше `partner-far-distance` клеток от хозяина; хозяина нет в игре — не проверяется |
 | `reflexes{set}` | `shoot`, `turrets` (`ammo`), `upkeep` | рефлекс, которого ещё нет в наборе |
+| `reflexes{set}` (`evacuate`) | `deconstruct-owner`, `deconstruct-own`, `build` | при включении и смене области, `names` или `rebuild`; `build` — только при `rebuild` (EVENTS.md «`evacuate`») |
 
 Особые случаи:
 - `shoot` по гнёздам и червям — `attack-nests`: при «нельзя» рефлекс в них не целится (кроме червя, в чьём

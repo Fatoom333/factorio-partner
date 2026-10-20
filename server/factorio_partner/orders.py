@@ -7,13 +7,16 @@ packages in the ledger of the save:
 1. Reads the helper's events after its own cursor: ``plan_done`` of the package's plan ends the
    run (``done`` → ``verifying``; cancelled → ``paused``; any other failure → ``failed``);
    ``owner_stop`` / ``owner_resume`` / ``reflex_resumed`` follow the owner's word and the return
-   after a flight.
+   after a flight or an evacuation (``evacuate_started`` marks the cut as ``evacuate``: the mod
+   posts the plan again itself once the area is quiet; a plan it posts for a package that is gone or
+   already resumed is cancelled).
 2. ``verifying``: once the game is ``VERIFY_TICKS`` past the end of the plan, measures the checks
    with the same reads an agent has (``stock``, ``rates``, ``ghosts``) → ``package_verified`` or
    ``package_unmet``.
 3. No package of the helper runs: if the body is free (no job, empty queue, idle a moment), the
    owner's hold is not set, no open order of the owner waits and no package stands stopped past the
-   bridge (``cancelled``, ``cancel_all``), the next package is claimed in the file (``queued`` →
+   bridge (``cancelled``, ``cancel_all``) and no standing task of the strategist (``duty`` with an
+   area) keeps the body away from the package's points, the next package is claimed in the file (``queued`` →
    ``posting``, compare-and-set) and goes to the mod as one ``plan`` job (a long one — as a ``blob``
    sent with ``blob_put``).
 
@@ -57,6 +60,9 @@ STOP_WINDOW_TICKS = 120     # plan_done{cancelled} this close after owner_stop i
 STOP_TEXT = "stopped by owner"  # the mod's text of a job cut by the owner's word (owner_words.do_stop)
 POSTING_STALE_S = 60.0      # s: a package left in ``posting`` this long by a dead process is checked
 FLEE_RETURN_TICKS = 150 * 60  # a plan cancelled by a flight comes back within this (EVENTS.md «flee»)
+# a plan cut by an evacuation comes back after it: return_after_s ≤ 1800 s of quiet plus the
+# evacuation and the retreat themselves (EVENTS.md «evacuate»)
+EVAC_RETURN_TICKS = (1800 + 600) * 60
 NOTE_EVERY = 30.0           # s: strategist_note wakes the voice of a helper at most this often
 STATE_CHECK_S = 15.0        # s: a running package is checked against the body's state this often
 HELLO_EVERY_S = 5.0         # s: a fresh tick for verifying packages
@@ -66,7 +72,7 @@ EVENT_PAGES = 5
 TRANSIENT = (TRANSPORT_TIMEOUT, GAME_PAUSED, "internal")
 # paused this way, a package holds every other one until the strategist resumes or cancels it: the
 # body was stopped past the bridge (partner_cancel, replace) and must not go on by itself
-HOLDING_REASONS = ("cancelled", "cancel_all")
+HOLDING_REASONS = ("cancelled", "cancel_all", "evacuate")
 _POSTING_FIELDS = ("posting_from", "posting_by", "posting_at")
 
 
@@ -125,6 +131,8 @@ class PackageBridge:
         self._note_pending: dict[str, str] = {}      # helper -> the latest note held back by the 30 s limit
         self._posted: dict[str, dict] = {}   # package id -> fields of a started plan not yet written
         self._held_told: dict[str, str] = {}  # helper -> package the voice was told waits for the owner's word
+        self._duty_told: dict[str, str] = {}  # package -> duty task the strategist was told it waits for
+        self._stray: dict[str, list[int]] = {}  # helper -> plan jobs the mod resumed for no waiting package
         self._lock = asyncio.Lock()
 
     # ------------------------------------------------------------------ helpers
@@ -263,6 +271,8 @@ class PackageBridge:
             if (st == "paused" and why == "cancelled" and _is_int(p.get("paused_tick")) and tick is not None
                     and tick - p["paused_tick"] <= FLEE_RETURN_TICKS):
                 return True
+            if st == "paused" and why == "evacuate":
+                return True
         return False
 
     async def _step_helper(self, h: str) -> None:
@@ -270,7 +280,9 @@ class PackageBridge:
         await self._check_posting(h)
         if self._needs_events(h):
             await self._read_events(h)
+            await self._cancel_stray(h)
             await self._check_running(h)
+        self._expire_evacuate(h)
         await self._verify(h)
         await self._maybe_post(h)
 
@@ -322,15 +334,70 @@ class PackageBridge:
             for p in self.ledger().open_of(h):
                 if p.get("status") in ("running", "pausing") and p.get("job") == d.get("job"):
                     self._plan_done(p, d, tick)
-        elif kind == "reflex_resumed" and ev.get("helper") == h and d.get("type") == "flee":
-            plans = [j for j in _as_list(d.get("jobs")) if isinstance(j, dict) and j.get("do") == "plan"
-                     and _is_int(j.get("job"))]
+        elif kind == "evacuate_started" and ev.get("helper") == h:
             for p in self.ledger().open_of(h):
-                if (plans and p.get("status") == "paused" and p.get("paused_reason") == "cancelled"
-                        and _is_int(p.get("paused_tick")) and tick is not None
-                        and tick - p["paused_tick"] <= FLEE_RETURN_TICKS):
-                    self._set(p["id"], status="running", job=plans[0]["job"], paused_reason=None)
-                    break
+                st = p.get("status")
+                if st in ("running", "pausing"):
+                    self._set(p["id"], evac_tick=tick)      # its plan_done{cancelled} comes next
+                elif (st == "paused" and p.get("paused_reason") == "cancelled" and _is_int(p.get("paused_tick"))
+                        and tick is not None and 0 <= tick - p["paused_tick"] <= FLEE_RETURN_TICKS):
+                    # a flight cut the plan just before: the evacuation takes its return over
+                    q = self._set(p["id"], paused_reason="evacuate", paused_tick=tick)
+                    if q is not None:
+                        self.notify(h, "package_paused", dict(self._head(q), reason="evacuate",
+                                                              from_step=q.get("from_step", 1)))
+        elif kind == "reflex_resumed" and ev.get("helper") == h and d.get("type") in ("flee", "evacuate"):
+            self._resumed(h, d, tick)
+
+    def _resumed(self, h: str, d: dict, tick: int | None) -> None:
+        """``reflex_resumed``: the mod posted the cut jobs again. A plan among them is the package's
+        plan — the package runs again with the new job; after an evacuation a plan no package waits
+        for (resumed by the strategist meanwhile, or cancelled) is cancelled, and a package the
+        evacuation did not bring back goes to the strategist (``cancelled``)."""
+        evac = d.get("type") == "evacuate"
+        window = EVAC_RETURN_TICKS if evac else FLEE_RETURN_TICKS
+        reasons = ("cancelled", "evacuate") if evac else ("cancelled",)
+        plans = [j for j in _as_list(d.get("jobs")) if isinstance(j, dict) and j.get("do") == "plan"
+                 and _is_int(j.get("job"))]
+        matched = False
+        for p in self.ledger().open_of(h):
+            if (plans and p.get("status") == "paused" and p.get("paused_reason") in reasons
+                    and _is_int(p.get("paused_tick")) and tick is not None
+                    and 0 <= tick - p["paused_tick"] <= window):
+                self._set(p["id"], status="running", job=plans[0]["job"], paused_reason=None, evac_tick=None)
+                matched = True
+                break
+        if not evac:
+            return
+        if plans and not matched:
+            self._stray.setdefault(h, []).extend(j["job"] for j in plans)
+        for p in self.ledger().open_of(h):
+            if p.get("status") == "paused" and p.get("paused_reason") == "evacuate":
+                self._back_to_strategist(p, "evacuate_ended")
+
+    def _back_to_strategist(self, p: dict, why: str) -> None:
+        """A package paused by an evacuation that will not bring it back: the strategist decides."""
+        q = self._set(p["id"], paused_reason="cancelled", evac_tick=None)
+        if q is not None:
+            self.notify(p["helper"], "package_paused", dict(self._head(q), reason="cancelled", why=why,
+                                                            from_step=q.get("from_step", 1)))
+
+    def _expire_evacuate(self, h: str) -> None:
+        tick = self._tick()
+        if tick is None:
+            return
+        for p in self.ledger().open_of(h):
+            if (p.get("status") == "paused" and p.get("paused_reason") == "evacuate"
+                    and _is_int(p.get("paused_tick")) and tick - p["paused_tick"] > EVAC_RETURN_TICKS):
+                self._back_to_strategist(p, "evacuate_timeout")
+
+    async def _cancel_stray(self, h: str) -> None:
+        """Plans the evacuation posted again for a package that no longer waits for them."""
+        for job in self._stray.pop(h, []):
+            try:
+                await self.core._mod("cancel", {"job": job}, h, mutating=True)
+            except PartnerError as e:
+                log.info("stray plan %s of %s not cancelled: %s", job, h, e.code)
 
     def _plan_done(self, p: dict, d: dict, tick: int | None) -> None:
         summary = _plan_summary(d)
@@ -352,6 +419,9 @@ class PackageBridge:
             elif code == "owner_hold" or _stopped_by_owner(d) or (
                     stop is not None and tick is not None and 0 <= tick - stop <= STOP_WINDOW_TICKS):
                 reason = "owner_stop"
+            elif (_is_int(p.get("evac_tick")) and tick is not None
+                  and 0 <= tick - p["evac_tick"] <= STOP_WINDOW_TICKS):
+                reason = "evacuate"     # the mod brings it back after the evacuation (reflex_resumed)
             else:
                 reason = "cancelled"
             q = self._set(p["id"], status="paused", paused_reason=reason, paused_tick=tick, from_step=nxt,
@@ -510,14 +580,31 @@ class PackageBridge:
         if any(p.get("status") == "paused" and p.get("paused_reason") in HOLDING_REASONS for p in pkgs):
             return None
         for p in L.next_up(pkgs):
-            if not self._order_gate(h, p):
+            if not self._order_gate(h, p) and not self._duty_holds(h, p):
                 return p
         # a package paused for a large order goes on once nothing newer waits
         paused = sorted((p for p in pkgs if p.get("status") == "paused" and p.get("paused_reason") == "owner_order"),
                         key=lambda p: p.get("n", 0))
-        if paused and not L.next_up(pkgs) and not self._order_gate(h, paused[0]):
+        if (paused and not L.next_up(pkgs) and not self._order_gate(h, paused[0])
+                and not self._duty_holds(h, paused[0])):
             return paused[0]
         return None
+
+    def _duty_holds(self, h: str, pkg: dict) -> bool:
+        """A standing task of the strategist with an area (``duty``) keeps the body there: a package
+        that would take it farther than ``area.radius + L.DUTY_SLACK`` waits in the queue, and the
+        strategist is told once (``package_paused{reason:"duty"}``). Cancelling the duty frees it."""
+        t = L.duty_blocking(self.ledger().data(), h, pkg)
+        pid = pkg.get("id")
+        if t is None:
+            self._duty_told.pop(pid, None)
+            return False
+        if self._duty_told.get(pid) != t.get("id"):
+            self._duty_told[pid] = t.get("id")
+            self.notify(h, "package_paused", dict(self._head(pkg), reason="duty", task=t.get("id"),
+                                                  area=t.get("area")),
+                        roles=(R.STRATEGIST,))
+        return True
 
     async def _body_free(self, h: str, pkg: dict | None = None) -> bool:
         st = await self.core._mod("state", {}, h)

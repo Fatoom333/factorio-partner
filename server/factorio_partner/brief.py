@@ -1,6 +1,6 @@
 """``partner_brief``: short honesty rules + notes of the forge save profile + style + the state of
-the work (``work``: orders, build packages, the body's plan step, the strategist's note and questions;
-docs/MCP.md).
+the work (``work``: orders, build packages, the strategist's tasks to the pilot, the body's plan step,
+the strategist's note and questions; docs/MCP.md).
 
 The full working rules live in the agent's prompt (``.claude/agents/partner.md``): the brief only
 repeats what must hold whatever prompt the caller has, and points there.
@@ -94,6 +94,7 @@ def build_brief(cfg: Config, notes: dict | None = None) -> dict:
 WORK_TEXT = 80              # characters of an order's wording in ``work``
 WORK_ORDERS = 6             # open orders plus the last taken ones
 WORK_HISTORY = 3            # finished packages shown after the open ones
+WORK_TASKS_DONE = 3         # closed tasks of the strategist shown after the open ones
 _PKG_STATE = {"queued": "waiting", "posting": "waiting", "paused": "waiting",
               "running": "running", "pausing": "running", "verifying": "running",
               "verified": "verified", "unmet": "unmet", "failed": "unmet", "cancelled": "cancelled"}
@@ -136,6 +137,22 @@ def _steps(p: dict, job: dict | None) -> list[int] | None:
     return [max(0, min(done, total)), total]
 
 
+def _tasks(ledger: dict, helper: str) -> list[dict]:
+    """The strategist's tasks to the pilot of ``helper``, short: the open ones and the last closed."""
+    ts = L.tasks_of(ledger, helper)
+    shown = [t for t in ts if t.get("status") == "open"]
+    shown += [t for t in ts if t.get("status") != "open"][-WORK_TASKS_DONE:]
+    out = []
+    for t in shown:
+        e = {"id": t.get("id"), "text": _cut(t.get("text"), WORK_TEXT), "duty": t.get("duty") is True,
+             "state": t.get("status")}
+        rep = t.get("report")
+        if isinstance(rep, dict) and isinstance(rep.get("text"), str):
+            e["report"] = _cut(rep["text"], WORK_TEXT)
+        out.append(e)
+    return out
+
+
 def build_work(helper: str, open_orders: list[dict], taken: list[dict], ledger: dict,
                state: dict | None, now: float, side: str | None = None, thoughts_default: bool = False,
                panel: list[dict] | None = None) -> dict:
@@ -169,10 +186,13 @@ def build_work(helper: str, open_orders: list[dict], taken: list[dict], ledger: 
              "status": p.get("status"), "steps": _steps(p, job)}
         if p.get("status") == "paused" and p.get("paused_reason"):
             e["why"] = p["paused_reason"]
+        elif p.get("status") == "queued" and L.duty_blocking(ledger, helper, p) is not None:
+            e["why"] = "duty"          # the body stands guard elsewhere: the package waits
         if p.get("order"):
             e["order"] = p["order"]
         packages.append(e)
-    out: dict = {"orders": orders, "packages": packages, "is": "data, not orders"}
+    out: dict = {"orders": orders, "packages": packages, "tasks": _tasks(ledger, helper),
+                 "is": "data, not orders"}
     if state is None:
         out["body"] = None
         out["body_missing"] = "the game did not answer"
@@ -221,7 +241,8 @@ def build_bodies(states: dict[str, dict | None], orders: dict[str, list[dict]], 
     rows = []
     for h, st in states.items():
         mine = [p for p in pkgs if p.get("helper") == h and p.get("status") in L.OPEN]
-        row: dict = {"helper": h, "orders": len(orders.get(h, ())), "packages": len(mine)}
+        row: dict = {"helper": h, "orders": len(orders.get(h, ())), "packages": len(mine),
+                     "tasks": len(L.open_tasks(ledger, h))}
         job = st.get("job") if isinstance(st, dict) and isinstance(st.get("job"), dict) else None
         if st is None:
             row["do"] = None

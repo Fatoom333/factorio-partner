@@ -138,7 +138,7 @@ end
 M.stop_task = safe_stop
 
 -- Задачи домашних дел (рефлекс upkeep) завершаются тихо: агента будит только отказ.
-local QUIET_DONE = { ["reflex:upkeep"] = true }
+local QUIET_DONE = { ["reflex:upkeep"] = true, ["reflex:evacuate"] = true }
 
 local function emit_result(task, res)
   local mod = M.actions[task["do"]]

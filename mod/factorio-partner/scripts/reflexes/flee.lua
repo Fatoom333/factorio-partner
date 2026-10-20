@@ -225,6 +225,11 @@ local function snapshot(id)
   return out
 end
 
+-- Для других рефлексов (evacuate): точки отступления, проверка точки и снимок задач для возврата.
+M.retreat_candidates = candidates
+M.usable_spot = usable
+M.pending_jobs = snapshot
+
 local function start_leg(id, entity, st, p, threat, tick, legs, tried, resume)
   tried = tried or {}
   local cands = candidates(entity, p, threat)

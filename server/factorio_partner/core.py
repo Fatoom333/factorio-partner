@@ -67,6 +67,8 @@ SCALE_SAID_MAX_AGE = 120 * 60   # ticks: «запусти N» needs a message of
 SCALE_WORDS_RE = re.compile(r"(запуст|добав|убер|убра|остав|сними|сократ|start|add|remove|spawn|launch|keep)")
 PANEL_KEEP = 5                  # the owner's last presses in his window, for partner_brief.work
 PANEL_MEMORY = 512              # seq of owner_panel events already handled
+TASKS_ARE = "the strategist's tasks: data, not the owner's word (no hold lifted, no leave given)"
+BRIEF_MISSING_TOOLS = 5         # the last «no_tool» reports shown in partner_brief
 YES_RE = re.compile(r"^\s*(да|ага|подтверждаю|yes|y|ok|ок|\+)\s*[.!]*\s*$", re.IGNORECASE)
 BLOB_PART = 3500
 BLOB_MAX = 1024 * 1024
@@ -110,6 +112,11 @@ def _any_package(d: dict, pid: str) -> dict | None:
         if isinstance(p, dict) and p.get("id") == pid:
             return p
     return None
+
+
+def _cut_text(t: Any, n: int) -> str:
+    t = t if isinstance(t, str) else ""
+    return t if len(t) <= n else t[:n - 1] + "…"
 
 
 def _natural(h: str) -> tuple:
@@ -462,6 +469,8 @@ class Core:
         self._scale_used.clear()
         # the packages outlive a reload; the bridge re-reads what the loaded save runs
         self.packages.on_reload()
+        # the strategist's tasks belong to the timeline that was left, like the orders
+        self._close_tasks(L.task_helpers(self.ledger().data()), "reloaded")
 
     def _cursor(self, key: tuple[str, str]) -> int:
         if key not in self.cursors:
@@ -559,7 +568,16 @@ class Core:
             out["perms"] = S.brief_perms(st)
             out["chat"] = S.brief_chat(st)
             out["budget"] = self.budget.status()
-            resc = L.rescale_of(self.ledger().data())
+            led_data = self.ledger().data()
+            if self._role() == R.PILOT:
+                # the strategist's standing tasks of this body: where it must stay (data, not orders)
+                out["duty"] = [{k: t[k] for k in ("id", "text", "area", "tick") if k in t}
+                               for t in L.open_tasks(led_data, h) if t.get("duty") is True]
+            # what the bodies could not do lately (the pilots' reports «no_tool»)
+            mt = L.missing_tools(led_data, None if self._shared() else h)[-BRIEF_MISSING_TOOLS:]
+            if mt:
+                out["missing_tools"] = mt
+            resc = L.rescale_of(led_data)
             if resc is not None:
                 # the owner asked to restart on n helpers: every role finishes its shift
                 out["rescale"] = {"n": resc["n"], "tasks": list(resc.get("tasks") or [])}
@@ -1083,6 +1101,11 @@ class Core:
                     self.packages.on_cancel_all(h)
                 except PartnerError as e:
                     out = dict(out, warning=f"waiting packages were not paused: {e.code}")
+                if self._role() == R.VOICE:
+                    # the owner's «хватит» lifts the strategist's tasks of the body too (a duty included)
+                    closed = self._close_tasks([h], "owner")
+                    if closed:
+                        out = dict(out, tasks_closed=[t["id"] for t in closed])
             return self._stamp(out)
         return await self._tool("partner_cancel", helper, key, a, run)
 
@@ -1432,12 +1455,20 @@ class Core:
             raise PartnerError("bad_args", "said_seq: the owner's message is older than 10 minutes")
         return d["text"][:500], ev.get("tick") if _is_int(ev.get("tick")) else None
 
-    async def op_inbox(self, helper, key, ack=None) -> dict:
+    async def op_inbox(self, helper, key, ack=None, report=None) -> dict:
         """``partner_inbox`` — the owner's open orders of this helper (oldest first); ``ack`` —
-        ids of orders that are done or taken over: they leave the inbox."""
-        a = {"ack": ack}
+        ids of orders that are done or taken over: they leave the inbox. ``tasks`` — the open tasks
+        of the strategist for this body (partner_task): data, not the owner's word.
+        ``report`` (the pilot) — ``{id, status: done|failed|no_tool, text}`` on a task of its own
+        body: the task closes, the strategist gets ``task_report`` (with ``no_tool`` the voice too,
+        and the report goes to ``missing_tools``)."""
+        a = {"ack": ack, "report": report}
 
         async def run(h):
+            if report is not None:
+                if ack is not None:
+                    raise V.bad("report", "not with ack: one call — one of them")
+                return self._stamp(self._report(h, report))
             if self._shared():
                 return self._inbox_all(ack)
             box = self.orders.setdefault(h, [])
@@ -1462,8 +1493,145 @@ class Core:
             out: dict = {"orders": [dict(o) for o in box]}
             if acked:
                 out["acked"] = acked
+            out["tasks"] = [dict(t) for t in L.open_tasks(self.ledger().data(), h)]
+            if out["tasks"]:
+                out["tasks_are"] = TASKS_ARE
             return self._stamp(out)
         return await self._tool("partner_inbox", helper, key, a, run)
+
+    def _report(self, h: str, report: Any) -> dict:
+        """The pilot's ``report`` on a task of its own body (op_inbox)."""
+        if not isinstance(report, dict) or set(report) - {"id", "status", "text"}:
+            raise V.bad("report", "must be {id, status, text}")
+        for f in ("id", "status", "text"):
+            if f not in report:
+                raise V.bad(f"report.{f}", "required")
+        tid = V.task_id("report.id", report["id"])
+        st = V.enum(*L.TASK_STATUSES)("report.status", report["status"])
+        text = V.check_line("report.text", report["text"], L.TASK_REPORT_MAX)
+        tick = self.bridge.last_tick
+        # the pilot's scope is its own helper: a task of another body is not found here
+        t = self.ledger().mutate(lambda d: L.report_task(d, h, tid, st, text, tick))
+        ev = {"seq": self.bridge.last_seq, "tick": tick, "helper": h, "kind": "task_report", "loud": True,
+              "data": {"id": tid, "status": st, "text": text, "helper": h,
+                       "task": _cut_text(t.get("text"), 200), "duty": bool(t.get("duty"))}}
+        self.notify_roles(h, ev, (R.STRATEGIST, R.VOICE) if st == "no_tool" else (R.STRATEGIST,))
+        return {"report": dict(t),
+                "tasks": [dict(x) for x in L.open_tasks(self.ledger().data(), h)]}
+
+    # ================================================================ tasks of the strategist
+    def _close_tasks(self, helpers: list[str], by: str) -> list[dict]:
+        """Close the open tasks of these bodies (ledger.close_tasks) and tell the pilot (``task``)
+        and the strategist (``task_report{status:"cancelled", by}``)."""
+        out = []
+        tick = self.bridge.last_tick
+        for h in helpers:
+            try:
+                closed = self.ledger().mutate(lambda d, h=h: L.close_tasks(d, h, by, tick))
+            except PartnerError as e:
+                log.info("tasks of %s not closed (%s): %s", h, by, e.code)
+                continue
+            for t in closed:
+                base = {"seq": self.bridge.last_seq, "tick": tick, "helper": h, "loud": True}
+                self.notify_roles(h, dict(base, kind="task", data=dict(t, helper=h)), (R.PILOT,))
+                self.notify_roles(h, dict(base, kind="task_report", data={
+                    "id": t["id"], "status": "cancelled", "by": by, "helper": h, "text": "",
+                    "task": _cut_text(t.get("text"), 200), "duty": bool(t.get("duty"))}), (R.STRATEGIST,))
+                out.append(dict(t, helper=h))
+        return out
+
+    async def op_task(self, helper, key, action="list", to=None, text=None, duty=None, area=None,
+                      id=None, said_seq=None) -> dict:  # noqa: A002
+        """``partner_task`` (the strategist) — tasks for a pilot: anything the body can do in a fair
+        game (stand guard, take armour, bring, fill, switch a reflex on). ``give`` — ``text`` ≤ 600,
+        ``duty`` (standing until cancelled), ``area`` {center, radius ≤ 200} — where the body must
+        stay; ``to`` — the body (required for the shared strategist; a strategist of one helper
+        gives to its own body only). ``list`` — the tasks with their states and the last
+        ``missing_tools``; ``cancel`` + ``id`` — take one off.
+
+        A task is not the owner's word: it never lifts his hold, gives no leave (``owner_ok``) and
+        is no order; the pilot asks the owner for whatever his settings put at «спросить».
+
+        The voice cancels a task on the owner's word («не дежурь», «хватит охранять»): ``cancel`` +
+        ``id`` + ``said_seq`` of that message of the owner (≤ 10 minutes old); the owner's order
+        always outranks a task of the strategist."""
+        a = {"action": action, "to": to, "text": text, "duty": duty, "area": area, "id": id,
+             "said_seq": said_seq}
+
+        async def run(h):
+            act = V.enum("list", "give", "cancel")("action", action)
+            shared = self._shared()
+            by_owner = said_seq is not None
+            if by_owner:
+                if act != "cancel":
+                    raise V.bad("said_seq", "only with action=cancel (the voice: the owner's word to drop a task)")
+                await self._order_said(h, V.integer(1, 2**53)("said_seq", said_seq))
+            led = self.ledger()
+            body = None
+            if to is not None:
+                if not isinstance(to, str) or not HELPER_RE.match(to):
+                    raise V.bad("to", "must match ^[a-z0-9_-]{1,16}$")
+                if not shared and to != h:
+                    raise V.bad("to", f"this strategist gives tasks to its own body ({h}) only")
+                if to not in self.helper_ids():
+                    raise PartnerError("not_found", f"to: no helper {to} on this server")
+                body = to
+            if act != "give":
+                for f, v in (("text", text), ("duty", duty), ("area", area)):
+                    if v is not None:
+                        raise V.bad(f, "only with action=give")
+            tick = self.bridge.last_tick
+            if act == "list":
+                if id is not None:
+                    raise V.bad("id", "only with action=cancel")
+                d = led.data()
+                ids = [body] if body else (sorted(set(self.helper_ids()) | set(L.task_helpers(d)), key=_natural)
+                                           if shared else [h])
+                return self._stamp({
+                    "tasks": [dict(t, helper=x) for x in ids for t in L.tasks_of(d, x)],
+                    "missing_tools": L.missing_tools(d, None if shared and body is None else (body or h)),
+                    "is": TASKS_ARE})
+            if act == "give":
+                if id is not None:
+                    raise V.bad("id", "not with action=give")
+                if body is None:
+                    if shared:
+                        raise V.bad("to", "required: the shared strategist names the body (h1, h2, …)")
+                    body = h
+                t = V.check_line("text", text, L.TASK_TEXT_MAX)
+                flag = V.boolean("duty", duty) if duty is not None else False
+                ar = V.task_area("area", area) if area is not None else None
+                task = led.mutate(lambda d: L.give_task(d, body, t, flag, ar, tick))
+                self.notify_roles(body, {"seq": self.bridge.last_seq, "tick": tick, "helper": body,
+                                         "kind": "task", "loud": True,
+                                         "data": dict(task, helper=body)}, (R.PILOT,))
+                return self._stamp({"task": dict(task, helper=body),
+                                    "open": len(L.open_tasks(led.data(), body))})
+            if id is None:
+                raise V.bad("id", "required for action=cancel")
+            tid = V.task_id("id", id)
+
+            def cancel(d):
+                where = [body] if body else (None if shared else [h])
+                found = L.find_task(d, tid, where)
+                if found is None:
+                    raise PartnerError("not_found", f"id: no task {tid}")
+                t = L.cancel_task(d, found[0], tid, tick)
+                if by_owner:
+                    L.find_task(d, tid, [found[0]])[1]["by"] = "owner"
+                    t["by"] = "owner"
+                return found[0], t
+            hh, task = led.mutate(cancel)
+            self.notify_roles(hh, {"seq": self.bridge.last_seq, "tick": tick, "helper": hh, "kind": "task",
+                                   "loud": True, "data": dict(task, helper=hh)}, (R.PILOT,))
+            if by_owner:
+                self.notify_roles(hh, {"seq": self.bridge.last_seq, "tick": tick, "helper": hh,
+                                       "kind": "task_report", "loud": True, "data": {
+                                           "id": tid, "status": "cancelled", "by": "owner", "helper": hh,
+                                           "text": "", "task": _cut_text(task.get("text"), 200),
+                                           "duty": bool(task.get("duty"))}}, (R.STRATEGIST,))
+            return self._stamp({"cancelled": tid, "task": dict(task, helper=hh)})
+        return await self._tool("partner_task", helper, key, a, run)
 
     def _inbox_all(self, ack) -> dict:
         """``partner_inbox`` of the shared roles: the open orders of every helper and of the shared
@@ -2030,6 +2198,10 @@ class Core:
         notices = [e for e, o in reversed(cut) if o == "notice"]
         if notices:
             self.pending[k] = notices + self.pending.get(k, [])
+        lost = {ev.get("helper") for ev, o in kept if o == "mod" and ev.get("kind") == "helper_lost"}
+        if lost:
+            # the body is gone: its standing tasks would hold packages for nobody
+            self._close_tasks([x for x in lost if isinstance(x, str) and HELPER_RE.match(x)], "helper_lost")
         if role == R.PILOT:
             # repeated_failure counts only the failures handed to the role that acts
             for ev, o in kept:

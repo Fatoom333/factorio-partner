@@ -3,7 +3,8 @@
 --
 -- args: item (предмет из инвентаря), pos, direction? = 0 (defines.direction, 0..15),
 --       recipe? (только для сборочных машин: рецепт своей силы, открытый, подходящей категории),
---       auto_supply? = false (нет предмета в инвентаре — сначала добыть его как `get_items`).
+--       auto_supply? = false (нет предмета в инвентаре — сначала добыть его как `get_items`),
+--       type? = "input" │ "output" (только подземная лента и погрузчик: вход или выход).
 -- done.detail: {unit_number, name, pos}.
 -- Ход (честность §6.5): сам подходит на build_distance → LuaControl.can_place_entity
 -- (досягаемость + коллизии) → surface.create_entity{force, raise_built=true, quality="normal"}
@@ -32,7 +33,11 @@ M.schema = {
   direction = { type = "int", min = 0, max = 15, default = 0 },
   recipe = { type = "string", max = 100 },
   auto_supply = { type = "bool", default = false },
+  type = { type = "enum", values = { "input", "output" } },
 }
+
+-- постройки со входом и выходом (create_entity{type=...})
+local IO_TYPES = { ["underground-belt"] = true, loader = true, ["loader-1x1"] = true }
 
 local function stop(task, ctx)
   B.stop_approach(task, ctx)
@@ -70,6 +75,9 @@ function M.start(task, ctx)
   if a.recipe ~= nil then
     local why = why_bad_recipe(h, ep, a.recipe)
     if why then return B.failed("bad_args", "args.recipe: " .. why) end
+  end
+  if a.type ~= nil and not IO_TYPES[ep.type] then
+    return B.failed("bad_args", "args.type: only for underground belts and loaders")
   end
   -- сколько предметов стоит постройка (обычно 1)
   local need = 1
@@ -124,7 +132,7 @@ function M.tick(task, ctx)
   end
   local e = h.surface.create_entity{
     name = task.entity_name, position = a.pos, direction = a.direction, force = h.force,
-    raise_built = true, quality = B.NORMAL,
+    raise_built = true, quality = B.NORMAL, type = a.type,
   }
   if e == nil or not e.valid then
     return fail(task, ctx, "cannot_place", task.entity_name .. " cannot be placed here")

@@ -451,7 +451,8 @@ ACTIONS: dict[str, tuple[dict[str, Validator], tuple[str, ...], tuple[tuple[tupl
     # corpse:true — the helper's own last corpse (only true); exactly one of the three
     "pickup": ({"target": target, "area": area, "corpse": only_true}, (),
                ((("target", "area", "corpse"), True),)),
-    "place": ({"item": name, "pos": pos, "direction": DIRECTION, "recipe": name, "auto_supply": boolean},
+    "place": ({"item": name, "pos": pos, "direction": DIRECTION, "recipe": name, "auto_supply": boolean,
+               "type": enum("input", "output")},
               ("item", "pos"), ()),
     # turn an own building like the R key (the last built belt of a re-planned belt)
     "rotate": ({"target": target, "direction": blueprint_direction}, ("target", "direction"), ()),
@@ -573,9 +574,66 @@ def check_reflexes(rset: Any) -> list:
             for k, (lo, hi) in AMMO_BOUNDS.items():
                 if k in r:
                     number(lo, hi)(f"set[{i}].{k}", r[k])
+        elif t == "evacuate":
+            if any(isinstance(x, dict) and x.get("type") == "evacuate" for x in rset[:i]):
+                # one state per helper in the mod: two areas need two helpers
+                raise bad(f"set[{i}].type", "only one evacuate per helper")
+            check_evacuate(f"set[{i}]", r)
     if json_size(rset) > MAX_ACT_ARGS:
         raise PartnerError("limit", f"reflex set larger than {MAX_ACT_ARGS} bytes")
     return rset
+
+
+# the evacuate reflex (ACTIONS.md «evacuate»): the area it guards and how it watches and returns
+EVACUATE_RADIUS_MAX = 48            # center + radius ≤ 48
+EVACUATE_NAMES_MAX = 32
+EVACUATE_BOUNDS = {"threat_radius": (10, 120), "return_after_s": (30, 1800)}
+_EVACUATE_FIELDS = ("type", "area", "center", "radius", "names", "threat_radius", "return_after_s",
+                    "rebuild")
+
+
+def check_evacuate(field: str, r: dict) -> None:
+    """``{type:"evacuate", area | center+radius, names?, threat_radius?, return_after_s?, rebuild?}``:
+    exactly one of ``area`` and ``center`` + ``radius``, the bounds of the spec, no other field."""
+    for k in r:
+        if k not in _EVACUATE_FIELDS:
+            raise bad(f"{field}.{k}", "unknown field; allowed: " + ", ".join(_EVACUATE_FIELDS[1:]))
+    has_area, has_center = "area" in r, "center" in r or "radius" in r
+    if has_area == has_center:
+        raise bad(field, "exactly one of area {left_top, right_bottom} and center + radius")
+    if has_area:
+        area(f"{field}.area", r["area"])
+    else:
+        if "center" not in r or "radius" not in r:
+            raise bad(field, "center and radius go together")
+        pos(f"{field}.center", r["center"])
+        number(1, EVACUATE_RADIUS_MAX)(f"{field}.radius", r["radius"])
+    if "names" in r:
+        name_list(EVACUATE_NAMES_MAX)(f"{field}.names", r["names"])
+    for k, (lo, hi) in EVACUATE_BOUNDS.items():
+        if k in r:
+            number(lo, hi)(f"{field}.{k}", r[k])
+    if "rebuild" in r:
+        boolean(f"{field}.rebuild", r["rebuild"])
+
+
+# ---- the strategist's tasks to a pilot (MCP.md partner_task) ---------------------------------
+TASK_ID_RE = re.compile(r"^t[0-9]{1,9}$")
+TASK_RADIUS_MAX = 200
+
+
+def task_id(field: str, v: Any) -> str:
+    if not isinstance(v, str) or not TASK_ID_RE.match(v):
+        raise bad(field, "must be a task id (t<N>)")
+    return v
+
+
+def task_area(field: str, v: Any) -> dict:
+    """``partner_task.area``: ``{center:{x,y}, radius}``, 1..200 — where the body must stay."""
+    if not isinstance(v, dict) or set(v) != {"center", "radius"}:
+        raise bad(field, "must be {center:{x,y}, radius}")
+    return {"center": pos(field + ".center", v["center"]),
+            "radius": number(1, TASK_RADIUS_MAX)(field + ".radius", v["radius"])}
 
 
 def recipe_filter(field: str, v: Any) -> str:

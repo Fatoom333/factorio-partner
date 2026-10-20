@@ -13,7 +13,9 @@ restart of the server:
 ``verifying``);
 ``history`` — the last finished ones (``verified``, ``unmet``, ``failed``, ``cancelled``), without
 steps; ``notes`` — the strategist's last note on the work, one per helper; ``questions`` — his
-questions to the owner per helper (``open`` / ``answered``), ``qnext`` numbers them. Notes and
+questions to the owner per helper (``open`` / ``answered``), ``qnext`` numbers them; ``tasks`` — his
+tasks to the pilots per helper (``open`` / closed by a report or a cancel), ``tnext`` numbers them;
+``missing_tools`` — the last reports «no_tool» of the pilots (what a body could not do). Notes and
 questions do not move ``rev``: ``rev`` guards the packages only. Every change goes through ``mutate``: a lock file, a fresh read of the file, the change, an
 atomic write — two server processes (two sessions on one save) never lose each other's change.
 The bridge of one process at a time drives the packages (``take_lease``).
@@ -51,7 +53,16 @@ QUESTIONS_OPEN_MAX = 5      # open questions per helper
 QUESTIONS_KEEP = 5          # answered questions kept per helper
 ANSWER_SAID_MAX = 200       # characters of the owner's answer kept on the question
 REMIND_AFTER = 10 * 60.0   # s: an open question unanswered this long is reminded once
-_SIDE = ("notes", "questions", "qnext", "thoughts", "rescale")   # parts of the file that do not move rev
+# parts of the file that do not move rev
+_SIDE = ("notes", "questions", "qnext", "thoughts", "rescale", "tasks", "tnext", "missing_tools")
+TASK_TEXT_MAX = 600         # characters of a task of the strategist to a pilot
+TASK_REPORT_MAX = 300       # characters of the pilot's report on a task
+TASKS_OPEN_MAX = 5          # open tasks per body
+TASKS_KEEP = 5              # closed tasks kept per body (partner_task list, partner_brief.work)
+TASK_STATUSES = ("done", "failed", "no_tool")       # what the pilot reports
+MISSING_TOOLS_MAX = 20      # the last «no_tool» reports kept for the owner
+DUTY_RADIUS_MAX = 200       # the area of a duty: {center, radius ≤ 200}
+DUTY_SLACK = 10             # a package farther than radius + this from a duty's centre waits
 
 now = time.time             # wall clock of notes and questions: it outlives a restart (tests patch it)
 
@@ -537,3 +548,155 @@ def clear_rescale(data: dict) -> dict | None:
     r = rescale_of(data)
     data.pop("rescale", None)
     return r
+
+
+# ---------------------------------------------------------------- the strategist's tasks to a pilot
+def tasks_of(data: dict, helper: str) -> list[dict]:
+    v = data.get("tasks")
+    ts = v.get(helper) if isinstance(v, dict) else None
+    return [t for t in ts if isinstance(t, dict) and isinstance(t.get("id"), str)] if isinstance(ts, list) else []
+
+
+def open_tasks(data: dict, helper: str) -> list[dict]:
+    return [t for t in tasks_of(data, helper) if t.get("status") == "open"]
+
+
+def _num(v: Any) -> bool:
+    return isinstance(v, (int, float)) and not isinstance(v, bool)
+
+
+def duties(data: dict, helper: str) -> list[dict]:
+    """Open standing tasks (``duty`` with ``area``) of a body: they hold it in their area."""
+    out = []
+    for t in open_tasks(data, helper):
+        a = t.get("area")
+        c = a.get("center") if isinstance(a, dict) else None
+        if (t.get("duty") is True and isinstance(c, dict) and _num(c.get("x")) and _num(c.get("y"))
+                and _num(a.get("radius"))):
+            out.append(t)
+    return out
+
+
+def task_helpers(data: dict) -> list[str]:
+    v = data.get("tasks")
+    return [h for h in v if isinstance(h, str) and HELPER_RE.match(h)] if isinstance(v, dict) else []
+
+
+def give_task(data: dict, helper: str, text: str, duty: bool, area: dict | None,
+              tick: int | None) -> dict:
+    """A new open task of the strategist for the pilot of ``helper`` (``t<N>``); at most
+    TASKS_OPEN_MAX open per body. The text is the strategist's: data for the pilot, never the
+    owner's word."""
+    if len(open_tasks(data, helper)) >= TASKS_OPEN_MAX:
+        raise PartnerError("limit", f"at most {TASKS_OPEN_MAX} open tasks per helper; cancel one or wait "
+                                    "for the pilot's report")
+    n = int(data.get("tnext", 1)) if isinstance(data.get("tnext"), int) else 1
+    data["tnext"] = n + 1
+    t = {"id": f"t{n}", "from": "strategist", "text": text, "duty": bool(duty), "tick": tick,
+         "status": "open", "at": now()}
+    if area is not None:
+        t["area"] = {"center": dict(area["center"]), "radius": area["radius"]}
+    ts = _side(data, "tasks").setdefault(helper, [])
+    ts.append(t)
+    _keep_tasks(data, helper)
+    return dict(t)
+
+
+def find_task(data: dict, tid: str, helpers=None) -> tuple[str, dict] | None:
+    """The task ``tid`` -> (its helper, the task); ``helpers`` — where to look (None — everywhere)."""
+    for h in (task_helpers(data) if helpers is None else helpers):
+        for t in tasks_of(data, h):
+            if t["id"] == tid:
+                return h, t
+    return None
+
+
+def cancel_task(data: dict, helper: str, tid: str, tick: int | None) -> dict:
+    """Take an open task of ``helper`` off (the strategist: the need is over)."""
+    found = find_task(data, tid, [helper])
+    if found is None:
+        raise PartnerError("not_found", f"id: no task {tid}")
+    t = found[1]
+    if t.get("status") != "open":
+        raise PartnerError("bad_args", f"id: task {tid} is already {t.get('status')}")
+    t.update(status="cancelled", closed_tick=tick, closed_at=now())
+    _keep_tasks(data, helper)
+    return dict(t)
+
+
+def close_tasks(data: dict, helper: str, by: str, tick: int | None) -> list[dict]:
+    """Close every open task of ``helper`` (``cancelled``, ``by``: ``owner`` — his «хватит» or his
+    word to drop the task, ``reloaded`` — the save was loaded, ``helper_lost`` — the body is gone)."""
+    out = []
+    for t in open_tasks(data, helper):
+        t.update(status="cancelled", by=by, closed_tick=tick, closed_at=now())
+        out.append(dict(t))
+    if out:
+        _keep_tasks(data, helper)
+    return out
+
+
+def report_task(data: dict, helper: str, tid: str, status: str, text: str, tick: int | None) -> dict:
+    """The pilot's report on an open task of its own body: it closes the task (a duty too — the
+    need is over or the body cannot hold it). ``no_tool`` also goes to ``missing_tools``."""
+    found = find_task(data, tid, [helper])
+    if found is None:
+        raise PartnerError("not_found", f"report.id: no task {tid} of this helper")
+    t = found[1]
+    if t.get("status") != "open":
+        raise PartnerError("bad_args", f"report.id: task {tid} is already {t.get('status')}")
+    t.update(status=status, report={"status": status, "text": text, "tick": tick}, closed_tick=tick,
+             closed_at=now())
+    if status == "no_tool":
+        mt = data.get("missing_tools")
+        if not isinstance(mt, list):
+            mt = data["missing_tools"] = []
+        mt.append({"text": text, "tick": tick, "task": tid, "helper": helper,
+                   "task_text": str(t.get("text", ""))[:200]})
+        del mt[:-MISSING_TOOLS_MAX]
+    _keep_tasks(data, helper)
+    return dict(t)
+
+
+def missing_tools(data: dict, helper: str | None = None) -> list[dict]:
+    """The last «no_tool» reports (of ``helper`` only, when given), oldest first."""
+    mt = data.get("missing_tools")
+    out = [m for m in mt if isinstance(m, dict)] if isinstance(mt, list) else []
+    return [m for m in out if helper is None or m.get("helper") == helper]
+
+
+def _keep_tasks(data: dict, helper: str) -> None:
+    ts = _side(data, "tasks").get(helper)
+    if not isinstance(ts, list):
+        return
+    opened = [t for t in ts if isinstance(t, dict) and t.get("status") == "open"]
+    closed = [t for t in ts if isinstance(t, dict) and t.get("status") != "open"][-TASKS_KEEP:]
+    keep = {id(t) for t in opened + closed}
+    ts[:] = [t for t in ts if id(t) in keep]
+
+
+def package_points(pkg: dict) -> list[dict]:
+    """Where a package takes the body: its anchor and the points of its walk / approach steps."""
+    pts = [pkg.get("anchor")]
+    for s in pkg.get("steps") if isinstance(pkg.get("steps"), list) else []:
+        if not isinstance(s, dict) or s.get("do") not in ("walk", "approach"):
+            continue
+        a = s.get("args") if isinstance(s.get("args"), dict) else {}
+        pts.append(a.get("to"))
+        tg = a.get("target")
+        if isinstance(tg, dict):
+            pts.append(tg.get("pos"))
+    return [p for p in pts if isinstance(p, dict) and _num(p.get("x")) and _num(p.get("y"))]
+
+
+def duty_blocking(data: dict, helper: str, pkg: dict) -> dict | None:
+    """The open duty of ``helper`` the package would take the body away from (None — none): its
+    anchor or a point of a walk / approach step lies farther than ``area.radius + DUTY_SLACK`` from
+    the duty's centre."""
+    pts = package_points(pkg)
+    for t in duties(data, helper):
+        c, r = t["area"]["center"], t["area"]["radius"]
+        lim = (r + DUTY_SLACK) ** 2
+        if any((p["x"] - c["x"]) ** 2 + (p["y"] - c["y"]) ** 2 > lim for p in pts):
+            return t
+    return None

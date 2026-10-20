@@ -27,6 +27,7 @@ local MODULES = {
   "perception.supply", "perception.lookup",
   "core.index", "perception.status",
   "reflexes.flee", "reflexes.death", "reflexes.ammo", "reflexes.shoot", "reflexes.upkeep",
+  "reflexes.evacuate",
   "core.nameplate", "core.bgcraft", "core.tidy", "core.owner_words", "core.metrics", "core.panel",
 }
 for _, name in ipairs(MODULES) do

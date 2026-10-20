@@ -48,7 +48,7 @@ TOOL_PREFIX = "mcp__partner__"
 PENDING_TOOLS: set[str] = set()
 # инструменты только для режима нескольких ролей: одиночному агенту partner (ключ старого вида —
 # пилот без голоса и стратега) они не нужны — поручений ему никто не кладёт
-MULTI_ROLE_TOOLS = {"partner_order", "partner_inbox", "partner_ledger"}
+MULTI_ROLE_TOOLS = {"partner_order", "partner_inbox", "partner_ledger", "partner_task"}
 # инструменты диспетчера (ключ host, главный чат), не агентов: ни один агент их не получает
 HOST_TOOLS = {"partner_relay", "partner_rescale"}
 # аргументы partner_plan описаны в MCP.md отдельным разделом, а не в таблице

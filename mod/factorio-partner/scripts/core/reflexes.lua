@@ -1,5 +1,14 @@
 -- Рефлексы: операция `reflexes` и вызов проверок модулей.
 -- Модуль объявляет M.reflexes = { <type> = { schema = {...}, check = function(helper_id, entity, params, tick) end } }.
+-- Необязательные функции типа (ядро зовёт их, если они есть):
+--   validate(v, path) -> v      — проверка, которую не выразить схемой (после schema.validate);
+--   perms(v, ctx, old) -> keys  — ключи разрешений хозяина для этих параметров (вместо M.PERM);
+--                                 old — прежние параметры этого типа в наборе или nil;
+--   guard(helper, v, old, ctx)  — последняя проверка до записи набора (v = nil — тип уходит из набора):
+--                                 ошибка отменяет весь вызов, прежний набор остаётся;
+--   on_set(helper, v, old, ctx) — набор принят и записан (под pcall): снять своё состояние заново и т.п.;
+--   on_unset(helper, old)       — тип ушёл из набора или помощник удалён (под pcall).
+-- Поле once = true — тип бывает в наборе не больше одного раза (у него одно состояние на помощника).
 -- `reflexes{set:[{type, ...параметры}]}` — полная замена набора помощника, параметры проверяются
 -- по schema типа; `reflexes{}` без `set` ничего не меняет и возвращает текущий набор. storage.reflexes[helper] = { {type=..., ...}, ... }.
 -- Ядро вызывает check каждые CHECK_EVERY тиков для каждого живого помощника и каждого
@@ -68,6 +77,18 @@ function M.nests_leave(helper)
   return t ~= nil and t.shoot_nests == true
 end
 
+--- Необязательная функция типа t (on_set, on_unset) под pcall: сбой модуля не ломает операцию.
+local function call_hook(t, name, ...)
+  local def = M.types[t]
+  local fn = def and def[name]
+  if fn == nil then return end
+  local ok, e = pcall(fn, ...)
+  if not ok then
+    err.count_module_error()
+    log("[factorio-partner] reflex " .. tostring(t) .. " " .. name .. " failed: " .. err.clean_text(err.is(e) and e.text or e))
+  end
+end
+
 function M.op_reflexes(args, ctx)
   local a = schema.validate(SET_SCHEMA, args)
   if a.set == nil then return { set = M.public(M.get(ctx.helper_id)) } end
@@ -75,19 +96,29 @@ function M.op_reflexes(args, ctx)
   for _, r in ipairs(M.get(ctx.helper_id) or {}) do before[r.type] = r end
   local out = {}
   local nests = nil
+  local seen = {}
   for i, r in ipairs(a.set) do
     local path = "args.set[" .. i .. "]"
     if type(r) ~= "table" or type(r.type) ~= "string" then err.raise("bad_args", path .. ".type: required") end
     local def = M.types[r.type]
     if def == nil then err.raise("bad_args", path .. ".type: unknown reflex " .. r.type) end
+    if def.once and seen[r.type] then
+      err.raise("bad_args", path .. ".type: only one " .. r.type .. " per helper")
+    end
+    seen[r.type] = true
     local params = {}
     for k, v in pairs(r) do
       if k ~= "type" then params[k] = v end
     end
     local v = schema.validate(def.schema or {}, params, path)
+    if def.validate ~= nil then v = def.validate(v, path) end
     v.type = r.type
     local old = before[r.type]
-    if old == nil and M.PERM[r.type] then perms.demand({ M.PERM[r.type] }, ctx) end
+    if def.perms ~= nil then
+      perms.demand(def.perms(v, ctx, old), ctx)
+    elseif old == nil and M.PERM[r.type] then
+      perms.demand({ M.PERM[r.type] }, ctx)
+    end
     -- shoot: стрельба по гнёздам при «спросить» — только если хозяин разрешил именно её
     -- (owner_ok с attack-nests); разрешение держится, пока shoot остаётся в наборе
     if r.type == "shoot" then
@@ -95,14 +126,29 @@ function M.op_reflexes(args, ctx)
     end
     out[i] = v
   end
+  local now = {}
+  for _, v in ipairs(out) do now[v.type] = true end
+  for t, old in pairs(before) do
+    local def = M.types[t]
+    if not now[t] and def ~= nil and def.guard ~= nil then def.guard(ctx.helper_id, nil, old, ctx) end
+  end
+  for _, v in ipairs(out) do
+    local def = M.types[v.type]
+    if def.guard ~= nil then def.guard(ctx.helper_id, v, before[v.type], ctx) end
+  end
   storage.reflexes[ctx.helper_id] = out
   if type(storage.reflex_leave) ~= "table" then storage.reflex_leave = {} end
   storage.reflex_leave[ctx.helper_id] = nests and { shoot_nests = true } or nil
+  for t, old in pairs(before) do
+    if not now[t] then call_hook(t, "on_unset", ctx.helper_id, old) end
+  end
+  for _, v in ipairs(out) do call_hook(v.type, "on_set", ctx.helper_id, v, before[v.type], ctx) end
   return { set = M.public(out) }
 end
 
 --- Забыть набор рефлексов помощника (только helper_remove).
 function M.forget(helper)
+  for _, old in ipairs(M.get(helper) or {}) do call_hook(old.type, "on_unset", helper, old) end
   if type(storage.reflexes) == "table" then storage.reflexes[helper] = nil end
   if type(storage.reflex_leave) == "table" then storage.reflex_leave[helper] = nil end
 end

@@ -63,34 +63,45 @@ READ = _READS | _READ_FORMS
 #   "partner_ledger.thoughts" — the owner's switch «show the strategist's thoughts» (the voice alone;
 #                            each call needs a message of the owner);
 #   "partner_ledger.scale" — the owner's «запусти / добавь / убери N помощников» (the voice alone;
-#                            only right after a message of the owner).
+#                            only right after a message of the owner);
+#   "partner_inbox.report" — the pilot's report on a task of the strategist to its own body;
+#   "partner_task"         — the strategist's tasks to a pilot (give, cancel); "partner_task.list"
+#                            reads them. A task is not the owner's word: it lifts no hold and gives
+#                            no leave (owner_ok), whatever its text;
+#   "partner_task.owner"   — the voice cancels a task on the owner's word (cancel + said_seq): his
+#                            order outranks any task of the strategist.
 DRY_RUN_ACTS = frozenset({"plan_mining", "plan_belt", "build_blueprint", "build_layout",
                           "connect_entities"})
 _PILOT_WRITES = frozenset({
     "partner_act", "partner_act.dry_run", "partner_cancel", "partner_cancel.all", "partner_say",
     "partner_plan", "partner_notes.write", "partner_notes.rules", "partner_hold.write",
-    "partner_reflex.write", "partner_inbox.write", "partner_ledger.cancel", "partner_ledger.ask",
+    "partner_reflex.write", "partner_inbox.write", "partner_inbox.report", "partner_ledger.cancel",
+    "partner_ledger.ask",
 })
 ALLOWED: dict[str, frozenset[str]] = {
     VOICE: READ | {"partner_say", "partner_order", "partner_cancel.all", "partner_notes.rules",
+                   "partner_task.list", "partner_task.owner",
                    "partner_ledger.thoughts", "partner_ledger.scale"},
     PILOT: READ | _PILOT_WRITES,
     STRATEGIST: READ | {"partner_plan", "partner_inbox.write", "partner_act.dry_run",
                         "partner_ledger.write", "partner_ledger.cancel", "partner_ledger.note",
-                        "partner_ledger.ask"},
+                        "partner_ledger.ask", "partner_task", "partner_task.list"},
     # the dispatcher reads nothing and drives nothing: it only hands the owner's words on
     # (and takes the owner's request to restart the roles on N helpers: partner_rescale)
     HOST: frozenset({"partner_relay", "partner_rescale"}),
 }
 
+# the evacuate reflex of the mod (EVENTS.md «evacuate»): the voice tells the owner, the strategist plans
+EVACUATE_EVENTS = frozenset({"evacuate_started", "evacuated", "evacuate_restored", "evacuate_missing"})
 # which events a role's partner_wait hands over (docs/MCP.md «Роли»); None — every event, as before
 WAKE: dict[str, frozenset[str] | None] = {
     PILOT: None,
     VOICE: frozenset({"player_said", "owner_stop", "owner_resume", "game_reloaded", "budget_low",
                       "strategist_question", "strategist_note", "host_message", "follow_lag",
-                      "owner_panel", "rescale"}),
+                      "owner_panel", "rescale", "task_report"}) | EVACUATE_EVENTS,
     STRATEGIST: frozenset({"order", "plan_done", "owner_stop", "owner_resume", "game_reloaded",
-                           "died", "helper_lost", "package_verified", "package_unmet", "rescale"}),
+                           "died", "helper_lost", "package_verified", "package_unmet", "rescale",
+                           "task_report"}) | EVACUATE_EVENTS,
 }
 
 
@@ -116,7 +127,13 @@ def capability(tool: str, args: dict | None) -> str:
     if tool == "partner_reflex":
         return tool if a.get("set") is None else tool + ".write"
     if tool == "partner_inbox":
+        if a.get("report") is not None:
+            return tool + ".report"
         return tool if a.get("ack") is None else tool + ".write"
+    if tool == "partner_task":
+        if a.get("action", "list") == "list":
+            return tool + ".list"
+        return tool + ".owner" if a.get("said_seq") is not None else tool
     if tool == "partner_ledger":
         act = a.get("action", "list")
         if act == "list":
@@ -146,16 +163,27 @@ def budget_gate(level: str, role: str, tool: str, args: dict | None = None) -> N
     ``strategist_off``: the strategist may not put or resume build packages. Other levels pass."""
     if level == "voice_only" and role in (PILOT, STRATEGIST):
         cap = capability(tool, args)
-        if cap not in READ and tool not in ("partner_cancel", "partner_hold"):
+        # what only stops or closes stays: cancel, hold, a task lifted by the strategist, the
+        # pilot's report on a task (a duty must not keep holding the packages)
+        closing = (cap in ("partner_task.list", "partner_inbox.report")
+                   or (cap == "partner_task" and (args or {}).get("action") == "cancel"))
+        if cap not in READ and not closing and tool not in ("partner_cancel", "partner_hold"):
             raise PartnerError(BUDGET, f"{tool}: the plan limit is nearly spent, only the mod and "
-                                       "the voice work now (partner_cancel and partner_hold stay)")
-    elif level in ("strategist_off", "voice_only") and role == STRATEGIST             and capability(tool, args) == "partner_ledger.write":
-        raise PartnerError(BUDGET, "partner_ledger put/resume: the plan limit passed its first "
-                                   "threshold, the strategist sets no new goals")
+                                       "the voice work now (partner_cancel, partner_hold, partner_task "
+                                       "cancel and the pilot's report stay)")
+    elif level in ("strategist_off", "voice_only") and role == STRATEGIST:
+        cap = capability(tool, args)
+        if cap == "partner_ledger.write":
+            raise PartnerError(BUDGET, "partner_ledger put/resume: the plan limit passed its first "
+                                       "threshold, the strategist sets no new goals")
+        if cap == "partner_task" and (args or {}).get("action") == "give":
+            raise PartnerError(BUDGET, "partner_task give: the plan limit passed its first threshold, "
+                                       "the strategist sets no new goals (cancel stays)")
 
 
 _WRITE_FORM = {"partner_notes": "add/remove/confirm", "partner_hold": "release",
-               "partner_reflex": "set", "partner_inbox": "ack", "partner_cancel": "all",
+               "partner_reflex": "set", "partner_inbox": "ack/report",
+               "partner_task": "give/cancel", "partner_cancel": "all",
                "partner_act": "dry_run", "partner_ledger": "put/resume/cancel/note/ask/thoughts/scale"}
 
 

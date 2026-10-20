@@ -584,3 +584,111 @@ async def test_hold_the_mod_keeps_is_no_error_for_the_order(core, fake, body):
     ev = fake.mod.emit("player_said", {"player": "Owner", "owner": True, "text": "принеси железо"}, helper=None)
     r = await core.op_order("h1", VKEY, ev["seq"], "железо", "small")
     assert "released" not in r and r["order"]["id"]
+
+
+# ---------------------------------------------------------------- an evacuation of the mod
+
+AREA = {"left_top": {"x": 0, "y": 0}, "right_bottom": {"x": 10, "y": 10}}
+
+
+def evacuate_started(fake):
+    return fake.mod.emit("evacuate_started", {"area": AREA, "threat": {"name": "small-biter"}}, helper="h1")
+
+
+def resumed(fake, jobs, kind="evacuate", **extra):
+    return fake.mod.emit("reflex_resumed", dict({"type": kind, "jobs": jobs}, **extra), helper="h1")
+
+
+async def evacuated_package(core, fake, body):
+    """A running package whose plan the evacuation cut: paused ``evacuate``."""
+    p = await put(core)
+    await put(core, name="второй")
+    await core.packages.step()
+    job = status(core, p["id"])["job"]
+    await core.op_wait("h1", SKEY, timeout=0)
+    evacuate_started(fake)
+    plan_done(fake, job, status="failed", code="cancelled", text="cancelled", marks="dss", at=1)
+    await core.packages.step()
+    return p
+
+
+async def test_an_evacuation_brings_the_package_back(core, fake, body):
+    p = await evacuated_package(core, fake, body)
+    q = status(core, p["id"])
+    assert q["status"] == "paused" and q["paused_reason"] == "evacuate"
+    out = await core.op_wait("h1", SKEY, timeout=0)
+    paused = [e["data"] for e in out["events"] if e["kind"] == "package_paused"]
+    assert paused and paused[0]["reason"] == "evacuate"
+    # the quiet lasts far longer than a flight's window: the package still waits for the mod
+    fake.mod.tick += 20 * 60 * 60
+    await core.packages.step()
+    await core.packages.step()
+    assert len(body.acts) == 1                       # nothing else starts on the evacuating body
+    resumed(fake, [{"job": 99, "do": "plan"}])
+    await core.packages.step()
+    q = status(core, p["id"])
+    assert q["status"] == "running" and q["job"] == 99 and q.get("paused_reason") is None
+    plan_done(fake, 99)
+    await core.packages.step()
+    assert status(core, p["id"])["status"] == "verifying"
+    assert body.cancels == []
+
+
+async def test_a_plan_the_evacuation_resumes_after_the_strategist_is_cancelled(core, fake, body):
+    p = await evacuated_package(core, fake, body)
+    await core.op_ledger("h1", SKEY, "resume", id=p["id"])
+    await core.packages.step()
+    new = status(core, p["id"])["job"]
+    assert len(body.acts) == 2 and status(core, p["id"])["status"] == "running"
+    resumed(fake, [{"job": 77, "do": "plan"}])       # the mod's copy of the same plan
+    await core.packages.step()
+    assert {"job": 77} in body.cancels
+    assert status(core, p["id"])["job"] == new
+
+
+async def test_an_evacuation_that_brings_nothing_back_leaves_it_to_the_strategist(core, fake, body):
+    p = await evacuated_package(core, fake, body)
+    await core.op_wait("h1", SKEY, timeout=0)
+    resumed(fake, [], reason="owner_hold")
+    await core.packages.step()
+    q = status(core, p["id"])
+    assert q["status"] == "paused" and q["paused_reason"] == "cancelled"
+    out = await core.op_wait("h1", SKEY, timeout=0)
+    paused = [e["data"] for e in out["events"] if e["kind"] == "package_paused"]
+    assert paused and paused[-1]["reason"] == "cancelled" and paused[-1]["why"] == "evacuate_ended"
+
+
+async def test_a_long_silent_evacuation_times_out(core, fake, body):
+    p = await evacuated_package(core, fake, body)
+    fake.mod.tick += O.EVAC_RETURN_TICKS + 60
+    await core.packages.step()
+    await core.packages.step()
+    assert status(core, p["id"])["paused_reason"] == "cancelled"
+
+
+async def test_an_evacuation_after_a_flight_takes_the_return_over(core, fake, body):
+    p = await put(core)
+    await core.packages.step()
+    job = status(core, p["id"])["job"]
+    plan_done(fake, job, status="failed", code="cancelled", text="cancelled", marks="dss", at=1)  # flee
+    await core.packages.step()
+    assert status(core, p["id"])["paused_reason"] == "cancelled"
+    evacuate_started(fake)
+    await core.packages.step()
+    assert status(core, p["id"])["paused_reason"] == "evacuate"
+    fake.mod.tick += 10 * 60 * 60                    # past the flight's window
+    resumed(fake, [{"job": 50, "do": "plan"}])
+    await core.packages.step()
+    q = status(core, p["id"])
+    assert q["status"] == "running" and q["job"] == 50
+
+
+async def test_a_flight_still_comes_back_as_before(core, fake, body):
+    p = await put(core)
+    await core.packages.step()
+    job = status(core, p["id"])["job"]
+    plan_done(fake, job, status="failed", code="cancelled", text="cancelled", marks="dss", at=1)
+    await core.packages.step()
+    resumed(fake, [{"job": 40, "do": "plan"}], kind="flee")
+    await core.packages.step()
+    assert status(core, p["id"])["job"] == 40 and status(core, p["id"])["status"] == "running"

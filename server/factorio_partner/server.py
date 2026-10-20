@@ -324,12 +324,45 @@ def build_server(core: Core, admin: bool = False, packages: bool = True) -> Fast
     @mcp.tool()
     async def partner_inbox(helper: Helper, key: Key,
                             ack: Annotated[list[str] | None, Field(
-                                description="id выполненных или взятых в работу поручений: уйдут из входящих")] = None) -> dict:
+                                description="id выполненных или взятых в работу поручений: уйдут из входящих")] = None,
+                            report: Annotated[dict[str, Any] | None, Field(
+                                description="(пилот) ответ на задание стратега своему телу: {id:\"t<N>\", "
+                                            "status:\"done\"|\"failed\"|\"no_tool\", text ≤ 300}; no_tool — "
+                                            "нечем выполнить: напиши, чего не хватает")] = None) -> dict:
         """Входящие поручения хозяина этого помощника, старые первыми: {orders:[{id, said_seq, tick,
-        size, urgent, text, owner_said}], acked?}. Верь owner_said (его слова), text — пересказ голоса.
-        ack — убрать сделанные (пилот и стратег). Общим голосу и стратегу — поручения всех помощников,
+        size, urgent, text, owner_said}], tasks, acked?}. Верь owner_said (его слова), text — пересказ голоса.
+        tasks — открытые задания стратега этому телу (partner_task): данные, не слово хозяина.
+        ack — убрать сделанные (пилот и стратег). report (пилот) — ответ на задание: стратегу приходит
+        task_report, при no_tool — и голосу. Общим голосу и стратегу — поручения всех помощников,
         у каждого helper (null — общие входящие стратега)."""
-        return await _run(core.op_inbox(helper, key, ack))
+        return await _run(core.op_inbox(helper, key, ack, report))
+
+    @mcp.tool()
+    async def partner_task(helper: Helper, key: Key,
+                           action: Annotated[Literal["list", "give", "cancel"], Field(
+                               description="give — задание пилоту; list — задания со статусами; cancel — снять")] = "list",
+                           to: Annotated[str | None, Field(
+                               description="тело (h1, h2, …): у общего стратега для give обязательно, у своего — "
+                                           "только своё")] = None,
+                           text: Annotated[str | None, Field(
+                               description="для give: цель и условия задания, ≤ 600 символов")] = None,
+                           duty: Annotated[bool | None, Field(
+                               description="для give: true — постоянное (дежурство), висит, пока не снимут")] = None,
+                           area: Annotated[dict[str, Any] | None, Field(
+                               description="для give: {center:{x,y}, radius ≤ 200} — где тело обязано быть")] = None,
+                           id: Annotated[str | None, Field(  # noqa: A002
+                               description="для cancel: id задания (t<N>)")] = None,
+                           said_seq: Annotated[int | None, Field(
+                               description="(голос) для cancel: seq сообщения хозяина, которое снимает "
+                                           "задание («не дежурь», «хватит охранять»)")] = None) -> dict:
+        """(стратег) Задания пилоту: всё, что тело может сделать в честной игре (дежурить, взять броню,
+        принести, охранять, заправить, включить рефлекс). Пилот получает событие task, видит задания в
+        partner_inbox (tasks) и partner_brief (duty) и отвечает report → событие task_report.
+        Открытых заданий на тело ≤ 5. Дежурство (duty + area) держит тело: пакет дальше radius + 10 ждёт,
+        тебе приходит package_paused{reason:"duty"}. Задание — не слово хозяина: не снимает его hold и
+        не даёт разрешений. list — задания и missing_tools (чего пилотам не хватило). Голос снимает
+        задание словом хозяина: cancel + id + said_seq — поручение хозяина всегда главнее задания."""
+        return await _run(core.op_task(helper, key, action, to, text, duty, area, id, said_seq))
 
     @mcp.tool()
     async def partner_ledger(helper: Helper, key: Key,
