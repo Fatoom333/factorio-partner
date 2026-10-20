@@ -49,13 +49,37 @@ function M.is(e) return type(e) == "table" and e.partner_error == true end
 -- игры не влияет (читает её только `hello` по RCON), после загрузки сейва снова 0.
 local module_errors = 0
 
+-- Последние падения (`hello.module_errors_last`, `state.module_errors_last`): чтобы помощник мог
+-- назвать хозяину, что именно падает, а не число. Тоже в памяти, не в storage.
+local LAST_MAX = 3
+local WHERE_MAX = 80
+local TEXT_MAX = 160
+local last = {}
+
 --- Учесть падение модуля под pcall (ядро зовёт рядом с записью в журнал игры).
-function M.count_module_error()
+--- where — короткое имя места («reflex ammo», «event on_tick»), text — что бросил Lua (ошибка или
+--- строка); оба необязательны и обрезаются, пути и номера строк вырезаются.
+function M.count_module_error(where, text)
   module_errors = module_errors + 1
+  if where ~= nil or text ~= nil then
+    local w = M.utf8_trunc(M.clean_text(where ~= nil and where or "?"), WHERE_MAX)
+    local t = text
+    if M.is(t) then t = t.text end
+    t = M.utf8_trunc(M.clean_text(t ~= nil and t or ""), TEXT_MAX)
+    last[#last + 1] = { where = w, text = t, tick = game and game.tick or 0 }
+    if #last > LAST_MAX then table.remove(last, 1) end
+  end
   return module_errors
 end
 
 function M.module_errors() return module_errors end
+
+--- Копия последних падений, старые первыми (≤ 3 записей).
+function M.module_errors_last()
+  local out = {}
+  for i, r in ipairs(last) do out[i] = { where = r.where, text = r.text, tick = r.tick } end
+  return out
+end
 
 --- Ошибка (что угодно из pcall) -> code, text, data (data — необязательные поля ответа, например {perm}).
 function M.normalize(e)

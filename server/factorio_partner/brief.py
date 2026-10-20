@@ -110,6 +110,8 @@ def _int(v) -> bool:
 
 
 def _order_state(o: dict, pkgs: list[dict], taken: bool) -> str:
+    if o.get("forgotten"):
+        return "forgotten"         # the owner said «забудь» (partner_ledger forget)
     if not taken:
         return "new"
     mine = [p for p in pkgs if p.get("order") == o.get("id")]

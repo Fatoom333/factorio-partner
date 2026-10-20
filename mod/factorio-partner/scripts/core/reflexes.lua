@@ -84,7 +84,7 @@ local function call_hook(t, name, ...)
   if fn == nil then return end
   local ok, e = pcall(fn, ...)
   if not ok then
-    err.count_module_error()
+    err.count_module_error("reflex " .. tostring(t) .. " " .. name, e)
     log("[factorio-partner] reflex " .. tostring(t) .. " " .. name .. " failed: " .. err.clean_text(err.is(e) and e.text or e))
   end
 end
@@ -172,7 +172,7 @@ function M.run(tick)
           if def then
             local ok, e = pcall(def.check, helper, entity, params, tick)
             if not ok then
-              err.count_module_error() -- hello.module_errors (EVENTS.md «Рефлексы v1»)
+              err.count_module_error("reflex " .. tostring(params.type), e) -- hello.module_errors (EVENTS.md «Рефлексы v1»)
               local key = params.type
               if last_log[key] == nil or tick - last_log[key] >= 3600 then
                 last_log[key] = tick

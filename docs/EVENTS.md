@@ -46,6 +46,9 @@
 | `evacuate_missing` | `{items: {имя предмета: число}}` — для возврата не хватает предметов в карманах | рефлексы |
 | `task` | `{id, from:"strategist", text, duty, area?, tick, helper, status?:"cancelled"}` — задание стратега пилоту (сервер, MCP.md «Задания стратега пилоту»); при снятии — `status:"cancelled"` | сервер |
 | `task_report` | `{id, status:"done"│"failed"│"no_tool", text, helper, task, duty}` — ответ пилота на задание | сервер |
+| `owner_forgot` | `{what:[{kind:"package"│"task"│"question"│"order", id, helper?}], owner_said, said_seq}` — хозяин сказал «забудь / отмени / не надо», голос снял названное (MCP.md «Забудь»); громкое, стратегу и затронутым пилотам: бросить дело сразу | сервер |
+| `strategist_question` | `{id, text, in_chat, from?:"pilot", helper?, remind?, waiting_s?}` — вопрос стратега или пилота хозяину; сервер сам сказал его в чат (`in_chat:true`, тихое) или не смог (`false`, громкое — голос спросит сам); голосу (MCP.md «Вопросы стратега и пилота хозяину») | сервер |
+| `question_answered` | `{id, by:"strategist"│"pilot", owner_said, helper?}` — автор вопроса закрыл его ответом хозяина; тихое, голосу | сервер |
 | `reflex_resumed` | `{type:"flee"│"evacuate", jobs:[{job, do}], reason?}` — мод сам вернул задачи после отступления | рефлексы |
 | `ammo_low` | `{item?, turret:pos}` — турели нужны патроны, а у помощника их нет | рефлексы |
 | `ammo_unsafe` | `{turret:pos, enemy:pos, name, reason}` — к дальней турели не подойти, не выйдя перед линией турелей (`reason`: `enemy_closer`│`behind`│`keep_away`│`attacked`); не чаще раза в минуту | рефлексы |
@@ -295,7 +298,7 @@
   (и новый `reflexes{set}`).
 - Проверки идут раз в 10 тиков для каждого живого помощника. Ошибка внутри проверки рефлекса не
   роняет мод: растёт счётчик `module_errors` в ответе `hello`, текст — в журнале игры (не чаще раза в
-  минуту на тип).
+  минуту на тип) и в `module_errors_last` (`hello`, `state`): последние 3 падения `{where, text, tick}`.
 - Задачи, которые ставит рефлекс, идут через ядро как обычные; их `req` = `"reflex:<type>"` (виден в
   `jobs`).
 - Шумное `reflex_fired{type, detail}` — срабатывание, громкое `reflex_done{type, outcome, detail}` —

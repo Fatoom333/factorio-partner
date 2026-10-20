@@ -43,6 +43,9 @@
 - `module_errors` — число: тот же счётчик падений модулей и рефлексов, что в `hello` (агент видит
   его рост в течение игры). Если мод их не прислал, сервер добирает `module_errors` через `hello`, а
   `body` — через `helper_list`.
+- `module_errors_last` — список последних 3 падений `{where, text, tick}` (старые первыми; пуст, если их
+  не было). Агент называет хозяину, что именно падает, а не число; `partner_state` и `partner_brief`
+  (с `module_errors`) отдают его как есть, обрезав `where` до 60 и `text` до 200 символов.
 
 ## `map` (h?, `center?│near?:"player"`, `radius?=16` (≤ 32), `types?`, `names?`)
 ```json

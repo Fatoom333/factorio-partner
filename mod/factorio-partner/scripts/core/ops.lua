@@ -42,10 +42,15 @@ function M.hello(args, ctx)
     players = players,
     helpers = ids,
     module_errors = err.module_errors(),
+    module_errors_last = err.module_errors_last(),
   }
 end
 
-local SAY_SCHEMA = { text = { type = "string", required = true, max = 4000 } }
+-- `as` — подпись вместо имени тела («Стратег»): для реплик роли, которая говорит не от тела (PROTOCOL §4)
+local SAY_SCHEMA = {
+  text = { type = "string", required = true, max = 4000 },
+  as = { type = "string", max = 24 },
+}
 
 -- Метки карты в чате помощника: из всего rich-text остаётся только `[gps=x,y,поверхность]`,
 -- собранная заново из чисел и имени существующей поверхности, — хозяин кликает и видит место. Место
@@ -90,7 +95,12 @@ function M.say(args, ctx)
   local text = with_gps(a.text, ctx)
   if text == "" then err.raise("bad_args", "args.text: empty after cleanup") end
   -- префикс без квадратных скобок (PROTOCOL §4): имя помощника не должно сложиться в rich-text тег
-  game.print(nameplate.display_name(ctx.helper_id) .. ": " .. text, { color = nameplate.COLOR })
+  local head = nameplate.display_name(ctx.helper_id)
+  if a.as ~= nil then
+    local s = err.clean_text(a.as):gsub("[%[%]]", "")
+    if s ~= "" then head = s end
+  end
+  game.print(head .. ": " .. text, { color = nameplate.COLOR })
   return {}
 end
 

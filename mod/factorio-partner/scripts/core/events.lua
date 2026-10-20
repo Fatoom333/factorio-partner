@@ -206,13 +206,14 @@ function M.on_console_chat(e)
         for k, v in pairs(extra or {}) do data[k] = v end
         if after ~= nil then afters[#afters + 1] = after end
       else
-        err.count_module_error()
+        err.count_module_error("chat hook " .. tostring(name), extra)
       end
     end
   end
   local seq = M.emit(nil, "player_said", data)
   for _, after in ipairs(afters) do
-    if not pcall(after, seq) then err.count_module_error() end
+    local ok_after, e_after = pcall(after, seq)
+    if not ok_after then err.count_module_error("chat hook after", e_after) end
   end
 end
 

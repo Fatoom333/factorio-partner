@@ -13,8 +13,10 @@ restart of the server:
 ``verifying``);
 ``history`` — the last finished ones (``verified``, ``unmet``, ``failed``, ``cancelled``), without
 steps; ``notes`` — the strategist's last note on the work, one per helper; ``questions`` — his
-questions to the owner per helper (``open`` / ``answered``), ``qnext`` numbers them; ``tasks`` — his
-tasks to the pilots per helper (``open`` / closed by a report or a cancel), ``tnext`` numbers them;
+questions to the owner per helper (``open`` / ``answered`` / ``withdrawn``), ``qnext`` numbers them;
+``chat_lines`` — the server's last chat lines that are no question, ``chat_next`` numbers every line
+the server says in chat (questions too): an answer is bound to the last line before it;
+``tasks`` — his tasks to the pilots per helper (``open`` / closed by a report or a cancel), ``tnext`` numbers them;
 ``missing_tools`` — the last reports «no_tool» of the pilots (what a body could not do). Notes and
 questions do not move ``rev``: ``rev`` guards the packages only. Every change goes through ``mutate``: a lock file, a fresh read of the file, the change, an
 atomic write — two server processes (two sessions on one save) never lose each other's change.
@@ -54,7 +56,9 @@ QUESTIONS_KEEP = 5          # answered questions kept per helper
 ANSWER_SAID_MAX = 200       # characters of the owner's answer kept on the question
 REMIND_AFTER = 10 * 60.0   # s: an open question unanswered this long is reminded once
 # parts of the file that do not move rev
-_SIDE = ("notes", "questions", "qnext", "thoughts", "rescale", "tasks", "tnext", "missing_tools")
+_SIDE = ("notes", "questions", "qnext", "thoughts", "rescale", "tasks", "tnext", "missing_tools",
+         "chat_lines", "chat_next")
+CHAT_LINES_KEEP = 64        # the server's last chat lines that are no question (bind answers to questions)
 TASK_TEXT_MAX = 600         # characters of a task of the strategist to a pilot
 TASK_REPORT_MAX = 300       # characters of the pilot's report on a task
 TASKS_OPEN_MAX = 5          # open tasks per body
@@ -301,7 +305,7 @@ def open_questions(data: dict, helper: str) -> list[dict]:
 
 
 def ask(data: dict, helper: str, text: str, tick: int | None, order: str | None = None,
-        asker: str | None = None, perm: list[str] | None = None) -> dict:
+        asker: str | None = None, perm: list[str] | None = None, seq: int | None = None) -> dict:
     """A new open question to the owner (``q<N>``); at most QUESTIONS_OPEN_MAX open.
     ``order`` — the owner's order the question is about (the leave for a package of that order, or
     for calls of the pilot); ``asker`` — "pilot" when the pilot asks (the strategist by default);
@@ -312,6 +316,8 @@ def ask(data: dict, helper: str, text: str, tick: int | None, order: str | None 
     n = int(data.get("qnext", 1)) if isinstance(data.get("qnext"), int) else 1
     data["qnext"] = n + 1
     q = {"id": f"q{n}", "text": text, "status": "open", "at": now(), "tick": tick}
+    if isinstance(seq, int) and not isinstance(seq, bool):
+        q["seq"] = seq              # the owner's answer must be a later message (seq and tick)
     if order is not None:
         q["order"] = order
     if asker is not None:
@@ -324,19 +330,157 @@ def ask(data: dict, helper: str, text: str, tick: int | None, order: str | None 
     return dict(q)
 
 
-def answer(data: dict, helper: str, qid: str, order_id: str, said: str | None = None) -> dict:
-    """Close an open question: the owner's answer came as the order ``order_id``; ``said`` — his own
-    words (kept: a package's leave is refused when he said no)."""
+def _same_message(seq: Any, tick: Any, other_seq: Any, other_tick: Any) -> bool:
+    """Two marks name one message of the owner: the same seq and, when both know it, the same tick
+    (after a load the mod's seq start over: a new message may get an old seq, never with its tick)."""
+    if not (isinstance(seq, int) and not isinstance(seq, bool) and seq == other_seq):
+        return False
+    return not (isinstance(tick, int) and isinstance(other_tick, int)) or tick == other_tick
+
+
+def message_spent(data: dict, said_seq: Any, said_tick: Any = None) -> dict | None:
+    """The question of any scope that already took this message of the owner as its answer or as
+    his «забудь» (None — none): one message answers one question, across every server process."""
+    v = data.get("questions")
+    for qs in (v.values() if isinstance(v, dict) else ()):
+        for q in (qs if isinstance(qs, list) else ()):
+            if not isinstance(q, dict):
+                continue
+            if (_same_message(said_seq, said_tick, q.get("said_seq"), q.get("said_tick"))
+                    or _same_message(said_seq, said_tick, q.get("withdrawn_seq"), q.get("withdrawn_tick"))):
+                return q
+    return None
+
+
+def answer(data: dict, helper: str, qid: str, order_id: str | None, said: str | None = None,
+           said_seq: int | None = None, by: str | None = None, said_tick: int | None = None) -> dict:
+    """Close an open question: the owner's answer came as the order ``order_id`` (the voice's
+    ``answer_to``) or straight to the asker (``order_id`` None, ``by`` — the role that took it);
+    ``said`` — his own words read from the mod (kept: a package's leave is refused when he said no),
+    ``said_seq`` / ``said_tick`` — the place of his message. Whoever closes it first wins: a second
+    answer is refused, and so is a message another question already took (``message_spent``)."""
     for q in questions_of(data, helper):
         if q["id"] == qid:
             if q.get("status") != "open":
-                raise PartnerError("bad_args", f"answer_to: question {qid} is already {q.get('status')}")
+                raise PartnerError("bad_args", f"question {qid} is already {q.get('status')}")
+            spent = message_spent(data, said_seq, said_tick)
+            if spent is not None:
+                raise PartnerError("bad_args", f"said_seq: this message of the owner already answered or "
+                                               f"withdrew question {spent.get('id')}; one message answers "
+                                               "one question")
             q.update(status="answered", answer=order_id, answered_at=now())
             if isinstance(said, str):
                 q["said"] = said[:ANSWER_SAID_MAX]
+            if isinstance(said_seq, int) and not isinstance(said_seq, bool):
+                q["said_seq"] = said_seq
+            if isinstance(said_tick, int) and not isinstance(said_tick, bool):
+                q["said_tick"] = said_tick
+            if by is not None:
+                q["answered_by"] = by
             _keep_questions(data, helper)
             return dict(q)
-    raise PartnerError("not_found", f"answer_to: no question {qid}")
+    raise PartnerError("not_found", f"no question {qid}")
+
+
+def withdraw(data: dict, helper: str, qid: str, said: str | None = None,
+             said_seq: int | None = None, said_tick: int | None = None) -> dict:
+    """The owner said «забудь»: an open question is closed as ``withdrawn``, and so is an answered
+    one — his «да» to it is taken back (``revoked``; the old answer stays for the record). A withdrawn
+    question never gives leave (leave_problem wants ``answered``)."""
+    for q in questions_of(data, helper):
+        if q["id"] == qid:
+            if q.get("status") not in ("open", "answered"):
+                raise PartnerError("bad_args", f"question {qid} is already {q.get('status')}")
+            if q.get("status") == "answered":
+                q["revoked"] = True
+            q.update(status="withdrawn", withdrawn_at=now())
+            if isinstance(said, str):
+                q["withdrawn_said"] = said[:ANSWER_SAID_MAX]
+            if isinstance(said_seq, int) and not isinstance(said_seq, bool):
+                q["withdrawn_seq"] = said_seq
+            if isinstance(said_tick, int) and not isinstance(said_tick, bool):
+                q["withdrawn_tick"] = said_tick
+            _keep_questions(data, helper)
+            return dict(q)
+    raise PartnerError("not_found", f"no question {qid}")
+
+
+def mark_asked(data: dict, helper: str, qid: str, seq: Any, tick: Any, in_chat: bool) -> dict | None:
+    """The server tried to say the question in game chat (``in_chat`` — it was said): its place in the
+    event stream moves up to that moment (only forward), so that no message of the owner from before
+    it counts as the answer."""
+    for q in questions_of(data, helper):
+        if q["id"] == qid:
+            for k, v in (("seq", seq), ("tick", tick)):
+                old = q.get(k)
+                if isinstance(v, int) and not isinstance(v, bool) and (not isinstance(old, int) or v > old):
+                    q[k] = v
+            q["in_chat"] = bool(in_chat)
+            if in_chat:
+                said_in_chat(data, q, seq)
+            return dict(q)
+    return None
+
+
+def _chat_n(data: dict) -> int:
+    """The next number of a chat line said by the server (every process: the order of the lines)."""
+    n = data.get("chat_next")
+    n = n if isinstance(n, int) and not isinstance(n, bool) and n > 0 else 1
+    data["chat_next"] = n + 1
+    return n
+
+
+def said_in_chat(data: dict, q: dict, seq: Any) -> None:
+    """The question's line was said in chat (asked or reminded): ``chat_seq`` — the last event seq
+    then, ``chat_n`` — its place among the server's chat lines. The owner's next message may answer
+    it, unless another line came between (``chat_line_between``)."""
+    if isinstance(seq, int) and not isinstance(seq, bool):
+        q["chat_seq"] = seq
+    q["chat_n"] = _chat_n(data)
+
+
+def chat_line(data: dict, seq: Any) -> None:
+    """A chat line that is no role's question was said (the voice's, the rule question)."""
+    if not isinstance(seq, int) or isinstance(seq, bool):
+        return
+    lines = data.get("chat_lines")
+    if not isinstance(lines, list):
+        lines = data["chat_lines"] = []
+    lines.append({"n": _chat_n(data), "seq": seq})
+    del lines[:-CHAT_LINES_KEEP]
+
+
+def mark_reminded(data: dict, helper: str, qid: str, seq: Any) -> None:
+    """The reminder of an open question was said in chat: its line is the last one now."""
+    for q in questions_of(data, helper):
+        if q["id"] == qid:
+            said_in_chat(data, q, seq)
+            return
+
+
+def chat_line_between(data: dict, scope: str, q: dict, said_seq: int) -> bool:
+    """Another line was said in chat after question ``q``'s own (of ``scope``) and before the
+    owner's message ``said_seq``: another question asked or reminded (any scope), the voice's line
+    or the rule question (``chat_lines``). A line came after ``q``'s when its number is higher (the
+    event seq stand still while nothing happens in the game), and before the message when its seq is
+    below the message's."""
+    mine = q.get("chat_n")
+    if not isinstance(mine, int):
+        return True
+
+    def between(n: Any, seq: Any) -> bool:
+        return isinstance(n, int) and n > mine and isinstance(seq, int) and seq < said_seq
+
+    v = data.get("questions")
+    for sc, qs in (v.items() if isinstance(v, dict) else ()):
+        for o in (qs if isinstance(qs, list) else ()):
+            if not isinstance(o, dict) or (sc == scope and o.get("id") == q.get("id")):
+                continue
+            if between(o.get("chat_n"), o.get("chat_seq")):
+                return True
+    lines = data.get("chat_lines")
+    return any(isinstance(x, dict) and between(x.get("n"), x.get("seq"))
+               for x in (lines if isinstance(lines, list) else ()))
 
 
 def due_reminders(data: dict, helper: str, at: float | None = None) -> list[dict]:
@@ -405,9 +549,12 @@ def leave_problem(data: dict, scope: str, pkg: dict, order_tick: Any, at: float 
     q = next((x for x in questions_of(data, scope) if x["id"] == qid), None)
     if q is None:
         return f"approved: нет вопроса {qid} (partner_ledger list → questions)"
+    if q.get("status") == "withdrawn":
+        return (f"approved: вопрос {qid} хозяин снял («забудь»): разрешения нет; спроси заново, если "
+                "это ещё нужно")
     if q.get("status") != "answered":
         return (f"approved: на вопрос {qid} хозяин ещё не ответил ({q.get('status')}); дождись ответа "
-                "(поручение с answer_to)")
+                "(answer или поручение с answer_to)")
     if q.get("order") != oid:
         return (f"approved: вопрос {qid} не про поручение {oid}; разрешение даёт только вопрос с order: "
                 f"partner_ledger{{action:\"ask\", order:\"{oid}\"}}")

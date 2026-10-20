@@ -385,6 +385,7 @@ async def test_package_leave_expires_while_it_waits(core, fake, body, monkeypatc
 # ---------------------------------------------------------------- AUTO, pause, thoughts, budget
 
 async def auto_rule(core, fake):
+    await core._ensure_started()        # the owner speaks after the server met the game
     own = owner_said(fake, "играй сам")
     return await core.op_notes("h1", KEY, "rules", "add", "AUTO: к ракете", said_seq=own["seq"])
 

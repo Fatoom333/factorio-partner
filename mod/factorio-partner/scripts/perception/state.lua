@@ -456,6 +456,12 @@ local function module_errors()
   return 0
 end
 
+local function module_errors_last()
+  local r = core_call(err, "module_errors_last")
+  if type(r) == "table" then return r end
+  return {}
+end
+
 local function state_op(args, ctx)
   args = C.check_args(args)
   C.allow_only(args, {})
@@ -500,6 +506,7 @@ local function state_op(args, ctx)
     vision = C.vision_on(helper_id),
     body = body_kind(helper_id),
     module_errors = module_errors(),
+    module_errors_last = module_errors_last(),
     tick = game.tick,
     seq = C.last_seq(),
   }

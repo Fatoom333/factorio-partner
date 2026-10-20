@@ -143,12 +143,14 @@ class PackageBridge:
         t = self.core.bridge.last_tick
         return t if _is_int(t) else None
 
-    def notify(self, helper: str, kind: str, data: dict, roles: tuple[str, ...] = (R.PILOT, R.STRATEGIST)) -> None:
-        """A loud server-made event for the roles of the helper that have called the server, and for
-        the shared voice and strategist; ``helper`` roles.SHARED — for the shared roles only."""
+    def notify(self, helper: str, kind: str, data: dict, roles: tuple[str, ...] = (R.PILOT, R.STRATEGIST),
+               loud: bool = True) -> None:
+        """A server-made event for the roles of the helper that have called the server, and for the
+        shared voice and strategist; ``helper`` roles.SHARED — for the shared roles only. ``loud``
+        False — handed over with the next answer of the role's wait, never wakes it."""
         ev = {"seq": self.core.bridge.last_seq, "tick": self.core.bridge.last_tick,
               "helper": None if helper == R.SHARED else helper,
-              "kind": kind, "data": data, "loud": True}
+              "kind": kind, "data": data, "loud": loud}
         self.core.notify_roles(helper, ev, roles)
 
     def _set(self, pid: str, **fields) -> dict | None:
@@ -218,14 +220,17 @@ class PackageBridge:
             if L.thoughts_on(self.ledger().data(), h, self.core._thoughts_default()):
                 self.note_event(h, text)
 
-    def remind_questions(self) -> None:
-        """A question of the strategist unanswered for 10 minutes: the voice is woken once more (only a
-        voice that has called the server: until then it sees the question in partner_brief)."""
+    async def remind_questions(self) -> None:
+        """A question unanswered for 10 minutes is said once more in game chat by the server itself; the
+        voice sees the reminder (no wake). When the chat fails, the voice is woken to remind the owner
+        (only a voice that has called the server: until then it sees the question in partner_brief)."""
+        if self.core._rule_waits():
+            # the owner's next message must answer the rule question, and no chat goes until then:
+            # the reminders stay due for the next round
+            return
         led = self.ledger()
         qs = led.data().get("questions")
-        # a helper's questions (its strategist's or its pilot's) reach its own voice or the shared one
-        names = [h for h, v in qs.items() if isinstance(v, list) and (h == R.SHARED or L.HELPER_RE.match(h))
-                 and ((h, R.VOICE) in self.core.cursors or (R.SHARED, R.VOICE) in self.core.cursors)] \
+        names =[h for h, v in qs.items() if isinstance(v, list) and (h == R.SHARED or L.HELPER_RE.match(h))] \
             if isinstance(qs, dict) else []
         for h in names:
             t = L.now()
@@ -233,15 +238,18 @@ class PackageBridge:
                        and t - q["at"] >= L.REMIND_AFTER for q in L.open_questions(led.data(), h)):
                 continue
             for q in led.mutate(lambda d, h=h: L.due_reminders(d, h)):
-                self.notify(h, "strategist_question", {"id": q["id"], "text": q["text"], "remind": True,
-                                                       "waiting_s": int(L.now() - q["at"])},
-                            roles=(R.VOICE,))
+                in_chat = await self.core.remind_in_chat(h, q)
+                info = {"id": q["id"], "text": q["text"], "remind": True,
+                        "waiting_s": int(L.now() - q["at"]), "in_chat": in_chat}
+                if q.get("from") == "pilot":
+                    info.update({"from": "pilot", "helper": h})
+                self.notify(h, "strategist_question", info, roles=(R.VOICE,), loud=not in_chat)
 
     async def step(self) -> None:
         async with self._lock:
             led = self.ledger()
             try:
-                self.remind_questions()
+                await self.remind_questions()
                 self.flush_notes()
             except PartnerError as e:
                 log.info("question reminders: %s", e.code)

@@ -60,3 +60,10 @@ async def core(cfg):
     c = Core(cfg, make_bridge(cfg), poll_interval=0.01, forge_module="tests_no_such_forge_module")
     yield c
     await c.close()
+
+
+@pytest.fixture
+async def started(core):
+    """The server has met the game (hello): the owner's messages after this are new to it."""
+    await core._ensure_started()
+    return core

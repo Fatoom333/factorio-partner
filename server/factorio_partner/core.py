@@ -56,7 +56,7 @@ RULE_CONFIRM_MAX_AGE = 2 * 60 * 60  # ticks: the rule question waits this long f
 ORDER_SAID_MAX_AGE = 10 * 60 * 60  # ticks: the owner's message behind partner_order
 STATES_WAIT = 5.0               # s: one limit for the state of every body (shared brief, least busy)
 INBOX_MAX = 20                  # open orders per helper; more -> limit (the voice tells the owner)
-ORDER_MEMORY = 4096             # said_seq already turned into orders (a message is one order)
+ORDER_MEMORY = 4096             # said_seq already turned into orders (a message is one order per inbox)
 ORDER_ACK_MAX = 20
 RELAY_TEXT_MAX = 600            # the owner's words from the main chat (partner_relay)
 ORDERS_TAKEN_KEEP = 5           # orders that left the inbox, kept for partner_brief.work
@@ -117,6 +117,83 @@ def _any_package(d: dict, pid: str) -> dict | None:
 def _cut_text(t: Any, n: int) -> str:
     t = t if isinstance(t, str) else ""
     return t if len(t) <= n else t[:n - 1] + "…"
+
+
+_GPS_TAG_RE = re.compile(r"\[gps=-?\d{1,8}(?:\.\d{1,4})?,-?\d{1,8}(?:\.\d{1,4})?(?:,[A-Za-z0-9_-]{1,64})?\]")
+FORGET_KINDS = ("package", "task", "question", "order", "all_of_order")
+FORGET_IDS_MAX = 5
+
+
+MODULE_ERRORS_LAST = 3          # the mod keeps the last failures of its modules: {where, text, tick}
+
+
+def _errors_last(v: Any) -> list[dict] | None:
+    """``module_errors_last`` of the mod (hello, state), checked and cut: what failed lately, for the
+    roles to tell the owner in words. None — the mod sent none (an old mod)."""
+    if isinstance(v, dict) and not v:
+        v = []          # PROTOCOL §1: an empty table may come as {}
+    if not isinstance(v, list):
+        return None
+    out = []
+    for e in v[-MODULE_ERRORS_LAST:]:
+        if not isinstance(e, dict):
+            continue
+        row = {"where": _cut_text(" ".join(str(e.get("where") or "").split()), 60) or "?",
+               "text": _cut_text(" ".join(str(e.get("text") or "").split()), 200)}
+        if _is_int(e.get("tick")):
+            row["tick"] = e["tick"]
+        out.append(row)
+    return out
+
+
+def _chat_plain(t: Any) -> str:
+    """Text the server itself says in chat: one line, no rich-text tag but a [gps=x,y,surface] place."""
+    t = " ".join(t.split()) if isinstance(t, str) else ""
+    tags = _GPS_TAG_RE.findall(t)
+    parts = [re.sub(r"\[[^\]]*\]", "", p).replace("[", "").replace("]", "") for p in _GPS_TAG_RE.split(t)]
+    out = parts[0]
+    for tag, rest in zip(tags, parts[1:]):
+        out += tag + rest
+    return " ".join(out.split())
+
+
+def _question_line(q: dict, remind: bool = False) -> str:
+    """The chat line of a question (the mod puts «Стратег: » or the body's name before it)."""
+    text = _chat_plain(q.get("text"))
+    head = "Напоминаю: " if remind else ""
+    return _cut_text(head + text, V.MAX_SAY)
+
+
+def _forget_what(what: Any) -> dict[str, list[str]]:
+    """``what`` of ``partner_ledger forget``: {package|task|question|order|all_of_order: id or [ids]}."""
+    if not isinstance(what, dict) or not what:
+        raise V.bad("what", "required: {package, task, question, order or all_of_order: an id or a list "
+                            "of ids}")
+    unknown = sorted(str(k)[:20] for k in what if k not in FORGET_KINDS)
+    if unknown:
+        raise V.bad("what", "unknown field " + ", ".join(unknown) + "; one of " + ", ".join(FORGET_KINDS))
+    out: dict[str, list[str]] = {}
+    for k, v in what.items():
+        ids = [v] if isinstance(v, str) else v
+        if not isinstance(ids, list) or not ids or len(ids) > FORGET_IDS_MAX:
+            raise V.bad(f"what.{k}", f"an id or a list of 1..{FORGET_IDS_MAX} ids")
+        for x in ids:
+            if k == "package":
+                V.ident(f"what.{k}", x)
+            elif k == "task":
+                V.task_id(f"what.{k}", x)
+            elif k == "question":
+                if not isinstance(x, str) or not V.QUESTION_ID_RE.match(x):
+                    raise V.bad(f"what.{k}", "must be a question id (q<N>)")
+            elif not isinstance(x, str) or not V.ORDER_ID_RE.match(x):
+                raise V.bad(f"what.{k}", "must be an order id (o<N>)")
+        out[k] = list(dict.fromkeys(ids))
+    return out
+
+
+def _box_name(box: str) -> str:
+    """An inbox as the voice reads it: a body id, or "strategist" for the shared strategist's."""
+    return "strategist" if box == R.SHARED else box
 
 
 def _natural(h: str) -> tuple:
@@ -190,7 +267,10 @@ class Core:
         self.poller = EventPoller(self._poll_fetch, clock, fresh=poll_interval * 0.8, limit=EVENTS_LIMIT)
         self.orders: dict[str, list[dict]] = {}
         self.orders_taken: dict[str, list[dict]] = {}    # the last orders that left the inbox (ack)
-        self._order_used: OrderedDict[int, None] = OrderedDict()
+        # said_seq -> the inboxes it became an order for: one message is one order per recipient
+        self._order_used: OrderedDict[int, list[str]] = OrderedDict()
+        self._answer_used: OrderedDict[int, None] = OrderedDict()   # said_seq that answered a question
+        self._forget_used: OrderedDict[int, None] = OrderedDict()   # said_seq of the owner's «забудь»
         self._order_n = 0
         self.job_sig: OrderedDict[tuple[str, int], str] = OrderedDict()
         self.fail_counts: dict[tuple[str, str], int] = {}
@@ -464,6 +544,9 @@ class Core:
         self.orders.clear()
         self.orders_taken.clear()
         self._order_used.clear()
+        self._answer_used.clear()
+        self._forget_used.clear()
+        self.__dict__.pop("_said_used", None)    # messages behind the rules of the timeline left
         self._panel_seen.clear()
         self._panel_cursor = new
         self._scale_used.clear()
@@ -568,6 +651,7 @@ class Core:
             out["perms"] = S.brief_perms(st)
             out["chat"] = S.brief_chat(st)
             out["budget"] = self.budget.status()
+            out.update(await self._module_errors())
             led_data = self.ledger().data()
             if self._role() == R.PILOT:
                 # the strategist's standing tasks of this body: where it must stay (data, not orders)
@@ -592,6 +676,22 @@ class Core:
                 out["work"] = await self._work(h)
             return out
         return await self._tool("partner_brief", helper, key, {}, run)
+
+    async def _module_errors(self) -> dict:
+        """``module_errors`` and ``module_errors_last`` from ``hello`` for partner_brief: how many
+        times the mod's modules failed and what failed lately ({} when the game does not answer)."""
+        try:
+            hello = await self._mod("hello", {}, None)
+        except PartnerError as e:
+            log.info("partner_brief: no hello for module errors: %s", e.code)
+            return {}
+        out: dict = {}
+        if _is_int(hello.get("module_errors")):
+            out["module_errors"] = hello["module_errors"]
+            last = _errors_last(hello.get("module_errors_last"))
+            if last:
+                out["module_errors_last"] = last
+        return out
 
     async def _state_or_none(self, h: str) -> dict | None:
         try:
@@ -646,6 +746,7 @@ class Core:
                     ask = f"Запомнить правило: «{t}»? Ответь «да»."
                 await self._mod("say", {"text": V.check_say(ask)}, h, mutating=True)
                 ask_seq, now = self.bridge.last_seq, self.bridge.last_tick
+                self._chat_line()
                 if not (isinstance(ask_seq, int) and isinstance(now, int)):
                     # without the question's place in the event stream no answer can be bound to it
                     raise PartnerError("internal", "no event seq after the rule question; try again")
@@ -688,6 +789,11 @@ class Core:
             return None
         return p
 
+    def _rule_waits(self) -> bool:
+        """A rule question of the server waits for the owner's answer (any helper: one owner, one chat)."""
+        pending = self.__dict__.setdefault("_rule_pending", {})
+        return any(self._rule_waiting(x) is not None for x in list(pending))
+
     async def _first_owner_said(self, helper: str, after: int) -> int | None:
         """Seq of the owner's first player_said after event ``after`` (the server's rule question)."""
         data = await self._mod("events", {"since": after, "helper": helper, "limit": 200}, None)
@@ -700,6 +806,10 @@ class Core:
     async def _owner_said(self, helper: str, said_seq) -> str:
         if isinstance(said_seq, bool) or not isinstance(said_seq, int) or said_seq < 1:
             raise PartnerError("bad_args", "said_seq: seq of the owner's player_said that asked for this rule")
+        if said_seq <= (self.start_seq or 0):
+            # whether it was already used is unknown (the used seq live in this process only)
+            raise PartnerError("bad_args", "said_seq: the message came before the server started or the save "
+                                           "was loaded; ask the owner again")
         data = await self._mod("events", {"since": said_seq - 1, "helper": helper, "limit": 1}, None)
         evs = data.get("events") if isinstance(data, dict) else None
         ev = evs[0] if isinstance(evs, list) and evs else None
@@ -710,8 +820,10 @@ class Core:
         now = data.get("tick") if isinstance(data.get("tick"), int) else self.bridge.last_tick
         if isinstance(now, int) and isinstance(ev.get("tick"), int) and now - ev["tick"] > RULE_SAID_MAX_AGE:
             raise PartnerError("bad_args", "said_seq: the owner's message is too old; ask him again")
+        if said_seq <= (self.start_seq or 0):   # the save was loaded while reading the message
+            raise PartnerError("bad_args", "said_seq: the save was loaded; ask the owner again")
         used = self.__dict__.setdefault("_said_used", set())
-        if said_seq in used:
+        if said_seq in used or said_seq in self._answer_used:
             raise PartnerError("bad_args", "said_seq: this message of the owner was already used")
         used.add(said_seq)
         return d["text"]
@@ -728,15 +840,21 @@ class Core:
         """``body`` and ``module_errors`` come with ``state`` itself. A mod that
         does not send them yet is asked the old way — ``hello`` and ``helper_list``. A failure of
         these extra reads never hides the state the mod has already given."""
-        if _is_int(data.get("module_errors")) and data.get("body") in BODY_KINDS:
-            return data
         out = dict(data)
+        last = _errors_last(out.pop("module_errors_last", None))
+        if last is not None:
+            out["module_errors_last"] = last
+        if _is_int(out.get("module_errors")) and out.get("body") in BODY_KINDS:
+            return out
         try:
             if not _is_int(out.get("module_errors")):
                 out.pop("module_errors", None)
                 hello = await self._mod("hello", {}, None)
                 if _is_int(hello.get("module_errors")):
                     out["module_errors"] = hello["module_errors"]
+                    last = _errors_last(hello.get("module_errors_last"))
+                    if last is not None:
+                        out["module_errors_last"] = last
             if out.get("body") not in BODY_KINDS:
                 out.pop("body", None)
                 listed = await self._mod("helper_list", {}, None)
@@ -1155,14 +1273,24 @@ class Core:
         a = {"text": text}
 
         async def run(h):
-            pending = self.__dict__.setdefault("_rule_pending", {})
-            if any(self._rule_waiting(x) is not None for x in list(pending)):
+            if self._rule_waits():
                 # the owner's next message must answer the server's rule question, not a question of
                 # this or any other helper (one owner, one chat)
                 raise PartnerError("bad_args", "a rule waits for the owner's answer: no chat until he "
                                                "answers (partner_notes confirm) or 2 minutes pass")
-            return await self._mod("say", {"text": V.check_say(text)}, h, mutating=True)
+            out = await self._mod("say", {"text": V.check_say(text)}, h, mutating=True)
+            self._chat_line()
+            return out
         return await self._tool("partner_say", helper, key, a, run)
+
+    def _chat_line(self) -> None:
+        """A chat line that is no role's question was said (the voice's, the rule question): the
+        owner's message after it is no answer to a question asked before it."""
+        seq = self.bridge.last_seq
+        try:
+            self.ledger().mutate(lambda d: L.chat_line(d, seq))
+        except (PartnerError, OSError) as e:
+            log.info("chat line not kept: %s", e)
 
     async def op_order(self, helper, key, said_seq=None, text=None, size=None, urgent=False,
                        answer_to=None, to=None) -> dict:
@@ -1170,7 +1298,9 @@ class Core:
 
         Only with ``said_seq`` of a real message of the owner: the server reads that event from the
         mod itself (``player_said``, ``owner:true``, no ``auto_reply`` — the mod has not handled it as
-        a word, not older than 10 minutes). One message is one order: a seq used once is refused.
+        a word, not older than 10 minutes). One message is one order per recipient (an inbox: a body
+        hN or the shared strategist): the same seq into the same inbox again is refused, into another
+        inbox it is filed (the answer names every inbox the message went to: ``said_for``).
         ``text`` is the voice's short wording; the owner's own words come with the order as
         ``owner_said``, read from the event, not from the caller.
 
@@ -1208,6 +1338,7 @@ class Core:
                 qid = V.ident("answer_to", answer_to)
                 found = self._open_question(qid, shared, side)
                 if found is None:
+                    self._closed_question(qid, shared, side)
                     raise PartnerError("not_found", f"answer_to: no open question {qid}")
                 if found[1].get("from") != "pilot" and sz != "large":
                     raise V.bad("size", "an answer to the strategist's question goes with size large")
@@ -1216,9 +1347,10 @@ class Core:
                 # it already became an order is unknown (the used seq live in this process only)
                 raise PartnerError("bad_args", "said_seq: the message came before the server started or "
                                                "the save was loaded; ask the owner again")
-            if seq in self._order_used or seq in self._order_busy:
-                # _order_busy: a parallel call with the same seq is still choosing the inbox
-                raise PartnerError("bad_args", "said_seq: this message of the owner is already an order")
+            if seq in self._order_busy:
+                # a parallel call with the same seq is still choosing the inbox
+                raise PartnerError("bad_args", "said_seq: this message of the owner is being filed by "
+                                               "another call right now; try again")
             if not shared and len(self.orders.get(h, ())) >= INBOX_MAX:
                 raise PartnerError("limit", f"the inbox holds {INBOX_MAX} open orders; tell the owner "
                                             "it is full")
@@ -1234,12 +1366,11 @@ class Core:
             words, tick = await self._order_said(h, seq)
             if seq <= (self.start_seq or 0):  # the save was reloaded while reading the message
                 raise PartnerError("bad_args", "said_seq: the save was loaded; ask the owner again")
-            if seq in self._order_used:
-                raise PartnerError("bad_args", "said_seq: this message of the owner is already an order")
             qscope, q = (None, None)
             if qid is not None:
                 found = self._open_question(qid, shared, side)
                 if found is None:
+                    self._closed_question(qid, shared, side)
                     raise PartnerError("not_found", f"answer_to: no open question {qid}")
                 qscope, q = found
             pilot_q = q is not None and q.get("from") == "pilot" and qscope != R.SHARED
@@ -1250,16 +1381,25 @@ class Core:
                 box, dest = await self._order_target(words, sz, want, qid)
             else:
                 box, dest = h, {"helper": h, "role": "strategist" if sz == "large" else "pilot", "by": "own"}
+            went = self._order_used.get(seq, [])
+            if box in went:
+                raise PartnerError("bad_args", f"said_seq: this message of the owner is already an order "
+                                               f"for {_box_name(box)}; it became an order for: "
+                                               + ", ".join(_box_name(b) for b in went))
             if len(self.orders.get(box, ())) >= INBOX_MAX:
                 raise PartnerError("limit", f"the inbox holds {INBOX_MAX} open orders; tell the owner "
                                             "it is full")
             if qid is not None:
-                if _is_int(q.get("tick")) and _is_int(tick) and tick < q["tick"]:
-                    raise PartnerError("bad_args", f"answer_to: the owner's message came before question {qid}")
+                self._question_after(q, qid, seq, tick)
+                self._answer_free(seq)
                 # closed before anything is filed: a question answered twice is refused here
                 oid = f"o{self._order_n + 1}"
-                self.ledger().mutate(lambda d: L.answer(d, qscope, qid, oid, words))
-            self._order_used[seq] = None
+                self.ledger().mutate(lambda d: L.answer(d, qscope, qid, oid, words, said_seq=seq, by=R.VOICE,
+                                                        said_tick=tick))
+                self._remember(self._answer_used, seq)
+            went = went + [box]
+            self._order_used[seq] = went
+            self._order_used.move_to_end(seq)
             while len(self._order_used) > ORDER_MEMORY:
                 self._order_used.popitem(last=False)
             self._order_n += 1
@@ -1284,12 +1424,51 @@ class Core:
                 except PartnerError as e:
                     log.info("cannot pause the running package for order %s: %s", order["id"], e.code)
             out = {"order": order, "open": len(self.orders[box]), "to": dest}
+            if len(went) > 1:
+                # the voice sees that this message went to others too: nothing is left untold
+                out["said_for"] = [_box_name(b) for b in went]
             if qid is None:
                 released = await self._release_by_order(box, dest, seq)
                 if released:
                     out["released"] = released
             return out
         return await self._tool("partner_order", helper, key, a, run)
+
+    def _closed_question(self, qid: str, shared: bool, side: str) -> None:
+        """A question the voice may see that is no longer open: refused as already closed (whoever
+        closed it first — the asker with ``answer``, the voice, or the owner's «забудь»)."""
+        scopes = [R.SHARED] + self.helper_ids() if shared else [side]
+        found = L.find_question(self.ledger().data(), qid, scopes)
+        if found is not None and found[1].get("status") != "open":
+            raise PartnerError("bad_args", f"answer_to: question {qid} is already {found[1].get('status')}")
+
+    @staticmethod
+    def _question_after(q: dict, qid: str, seq: int, tick: Any) -> None:
+        """The owner's message answers a question only when it came after the question was asked."""
+        if _is_int(q.get("seq")) and seq <= q["seq"]:
+            raise PartnerError("bad_args", f"said_seq: the owner's message came before question {qid}")
+        if _is_int(q.get("tick")) and _is_int(tick) and tick < q["tick"]:
+            raise PartnerError("bad_args", f"said_seq: the owner's message came before question {qid}")
+
+    def _answer_free(self, seq: int) -> None:
+        """A message of the owner may answer a question only once, and never while the server's rule
+        question waits for him or after it answered that question: his «да» to a rule is no «да» to
+        any question of a role."""
+        if seq in self._answer_used:
+            raise PartnerError("bad_args", "said_seq: this message of the owner already answered a question; "
+                                           "one message answers one question")
+        if seq in self.__dict__.get("_said_used", ()):
+            raise PartnerError("bad_args", "said_seq: this message of the owner answered the server's rule "
+                                           "question; it answers no other")
+        if self._rule_waits():
+            raise PartnerError("bad_args", "a rule question of the server waits for the owner's answer: no "
+                                           "question is answered until he has answered it or 2 minutes pass")
+
+    @staticmethod
+    def _remember(used: OrderedDict, seq: int) -> None:
+        used[seq] = None
+        while len(used) > ORDER_MEMORY:
+            used.popitem(last=False)
 
     def _open_question(self, qid: str, shared: bool, side: str) -> tuple[str, dict] | None:
         """An open question the voice may answer -> (its scope, the question). A voice of one helper
@@ -1302,6 +1481,272 @@ class Core:
                 if q["id"] == qid:
                     return sc, q
         return None
+
+    # ================================================================ questions in chat, answers, «забудь»
+    def _chat_body(self, h: str | None, side: str) -> str | None:
+        """The body whose name the server's chat line goes under: the helper of the question's scope,
+        for the shared strategist the helper of the call (or the first one of the server)."""
+        ids = self.helper_ids()
+        if side != R.SHARED:
+            return side if side in ids else None
+        if h is not None and h in ids:
+            return h
+        return ids[0] if ids else None
+
+    async def _ask_in_chat(self, h: str | None, side: str, q: dict, remind: bool = False) -> bool:
+        """The server says the question in game chat itself: «Стратег: …», the pilot's under its body's
+        name. Plain text: no rich-text tag of the agent but [gps]. False — not said (no body, the game
+        paused or the mod refused): the voice is told to ask it."""
+        who = self._chat_body(h, side)
+        if who is None:
+            return False
+        try:
+            args = {"text": _question_line(q, remind)}
+            if q.get("from") != "pilot":
+                args["as"] = "Стратег"
+            await self._mod("say", args, who, mutating=True)
+        except PartnerError as e:
+            log.info("question %s was not said in chat: %s", q.get("id"), e.code)
+            return False
+        return True
+
+    async def remind_in_chat(self, side: str, q: dict) -> bool:
+        """An open question unanswered for 10 minutes is said again in chat (orders.remind_questions)."""
+        if self._rule_waits():
+            return False
+        said = await self._ask_in_chat(None, side, q, remind=True)
+        if said:
+            seq = self.bridge.last_seq
+            self.ledger().mutate(lambda d: L.mark_reminded(d, side, q["id"], seq))
+        return said
+
+    async def _answer_own(self, h: str, side: str, qid: str, seq: int) -> dict:
+        """``partner_ledger answer``: the asker closes its own question by a real message of the owner
+        that came after it. The strategist answers its own questions, the pilot those of its body —
+        never one of the other role, of another body or of the shared scope it is not in. The words
+        kept as the answer (``said``) are read from the mod: they alone decide any leave."""
+        role = self._role()
+        led = self.ledger()
+
+        def mine() -> dict:
+            q = next((x for x in L.questions_of(led.data(), side) if x["id"] == qid), None)
+            if q is None or (q.get("from") == "pilot") != (role == R.PILOT):
+                raise PartnerError("not_found", f"id: no question {qid} of yours (each asker answers only "
+                                                "its own questions)")
+            if q.get("status") != "open":
+                raise PartnerError("bad_args", f"id: question {qid} is already {q.get('status')}")
+            return q
+
+        mine()
+        if seq <= (self.start_seq or 0):
+            raise PartnerError("bad_args", "said_seq: the message came before the server started or the save "
+                                           "was loaded; ask the owner again")
+        self._answer_free(seq)
+        words, tick = await self._order_said(h, seq)
+        if seq <= (self.start_seq or 0):
+            raise PartnerError("bad_args", "said_seq: the save was loaded; ask the owner again")
+        # read again after the game answered: the voice may have closed it meanwhile
+        q = mine()
+        self._question_after(q, qid, seq, tick)
+        if q.get("perm") or q.get("order"):
+            await self._bound_answer(h, side, q, seq)
+            q = mine()
+        self._answer_free(seq)
+        closed = led.mutate(lambda d: L.answer(d, side, qid, None, words, said_seq=seq, by=role,
+                                               said_tick=tick))
+        self._remember(self._answer_used, seq)
+        log.info("question %s (%s) answered by the owner's message said_seq=%s", qid, side, seq)
+        info = {"id": qid, "by": role, "owner_said": words}
+        if role == R.PILOT:
+            info["helper"] = h
+        # the voice sees it closed (no wake): it does not answer it again
+        self.packages.notify(side, "question_answered", info, roles=(R.VOICE,), loud=False)
+        return {"question": closed, "owner_said": words}
+
+    async def _bound_answer(self, h: str, side: str, q: dict, seq: int) -> None:
+        """A question that gives leave (``perm`` or ``order``) is answered by its asker only with the
+        owner's first message after the question's line in chat, and only when no other line came
+        between (another question, its reminder, the voice): the role that wants the leave does not
+        pick which «да» was meant for it. Otherwise the voice decides (``answer_to``) or it is asked
+        again."""
+        qid = q["id"]
+        if not q.get("in_chat") or not _is_int(q.get("chat_seq")) or not _is_int(q.get("chat_n")):
+            raise PartnerError("bad_args", f"said_seq: question {qid} was not said in chat by the server; the "
+                                           "voice answers it (answer_to), or ask again")
+        if seq != await self._first_owner_said(h, q["chat_seq"]):
+            raise PartnerError("bad_args", f"said_seq: only the owner's first message after question {qid} in "
+                                           "chat answers it; ask again")
+        if L.chat_line_between(self.ledger().data(), side, q, seq):
+            raise PartnerError("bad_args", f"said_seq: another line was said in chat after question {qid}; the "
+                                           "owner's message may answer that one — ask again")
+
+    async def _forget(self, h: str, shared: bool, seq: int, what: dict[str, list[str]]) -> dict:
+        """``partner_ledger forget`` (the voice): the owner's «забудь / отмени / не надо» takes off what
+        he named — packages, tasks, questions, orders, or everything on one order. Only on a real
+        message of the owner (≤ 10 minutes, no auto_reply), once per message, and only what existed
+        when he said it. Everything named is checked before anything is taken off."""
+        if seq <= (self.start_seq or 0):
+            raise PartnerError("bad_args", "said_seq: the message came before the server started or the save "
+                                           "was loaded; ask the owner again")
+        if seq in self._forget_used:
+            raise PartnerError("bad_args", "said_seq: this message of the owner was already used to forget; "
+                                           "name everything in one call")
+        words, tick = await self._order_said(h, seq)
+        if seq <= (self.start_seq or 0):
+            raise PartnerError("bad_args", "said_seq: the save was loaded; ask the owner again")
+        if seq in self._forget_used:
+            raise PartnerError("bad_args", "said_seq: this message of the owner was already used to forget")
+        ids = self.helper_ids()
+        reach = ids if shared else [h]
+        scopes = [R.SHARED] + ids if shared else [h]
+        led = self.ledger()
+        d = led.data()
+
+        def later(obj_tick: Any) -> bool:
+            return _is_int(obj_tick) and _is_int(tick) and obj_tick > tick
+
+        def too_new(kind: str, oid: str) -> PartnerError:
+            return PartnerError("bad_args", f"what.{kind}: {oid} came after the owner's message; he did not "
+                                            "mean it")
+
+        def find_order(oid: str) -> tuple[str, dict] | None:
+            for b in scopes:
+                for o in self.orders.get(b, ()):
+                    if o.get("id") == oid:
+                        return b, o
+            return None
+
+        packages: dict[str, str] = {}       # id -> helper
+        tasks: dict[str, str] = {}          # id -> helper
+        questions: dict[str, str] = {}      # id -> scope
+        orders: dict[str, str] = {}         # id -> inbox
+        for pid in what.get("package", ()):
+            p = L.find(d, pid)
+            if p is None or p.get("helper") not in reach or p.get("status") not in L.OPEN:
+                raise PartnerError("not_found", f"what.package: no open package {pid}")
+            if later(p.get("created_tick")):
+                raise too_new("package", pid)
+            packages[pid] = p["helper"]
+        for tid in what.get("task", ()):
+            f = L.find_task(d, tid, reach)
+            if f is None or f[1].get("status") != "open":
+                raise PartnerError("not_found", f"what.task: no open task {tid}")
+            if later(f[1].get("tick")):
+                raise too_new("task", tid)
+            tasks[tid] = f[0]
+        def given_after(q: dict) -> bool:
+            # his «да» came after the «забудь»: that leave is newer than the word to forget
+            return _is_int(q.get("said_seq")) and q["said_seq"] > seq
+
+        for qid in what.get("question", ()):
+            f = L.find_question(d, qid, scopes)
+            if f is None or f[1].get("status") not in ("open", "answered"):
+                raise PartnerError("not_found", f"what.question: no open or answered question {qid}")
+            if later(f[1].get("tick")) or (f[1].get("status") == "answered" and given_after(f[1])):
+                raise too_new("question", qid)
+            questions[qid] = f[0]
+        for oid in what.get("order", ()):
+            f = find_order(oid)
+            if f is None:
+                raise PartnerError("not_found", f"what.order: no open order {oid} in the inbox")
+            if later(f[1].get("tick")):
+                raise too_new("order", oid)
+            orders[oid] = f[0]
+        for oid in what.get("all_of_order", ()):
+            hit = False
+            f = find_order(oid)
+            if f is not None and not later(f[1].get("tick")):
+                orders[oid], hit = f[0], True
+            for p in d.get("packages", []):
+                if (isinstance(p, dict) and p.get("order") == oid and p.get("helper") in reach
+                        and p.get("status") in L.OPEN and not later(p.get("created_tick"))):
+                    packages[p["id"]], hit = p["helper"], True
+            for sc in scopes:
+                for q in L.questions_of(d, sc):
+                    if q.get("order") != oid or later(q.get("tick")):
+                        continue
+                    # an answered question is taken back too: the owner's «да» on this order gives
+                    # no more leave (packages, single calls)
+                    if q.get("status") == "open" or (q.get("status") == "answered" and not given_after(q)):
+                        questions[q["id"]], hit = sc, True
+            if not hit:
+                raise PartnerError("not_found", f"what.all_of_order: nothing open hangs on order {oid}")
+        # from here on the message is spent: one «забудь» — one call
+        self._remember(self._forget_used, seq)
+        cut = self.bridge.last_tick
+        done: list[dict] = []
+        skipped: list[dict] = []
+        for oid, b in orders.items():
+            box = self.orders.get(b, [])
+            gone = [o for o in box if o.get("id") == oid]
+            if not gone:
+                skipped.append({"kind": "order", "id": oid, "why": "left the inbox"})
+                continue
+            box[:] = [o for o in box if o.get("id") != oid]
+            taken = self.orders_taken.setdefault(b, [])
+            taken.extend(dict(o, forgotten=True) for o in gone)
+            del taken[:-ORDERS_TAKEN_KEEP]
+            done.append({"kind": "order", "id": oid, "helper": None if b == R.SHARED else b})
+        for qid, sc in questions.items():
+            try:
+                was = L.find_question(led.data(), qid, [sc])
+                gave = was is not None and was[1].get("status") == "answered"
+                led.mutate(lambda dd, sc=sc, qid=qid: L.withdraw(dd, sc, qid, words, seq, tick))
+            except PartnerError as e:
+                skipped.append({"kind": "question", "id": qid, "why": e.text or e.code})
+                continue
+            item = {"kind": "question", "id": qid, "helper": None if sc == R.SHARED else sc}
+            if gave:
+                item["revoked"] = True      # the owner's «да» to it gives no leave any more
+            done.append(item)
+        for tid, hh in tasks.items():
+            def cancel(dd, hh=hh, tid=tid):
+                t = L.cancel_task(dd, hh, tid, cut)
+                L.find_task(dd, tid, [hh])[1]["by"] = "owner"
+                return dict(t, by="owner")
+            try:
+                task = led.mutate(cancel)
+            except PartnerError as e:
+                skipped.append({"kind": "task", "id": tid, "why": e.text or e.code})
+                continue
+            base = {"seq": self.bridge.last_seq, "tick": cut, "helper": hh, "loud": True}
+            self.notify_roles(hh, dict(base, kind="task", data=dict(task, helper=hh)), (R.PILOT,))
+            self.notify_roles(hh, dict(base, kind="task_report", data={
+                "id": tid, "status": "cancelled", "by": "owner", "helper": hh, "text": "",
+                "task": _cut_text(task.get("text"), 200), "duty": bool(task.get("duty"))}), (R.STRATEGIST,))
+            done.append({"kind": "task", "id": tid, "helper": hh})
+        for pid, hh in packages.items():
+            try:
+                r = await self.packages.cancel(hh, pid)
+            except PartnerError as e:
+                skipped.append({"kind": "package", "id": pid, "why": e.text or e.code})
+                continue
+            item = {"kind": "package", "id": pid, "helper": hh}
+            if r.get("warning"):
+                item["warning"] = r["warning"]
+            done.append(item)
+        for x in done:
+            log.info("owner_forgot said_seq=%s: %s %s (%s)", seq, x["kind"], x["id"], x.get("helper") or "*")
+        if done:
+            self._tell_forgot(h, shared, done, words, seq)
+        out: dict = {"forgot": done, "owner_said": words}
+        if skipped:
+            out["skipped"] = skipped
+        return out
+
+    def _tell_forgot(self, h: str, shared: bool, done: list[dict], words: str, seq: int) -> None:
+        """``owner_forgot`` — loud, to the strategist and the pilots of the bodies it touched (each
+        role once, a shared strategist too)."""
+        ev = {"seq": self.bridge.last_seq, "tick": self.bridge.last_tick, "helper": None if shared else h,
+              "kind": "owner_forgot", "loud": True,
+              "data": {"what": [dict(x) for x in done], "owner_said": words, "said_seq": seq}}
+        bodies = {x["helper"] for x in done if isinstance(x.get("helper"), str)}
+        if not shared:
+            bodies.add(h)
+        targets = {(b, r) for b in bodies for r in (R.PILOT, R.STRATEGIST)} | {(R.SHARED, R.STRATEGIST)}
+        for k in sorted(targets):
+            if k in self.cursors:
+                self._notice(k, json.loads(json.dumps(ev)))
 
     async def _release_by_order(self, box: str, dest: dict, seq: int) -> list[str]:
         """A new order of the owner lifts his hold («стоп», «иди сюда») on the bodies it is for: the
@@ -1678,16 +2123,24 @@ class Core:
 
     async def op_ledger(self, helper, key, action="list", package=None, id=None, rev=None,  # noqa: A002
                         text=None, on=None, said_seq=None, order=None, n=None, tasks=None,
-                        perm=None) -> dict:
+                        perm=None, what=None) -> dict:
         """``partner_ledger`` — the strategist's build packages of this helper (docs/MCP.md
         «Пакеты стройки»). ``list`` (every role): open packages without steps and the last finished
         ones; with ``id`` — that package in full. ``put`` (the strategist): a new package, the server
         starts it itself. ``resume`` (the strategist): a paused package goes back to the queue.
         ``cancel`` (the pilot and the strategist): the package leaves, its running plan is cancelled.
         ``note`` (the strategist): his one last note on the work, read by the voice in partner_brief.
-        ``ask`` (the strategist): a question to the owner; the voice gets ``strategist_question``;
+        ``ask`` (the strategist): a question to the owner; the server says it in game chat itself
+        («Стратег: …»; the pilot's — from its body), the voice only sees it (``strategist_question``,
+        ``in_chat``); while it is open the asker's ``partner_wait`` gets the owner's messages.
         ``order`` — the owner's order it is about (an answered one is the leave of a package of that
         order to take from the owner: ``package.approved``).
+        ``answer`` (the asker alone): ``id`` + ``said_seq`` of the owner's message after the question —
+        the question closes with his words read from the mod (``said``), never the agent's.
+        ``forget`` (the voice): the owner's «забудь / отмени / не надо» — ``said_seq`` of his message
+        and ``what`` {package, task, question, order, all_of_order}: takes them off (a package is
+        cancelled, a task cancelled by the owner, a question ``withdrawn`` — it gives no leave, an
+        order leaves the inbox); the strategist and the pilot get ``owner_forgot``.
         ``thoughts`` (the voice): the owner's switch «show the strategist's thoughts» (``on``), with
         ``said_seq`` of his real message; while on, every new ``note`` wakes the voice (``strategist_note``).
         ``ask`` of the pilot: a question for its own body (``from:"pilot"``), the leave of its calls.
@@ -1697,12 +2150,15 @@ class Core:
         ``scale`` (the voice): the owner's «запусти / добавь / убери N помощников» — ``n`` (clamped to
         1..5) and ``tasks`` [{to?, text}]; only within 2 minutes of a message of the owner."""
         a = {"action": action, "package": package, "id": id, "rev": rev, "text": text, "on": on,
-             "said_seq": said_seq, "order": order, "n": n, "tasks": tasks, "perm": perm}
+             "said_seq": said_seq, "order": order, "n": n, "tasks": tasks, "perm": perm, "what": what}
 
         async def run(h):
-            act = V.enum("list", "put", "cancel", "resume", "note", "ask", "thoughts", "scale")("action", action)
+            act = V.enum("list", "put", "cancel", "resume", "note", "ask", "answer", "thoughts", "scale",
+                         "forget")("action", action)
             if perm is not None and act != "ask":
                 raise V.bad("perm", "only with action=ask")
+            if what is not None and act != "forget":
+                raise V.bad("what", "only with action=forget")
             if act != "scale":
                 for f, v in (("n", n), ("tasks", tasks)):
                     if v is not None:
@@ -1748,6 +2204,21 @@ class Core:
                 if clamped:
                     out["clamped"] = True
                 return self._stamp(out)
+            if act in ("answer", "forget"):
+                for f, v in (("package", package), ("rev", rev), ("text", text), ("on", on),
+                             ("order", order)):
+                    if v is not None:
+                        raise V.bad(f, f"not with action={act}")
+                if said_seq is None:
+                    raise V.bad("said_seq", "seq of the owner's message (player_said, owner:true) is required")
+                seq = V.integer(1, 2**53)("said_seq", said_seq)
+                if act == "answer":
+                    if not isinstance(id, str) or not V.QUESTION_ID_RE.match(id):
+                        raise V.bad("id", "the id of your open question (q<N>) is required")
+                    return self._stamp(await self._answer_own(h, side, id, seq))
+                if id is not None:
+                    raise V.bad("id", "not with action=forget: name what to forget in what")
+                return self._stamp(await self._forget(h, shared, seq, _forget_what(what)))
             if act == "thoughts":
                 for f, v in (("package", package), ("id", id), ("rev", rev), ("text", text)):
                     if v is not None:
@@ -1790,15 +2261,30 @@ class Core:
                 if keys:
                     # the owner hears what his «да» allows: the keys go into the question's text
                     t = t + S.ask_suffix(keys)
-                q = led.mutate(lambda d: L.ask(d, side, t, tick, oid, asker, keys))
-                info = {"id": q["id"], "text": q["text"]}
+                if self._rule_waits():
+                    # the owner's next message must answer the server's rule question
+                    raise PartnerError("bad_args", "a rule waits for the owner's answer: ask again when he "
+                                                   "has answered it or in 2 minutes")
+                q = led.mutate(lambda d: L.ask(d, side, t, tick, oid, asker, keys,
+                                               seq=self.bridge.last_seq))
+                said_in_chat = await self._ask_in_chat(h, side, q)
+                # the owner's answer must come after the question (the mod's answer to the chat line,
+                # a refusal too, carries the current seq and tick)
+                seq_now, tick_now = self.bridge.last_seq, self.bridge.last_tick
+                q = led.mutate(lambda d: L.mark_asked(d, side, q["id"], seq_now, tick_now, said_in_chat)) or q
+                info = {"id": q["id"], "text": q["text"], "in_chat": said_in_chat}
                 if keys:
                     info["perm"] = keys
                 if asker:
                     info.update({"from": asker, "helper": h})
-                self.packages.notify(side, "strategist_question", info, roles=(R.VOICE,))
-                return self._stamp({"question": q,
-                                    "open": len(L.open_questions(led.data(), side))})
+                # said in chat by the server: the voice only sees the question open (it does not wake);
+                # the chat failed: the voice is woken to ask it itself
+                self.packages.notify(side, "strategist_question", info, roles=(R.VOICE,), loud=not said_in_chat)
+                out = {"question": q, "open": len(L.open_questions(led.data(), side)), "in_chat": said_in_chat}
+                if said_in_chat:
+                    out["next"] = ("the owner's answer comes to your partner_wait as player_said: close the "
+                                   "question with partner_ledger answer (id + said_seq)")
+                return self._stamp(out)
             if text is not None:
                 raise V.bad("text", "only with action=note or ask")
             if act != "put" and package is not None:
@@ -2041,7 +2527,9 @@ class Core:
         # items in arrival order: (event, origin) — origin "notice" (server-made, from pending)
         # or "mod" (from the mod's buffer)
         items: list[tuple[dict, str]] = [(ev, "notice") for ev in self.pending.pop(k, [])]
-        n_loud = len(items)
+        # a quiet server notice (loud false: a question the server already said in chat) goes with the
+        # answer but never wakes the role by itself
+        n_loud = sum(1 for ev, _ in items if ev.get("loud") is not False)
         n_noisy = 0
         lost = False
         timed_out = False
@@ -2063,6 +2551,8 @@ class Core:
                 data = await self.poller.events(helper, cursor, EVENTS_LIMIT, budget,
                                                 after=ticket if first else None)
                 first = False
+                # while the strategist has an open question of its own, the owner's messages reach it
+                asking = role == R.STRATEGIST and self._asks(helper)
                 if self.bridge.reloads != reloads:
                     # the save was reloaded while waiting: _on_reload reset the cursor and queued
                     # game_reloaded for known roles. Events collected in this call before the
@@ -2084,7 +2574,7 @@ class Core:
                     self._budget_notice(self.budget.level())
                     late = self.pending.pop(k, [])
                     items.extend((ev, "notice") for ev in late)
-                    n_loud += len(late)
+                    n_loud += sum(1 for ev in late if ev.get("loud") is not False)
                 evs = _as_list(data.get("events"))
                 lost = lost or bool(data.get("lost"))
                 full = bool(data.get("more")) or len(evs) >= EVENTS_LIMIT
@@ -2098,7 +2588,7 @@ class Core:
                     cursor = ev["seq"]
                     if ev.get("kind") == "owner_panel":
                         self._on_panel(ev)
-                    how = R.keep(role, ev)
+                    how = R.keep(role, ev, asking)
                     if how is None:
                         continue        # not this role's event: passed over
                     items.append((_fit_null(ev), "mod"))
@@ -2115,7 +2605,7 @@ class Core:
                         if n_noisy > NOISY_KEEP:
                             # drop the oldest noisy event: noise is a sample, not a record
                             i = next(j for j, (e, o) in enumerate(items)
-                                     if o == "mod" and R.keep(role, e) == "noise")
+                                     if o == "mod" and R.keep(role, e, asking) == "noise")
                             del items[i]
                             n_noisy -= 1
                 if not full and not stopped_early and _is_int(data.get("seq")) and data["seq"] > cursor:
@@ -2151,6 +2641,10 @@ class Core:
         out = self._fit_wait(k, items, cursor, start_cursor, reloaded, timed_out, lost, more)
         self.cursors[k] = out["seq"]
         return out
+
+    def _asks(self, scope: str) -> bool:
+        """The strategist of ``scope`` has an open question to the owner (the pilot's do not count)."""
+        return any(q.get("from") != "pilot" for q in L.open_questions(self.ledger().data(), scope))
 
     def _fit_wait(self, k: tuple[str, str], items: list[tuple[dict, str]], cursor: int,
                   start_cursor: int, reloaded: bool, timed_out: bool, lost: bool, more: bool) -> dict:

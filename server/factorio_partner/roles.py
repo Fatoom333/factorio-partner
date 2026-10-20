@@ -57,9 +57,15 @@ READ = _READS | _READ_FORMS
 #   "partner_ledger.cancel" — take a build package off (the pilot may drop one the body cannot do);
 #                            "partner_ledger.write" (put, resume) is the strategist's alone;
 #   "partner_ledger.note"  — the strategist's note on the work (the voice reads it in partner_brief);
-#   "partner_ledger.ask"   — a question to the owner (the voice asks it in chat): the strategist's,
-#                            and the pilot's for its own body (before an action the settings put
-#                            at «спросить»: its answer is the leave of the call, approved + order);
+#   "partner_ledger.ask"   — a question to the owner (the server says it in chat itself): the
+#                            strategist's, and the pilot's for its own body (before an action the
+#                            settings put at «спросить»: its answer is the leave of the call,
+#                            approved + order);
+#   "partner_ledger.answer" — the asker closes its own question by the owner's real message (said_seq):
+#                            the strategist its own, the pilot those of its body; never another's;
+#   "partner_ledger.forget" — the owner's «забудь / отмени / не надо» (the voice alone; each call needs
+#                            a real message of the owner): takes off a package, a task, a question or
+#                            an order;
 #   "partner_ledger.thoughts" — the owner's switch «show the strategist's thoughts» (the voice alone;
 #                            each call needs a message of the owner);
 #   "partner_ledger.scale" — the owner's «запусти / добавь / убери N помощников» (the voice alone;
@@ -76,16 +82,17 @@ _PILOT_WRITES = frozenset({
     "partner_act", "partner_act.dry_run", "partner_cancel", "partner_cancel.all", "partner_say",
     "partner_plan", "partner_notes.write", "partner_notes.rules", "partner_hold.write",
     "partner_reflex.write", "partner_inbox.write", "partner_inbox.report", "partner_ledger.cancel",
-    "partner_ledger.ask",
+    "partner_ledger.ask", "partner_ledger.answer",
 })
 ALLOWED: dict[str, frozenset[str]] = {
     VOICE: READ | {"partner_say", "partner_order", "partner_cancel.all", "partner_notes.rules",
                    "partner_task.list", "partner_task.owner",
-                   "partner_ledger.thoughts", "partner_ledger.scale"},
+                   "partner_ledger.thoughts", "partner_ledger.scale", "partner_ledger.forget"},
     PILOT: READ | _PILOT_WRITES,
     STRATEGIST: READ | {"partner_plan", "partner_inbox.write", "partner_act.dry_run",
                         "partner_ledger.write", "partner_ledger.cancel", "partner_ledger.note",
-                        "partner_ledger.ask", "partner_task", "partner_task.list"},
+                        "partner_ledger.ask", "partner_ledger.answer", "partner_task",
+                        "partner_task.list"},
     # the dispatcher reads nothing and drives nothing: it only hands the owner's words on
     # (and takes the owner's request to restart the roles on N helpers: partner_rescale)
     HOST: frozenset({"partner_relay", "partner_rescale"}),
@@ -93,15 +100,17 @@ ALLOWED: dict[str, frozenset[str]] = {
 
 # the evacuate reflex of the mod (EVENTS.md «evacuate»): the voice tells the owner, the strategist plans
 EVACUATE_EVENTS = frozenset({"evacuate_started", "evacuated", "evacuate_restored", "evacuate_missing"})
-# which events a role's partner_wait hands over (docs/MCP.md «Роли»); None — every event, as before
+# which events a role's partner_wait hands over (docs/MCP.md «Роли»); None — every event, as before.
+# The strategist also gets the owner's player_said while it has an open question of its own (keep,
+# ``asking``): it takes his answer itself (partner_ledger answer)
 WAKE: dict[str, frozenset[str] | None] = {
     PILOT: None,
     VOICE: frozenset({"player_said", "owner_stop", "owner_resume", "game_reloaded", "budget_low",
                       "strategist_question", "strategist_note", "host_message", "follow_lag",
-                      "owner_panel", "rescale", "task_report"}) | EVACUATE_EVENTS,
+                      "owner_panel", "rescale", "task_report", "question_answered"}) | EVACUATE_EVENTS,
     STRATEGIST: frozenset({"order", "plan_done", "owner_stop", "owner_resume", "game_reloaded",
                            "died", "helper_lost", "package_verified", "package_unmet", "rescale",
-                           "task_report"}) | EVACUATE_EVENTS,
+                           "task_report", "owner_forgot"}) | EVACUATE_EVENTS,
 }
 
 
@@ -138,7 +147,7 @@ def capability(tool: str, args: dict | None) -> str:
         act = a.get("action", "list")
         if act == "list":
             return tool
-        if act in ("cancel", "note", "ask", "thoughts", "scale"):
+        if act in ("cancel", "note", "ask", "answer", "thoughts", "scale", "forget"):
             return tool + "." + act
         return tool + ".write"
     return tool
@@ -184,7 +193,7 @@ def budget_gate(level: str, role: str, tool: str, args: dict | None = None) -> N
 _WRITE_FORM = {"partner_notes": "add/remove/confirm", "partner_hold": "release",
                "partner_reflex": "set", "partner_inbox": "ack/report",
                "partner_task": "give/cancel", "partner_cancel": "all",
-               "partner_act": "dry_run", "partner_ledger": "put/resume/cancel/note/ask/thoughts/scale"}
+               "partner_act": "dry_run", "partner_ledger": "put/resume/cancel/note/ask/answer/thoughts/scale/forget"}
 
 
 def keys_of(entry: Any, min_key: int) -> dict[str, str]:
@@ -234,13 +243,20 @@ def shared_keys_of(data: Any, min_key: int) -> dict[str, str]:
             if isinstance(k := entry.get(r), str) and len(k) >= min_key and seen.get(k) == 1}
 
 
-def keep(role: str, ev: dict) -> str | None:
+def keep(role: str, ev: dict, asking: bool = False) -> str | None:
     """How a role's wait treats an event: "wake", "noise" (a sample, does not wake) or None (not
-    handed to this role; its cursor still moves past it)."""
+    handed to this role; its cursor still moves past it). ``asking`` — the role has an open question
+    of its own to the owner: his messages reach it (the strategist takes the answer itself)."""
     loud = bool(ev.get("loud"))
     kinds = WAKE.get(role)
     if kinds is None:
         return "wake" if loud else "noise"
-    if ev.get("kind") not in kinds:
+    if ev.get("kind") not in kinds and not (asking and owner_message(ev)):
         return None
     return "wake" if loud else "noise"
+
+
+def owner_message(ev: dict) -> bool:
+    """A chat message of the owner himself (``player_said``, ``owner:true``)."""
+    d = ev.get("data")
+    return ev.get("kind") == "player_said" and isinstance(d, dict) and d.get("owner") is True

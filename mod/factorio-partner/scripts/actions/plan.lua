@@ -170,7 +170,7 @@ end
 
 local function step_error(task, ctx, e)
   local code, text = err.normalize(e)
-  if code == "internal" then err.count_module_error() end
+  if code == "internal" then err.count_module_error("plan step", e) end
   return step_done(task, ctx, { status = "failed", code = code, text = text, detail = {} })
 end
 

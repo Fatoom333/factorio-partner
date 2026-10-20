@@ -124,7 +124,7 @@ local function safe_stop(task, ctx, res)
   local mod = M.actions[task["do"]]
   if not mod then return end
   local ok, e = pcall(mod.stop, task, ctx, res)
-  if not ok then err.count_module_error() end
+  if not ok then err.count_module_error("stop " .. tostring(task["do"]), e) end
   if ok and res ~= nil and type(e) == "table" then
     local extra = util.plain(e, 2)
     if type(res.detail) ~= "table" then res.detail = {} end
@@ -145,7 +145,7 @@ local function emit_result(task, res)
   if mod ~= nil and mod.emit_result ~= nil then
     local ok, e = pcall(mod.emit_result, task, res)
     if ok then return end
-    err.count_module_error()
+    err.count_module_error("emit_result " .. tostring(task["do"]), e)
     log("[factorio-partner] emit_result " .. tostring(task["do"]) .. " failed: " .. err.clean_text(err.is(e) and e.text or e))
   end
   if res.status == "done" then
@@ -291,7 +291,7 @@ local function step(helper, q, entity, tick)
     local ok, res = pcall(mod.start, task, ctx)
     if not ok then
       local code, text = err.normalize(res)
-      if code == "internal" then err.count_module_error() end
+      if code == "internal" then err.count_module_error("start " .. tostring(task["do"]), res) end
       finish_active(q, fail_result(code, text), ctx)
     elseif res ~= nil then
       finish_active(q, res, ctx)
@@ -306,7 +306,7 @@ local function step(helper, q, entity, tick)
   local ok, res = pcall(mod.tick, task, ctx)
   if not ok then
     local code, text = err.normalize(res)
-    if code == "internal" then err.count_module_error() end
+    if code == "internal" then err.count_module_error("tick " .. tostring(task["do"]), res) end
     finish_active(q, fail_result(code, text), ctx)
     return
   end

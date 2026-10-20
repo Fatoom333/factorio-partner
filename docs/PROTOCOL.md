@@ -110,7 +110,7 @@ MCP-сервер `factorio_partner` (Python) общаются **только** �
 
 | op | h | args | data | модуль |
 |---|---|---|---|---|
-| `hello` | | `{}` | `{proto:1, mod, tick, seq, owner, players_online, players:[{index,name,online,surface,pos}] (≤ 64), helpers:[id], module_errors:int}` (`helpers` — все не удалённые, живые и мёртвые; `module_errors` — сколько раз модуль или рефлекс упал под `pcall` с загрузки сейва) | ядро (`core/ops.lua`) |
+| `hello` | | `{}` | `{proto:1, mod, tick, seq, owner, players_online, players:[{index,name,online,surface,pos}] (≤ 64), helpers:[id], module_errors:int, module_errors_last:[{where, text, tick}]}` (`helpers` — все не удалённые, живые и мёртвые; `module_errors` — сколько раз модуль или рефлекс упал под `pcall` с загрузки сейва; `module_errors_last` — последние 3 падения, старые первыми: `where` — место («reflex ammo», «op act», «tick follow»), ≤ 80 байт, `text` — что бросил Lua, без путей и номеров строк, ≤ 160 байт; тоже в памяти, после загрузки сейва пусто) | ядро (`core/ops.lua`) |
 | `helper_spawn` | h | `{}` | `{helper, unit_number, surface, pos, at:"owner"│"respawn_point"}` | ядро (`core/registry.lua`) |
 | `helper_remove` | h | `{}` | `{corpse?:pos}` — тело `die()`, вещи в трупе; для мёртвого помощника тоже можно (без трупа) | ядро |
 | `helper_list` | | `{}` | `{helpers:[{id, state, body, surface?, pos?, job?, cooldown_s?, corpse?, away?}]}` | ядро |
@@ -122,7 +122,7 @@ MCP-сервер `factorio_partner` (Python) общаются **только** �
 | `events` | | `{since, helper?, limit?=100 (≤200)}` | `{seq, events:[...], lost}` — правила страниц в EVENTS.md | ядро (`core/events.lua`) |
 | `reflexes` | h | `{set?:[{type,...}] (≤ 16)}` | `{set:[...]}` — полная замена; без `set` — только прочитать текущий набор (типы — EVENTS.md) | ядро (`core/reflexes.lua`) |
 | `vision` | h | `{on:bool}` | `{on}` | восприятие (`perception/vision.lua`) |
-| `say` | h | `{text}` | `{}` — сообщение в чат от имени помощника (правила ниже) | ядро |
+| `say` | h | `{text, as?}` | `{}` — сообщение в чат от имени помощника (правила ниже) | ядро |
 | `owner_hold` | h? | `{release?=false, seq?}` | без `release` — `{hold:{id:{kind, tick, seq}}}`; `release:true` (нужны `helper` и `seq` нового поручения хозяина) — `{released:[id]}`; правила — EVENTS.md «Слово хозяина» | ядро (`core/owner_words.lua`) |
 | `blob_put` | | `{blob, part, total, data}` | `{blob, received, total}` | ядро (`core/blobs.lua`) |
 | `state` | h | `{}` | STATE.md | восприятие |
@@ -198,7 +198,7 @@ MCP-сервер `factorio_partner` (Python) общаются **только** �
   (`\n` убираются), rich-text теги `[...]` вырезаются — кроме меток карты: `[gps=x,y,поверхность]`
   собирается заново из целых (округлённых) чисел и имени поверхности, если такая поверхность есть
   (без имени — поверхность помощника); место числами в скобках «(x,y)» мод сам делает такой меткой на
-  поверхности помощника; меток не больше 5. Затем текст обрезается до 200 символов; пустой после
+  поверхности помощника; меток не больше 5. Необязательное `as` (≤ 24 байт, скобки вырезаются) заменяет имя помощника в префиксе — так сервер говорит за стратега («Стратег: …»). Затем текст обрезается до 200 символов; пустой после
   очистки → `bad_args`. Префикс — имя помощника и `: ` (без квадратных скобок, чтобы имя не сложилось
   в тег rich-text вроде `[color]`). Имя — настройка мода `partner-helper-name` (runtime-global, по
   умолчанию «Claude», ≤ 24 символов, скобки вырезаются): у `h1` — оно само, у остальных —
@@ -321,7 +321,7 @@ MCP-сервер `factorio_partner` (Python) общаются **только** �
   сам в `storage.helpers` не пишет.
 - Хука «помощник появился/удалён» для модулей нет: восприятие и рефлексы смотрят
   `storage.helpers[id]` (`state`, `died_tick`, `unit_number`) сами (только чтение). Ядро отдаёт модулям
-  `registry.info(helper_id) -> {body, module_errors}` (для `state`).
+  `registry.info(helper_id) -> {body, module_errors}` (для `state`); последние падения — `err.module_errors_last()`.
 - **Резерв** (для нескольких помощников): `storage.reservations = {items={[helper]={[name]=count}},
   areas={[helper]=area}, machines={[unit_number]=helper}}` (`machines` — печи, которые помощник занял
   для плавки в `get_items`, до конца шага). `collect`/`extract` не берут чужой резерв, `build_*` держат область на

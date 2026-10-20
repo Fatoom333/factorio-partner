@@ -205,6 +205,11 @@ do
   -- счётчик ошибок — тот же, что в hello
   require("scripts.core.err").count_module_error()
   G.eq(St.ops.state({}, ctx).module_errors, base + 1)
+  require("scripts.core.err").count_module_error("reflex flee", "boom")
+  local st = St.ops.state({}, ctx)
+  G.eq(#st.module_errors_last, 1)
+  G.eq(st.module_errors_last[1].where, "reflex flee")
+  G.eq(st.module_errors_last[1].text, "boom")
   -- функция ядра сильнее, а её сбой не роняет state
   local registry = require("scripts.core.registry")
   local saved = registry.body_kind

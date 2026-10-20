@@ -25,6 +25,29 @@ S.suite("dispatch", {
       S.eq(r.data.players_online, 1)
       S.eq(r.data.module_errors, 0)
   end },
+  { "hello: module_errors_last — последние 3 падения с местом и текстом, без путей", function()
+      S.load_mod()
+      S.add_player{ name = "Tartaluga" }
+      local err = require("scripts.core.err")
+      S.eq(S.okr(S.call{ v = 1, id = "e-0", op = "hello" }).module_errors_last, {})
+      err.count_module_error("reflex ammo", "__factorio-partner__/scripts/x.lua:12: boom 1")
+      err.count_module_error("event on_tick", { partner_error = true, code = "internal", text = "boom 2" })
+      err.count_module_error("job wait", "boom 3")
+      err.count_module_error("job mine", "boom 4")
+      err.count_module_error() -- без места и текста — только счётчик
+      local d = S.okr(S.call{ v = 1, id = "e-1", op = "hello" })
+      S.eq(d.module_errors, 5)
+      S.eq(#d.module_errors_last, 3)
+      S.eq(d.module_errors_last[1], { where = "event on_tick", text = "boom 2", tick = 0 })
+      S.eq(d.module_errors_last[3], { where = "job mine", text = "boom 4", tick = 0 })
+      local long = string.rep("я", 400)
+      err.count_module_error(long, long)
+      local last = err.module_errors_last()
+      S.ok(#last[3].where <= 80 and #last[3].text <= 160, "обрезка по байтам")
+      S.ok(not last[1].text:find("lua:", 1, true), "без путей")
+      last[1].text = "x"
+      S.ok(err.module_errors_last()[1].text ~= "x", "копия, а не внутренний список")
+  end },
   { "hello: players_online считает только подключённых; офлайн-игрок в списке с online=false", function()
       S.load_mod()
       S.add_player{ name = "Tartaluga" }

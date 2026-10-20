@@ -90,8 +90,9 @@ def build_server(core: Core, admin: bool = False, packages: bool = True) -> Fast
     @mcp.tool()
     async def partner_state(helper: Helper, key: Key) -> dict:
         """Состояние помощника: позиция, здоровье, инвентарь, задача и очередь, игроки рядом, tick/seq;
-        body — вид тела ("character" или "player"), module_errors — счётчик ошибок модулей мода
-        (вырос за игру — скажи хозяину)."""
+        body — вид тела ("character" или "player"), module_errors — счётчик ошибок модулей мода,
+        module_errors_last — последние падения [{where, text, tick}] (вырос счётчик — скажи хозяину
+        словами, что падает, а не число)."""
         return await _run(core.op_state(helper, key))
 
     @mcp.tool()
@@ -317,8 +318,10 @@ def build_server(core: Core, admin: bool = False, packages: bool = True) -> Fast
         ответил на него как на слово); одно сообщение — одно поручение. Слова хозяина приходят в
         поручении полем owner_said. Общий голос (один на всех помощников): адресата сервер берёт из
         имени в словах хозяина («Claude2, …» — h2), иначе to, иначе small — самому свободному телу,
-        large — стратегу. Ответ {order:{id, said_seq, tick, size, urgent, text, owner_said, helper?},
-        open, to:{helper, role, by}}."""
+        large — стратегу. Одно сообщение — по одному поручению на получателя (тело hN или общий
+        стратег): в тот же ящик повторно — отказ, в другой — можно; said_for — кому оно уже стало
+        поручением. Ответ {order:{id, said_seq, tick, size, urgent, text, owner_said, helper?},
+        open, to:{helper, role, by}, said_for?}."""
         return await _run(core.op_order(helper, key, said_seq, text, size, urgent, answer_to, to))
 
     @mcp.tool()
@@ -366,18 +369,22 @@ def build_server(core: Core, admin: bool = False, packages: bool = True) -> Fast
 
     @mcp.tool()
     async def partner_ledger(helper: Helper, key: Key,
-                             action: Annotated[Literal["list", "put", "cancel", "resume", "note", "ask", "thoughts", "scale"], Field(
+                             action: Annotated[Literal["list", "put", "cancel", "resume", "note", "ask", "answer",
+                                                       "thoughts", "scale", "forget"], Field(
                                  description="list — пакеты помощника (с id — один целиком); put — новый пакет "
                                              "(стратег); resume — вернуть приостановленный в очередь (стратег); "
                                              "cancel — снять пакет (пилот и стратег); note — заметка о ходе работы "
                                              "(стратег, одна последняя); ask — вопрос хозяину (стратег; пилот — о своём "
                                              "теле); thoughts — включить или выключить показ мыслей стратега (голос, "
                                              "on + said_seq); scale — «запусти / добавь / убери N помощников» "
-                                             "(голос, n + tasks + said_seq сообщения хозяина)")] = "list",
+                                             "(голос, n + tasks + said_seq сообщения хозяина); answer — закрыть "
+                                             "свой вопрос ответом хозяина (автор вопроса: id + said_seq); forget — "
+                                             "«забудь / отмени / не надо» хозяина (голос, said_seq + what)")] = "list",
                              package: Annotated[dict[str, Any] | None, Field(
                                  description="для put: {name, anchor, priority?, steps, on_fail?, verify, note?, order?}")] = None,
                              id: Annotated[str | None, Field(  # noqa: A002
-                                 description="id пакета (pk<N>) для list/cancel/resume")] = None,
+                                 description="id пакета (pk<N>) для list/cancel/resume; для answer — id своего "
+                                             "вопроса (q<N>)")] = None,
                              rev: Annotated[int | None, Field(
                                  description="для put: rev, который ты читал; изменилось — отказ")] = None,
                              text: Annotated[str | None, Field(
@@ -385,7 +392,8 @@ def build_server(core: Core, admin: bool = False, packages: bool = True) -> Fast
                              on: Annotated[bool | None, Field(
                                  description="для thoughts: true — показывать мысли стратега, false — нет")] = None,
                              said_seq: Annotated[int | None, Field(
-                                 description="для thoughts: seq настоящего сообщения хозяина (player_said, owner:true)")] = None,
+                                 description="для thoughts, scale, answer, forget: seq настоящего сообщения хозяина "
+                                             "(player_said, owner:true)")] = None,
                              order: Annotated[str | None, Field(
                                  description="для ask: id поручения (o<N>), о котором вопрос — ответ хозяина станет разрешением пакету этого поручения (package.approved) или вызову пилота (approved + order)")] = None,
                              n: Annotated[int | None, Field(
@@ -395,14 +403,25 @@ def build_server(core: Core, admin: bool = False, packages: bool = True) -> Fast
                              perm: Annotated[str | list[str] | None, Field(
                                  description="для ask: ключи разрешений, о которых вопрос (из partner_brief.perms.ask, "
                                              "например [\"take_lines\"], ≤ 4); «да» хозяина снимает только их, голос "
-                                             "читает их хозяину вместе с вопросом")] = None) -> dict:
+                                             "читает их хозяину вместе с вопросом")] = None,
+                             what: Annotated[dict[str, Any] | None, Field(
+                                 description="для forget: что снять — {package:\"pk<N>\"|[...], task:\"t<N>\", "
+                                             "question:\"q<N>\", order:\"o<N>\", all_of_order:\"o<N>\"} (всё, что "
+                                             "висит на поручении); id или список до 5")] = None) -> dict:
         """Пакеты стройки: именованный план из шагов act (как действие plan) с якорем, приоритетом
         (now/next/later) и 1–3 проверками (stock, rate, ghosts). Пишет только стратег; сервер сам ставит
         пакет телу, когда оно свободно и хозяин не держит, и через 2 минуты игры после plan_done
         проверяет результат: события package_verified / package_unmet / package_failed. Активных
         пакетов у помощника ≤ 2, пакет ≤ 8 КБ. note — заметка о ходе работы (голос пересказывает её
-        хозяину из partner_brief.work); ask — вопрос хозяину (≤ 5 открытых): голос получает событие
-        strategist_question, ответ хозяина приходит во входящие поручением с answer_to.
+        хозяину из partner_brief.work); ask — вопрос хозяину (≤ 5 открытых): сервер сам пишет его в чат
+        игры («Стратег: …», вопрос пилота — от его тела; in_chat:false — не вышло, голос спросит сам).
+        Пока вопрос открыт, твой partner_wait получает сообщения хозяина (player_said): его ответ — answer
+        с id и said_seq (сервер берёт слова из мода; одно сообщение отвечает на один вопрос). Голос может
+        закрыть вопрос и сам (поручение с answer_to): кто первый, тот закрыл, второму — «уже отвечен».
+        forget (голос) — «забудь / отмени / не надо» хозяина: said_seq его сообщения (≤ 10 минут, одно
+        сообщение — один вызов) и what; снимает пакет, задание, вопрос (withdrawn — разрешения не даёт),
+        поручение во входящих или всё по поручению (all_of_order); только то, что было до его слов.
+        Стратегу и пилоту — событие owner_forgot{what, owner_said}.
         thoughts (голос) — по просьбе хозяина «показывай мысли стратега» / «хватит»: on + said_seq его
         сообщения; пока включено, новая заметка стратега будит голос событием strategist_note.
         Забрать у хозяина (collect, extract, from_lines:true) пакет может только с его разрешения:
@@ -413,7 +432,7 @@ def build_server(core: Core, admin: bool = False, packages: bool = True) -> Fast
         2 минуты: запрос перезапуска виден всем ролям в partner_brief.rescale, пока его не снимет
         диспетчер."""
         return await _run(core.op_ledger(helper, key, action, package, id, rev, text, on, said_seq, order,
-                                         n, tasks, perm))
+                                         n, tasks, perm, what))
 
     @mcp.tool()
     async def partner_relay(helper: Helper, key: Key,

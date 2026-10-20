@@ -192,7 +192,7 @@ async def test_question_reaches_the_voice_and_the_answer_the_strategist(core, fa
     assert (await work(core))["questions"] == []
     assert L.questions_of(core.ledger().data(), "h1")[0]["status"] == "answered"
     seq2 = await said(core, fake, "и ещё раз да")
-    assert (await refused(core.op_order("h1", VKEY, seq2, "да", "large", answer_to="q1"))).code == "not_found"
+    assert (await refused(core.op_order("h1", VKEY, seq2, "да", "large", answer_to="q1"))).code == "bad_args"   # already answered
     # an answer holds no package of the strategist
     assert not core.packages._order_gate("h1", {"id": "pk1"})
 
@@ -210,15 +210,34 @@ async def test_question_rights_and_limits(core, fake, body, clock):
 async def test_unanswered_question_is_reminded_once(core, fake, body, clock):
     await core.op_brief("h1", VKEY)
     await core.op_ledger("h1", SKEY, "ask", text="какой ширины шина?")
-    await core.op_wait("h1", VKEY, timeout=0)          # the first wake-up is taken
-    core.packages.remind_questions()
+    await core.op_wait("h1", VKEY, timeout=0)          # the first sight of it is taken
+    await core.packages.remind_questions()
     assert (await core.op_wait("h1", VKEY, timeout=0))["events"] == []
     clock.t += L.REMIND_AFTER
-    core.packages.remind_questions()
-    core.packages.remind_questions()
+    n = len(fake.mod.requests)
+    await core.packages.remind_questions()
+    await core.packages.remind_questions()
+    said_now = [r["args"]["text"] for r in fake.mod.requests[n:] if r.get("op") == "say"]
+    assert said_now == ["Напоминаю: какой ширины шина?"]     # once, by the server itself
     evs = (await core.op_wait("h1", VKEY, timeout=0))["events"]
     assert len(evs) == 1 and evs[0]["kind"] == "strategist_question" and evs[0]["data"]["remind"] is True
+    assert evs[0]["data"]["in_chat"] is True and evs[0]["loud"] is False
     assert (await work(core))["questions"][0]["reminded"] is True
+
+
+async def test_reminder_wakes_the_voice_when_the_chat_fails(core, fake, body, clock):
+    await core.op_brief("h1", VKEY)
+    await core.op_ledger("h1", SKEY, "ask", text="какой ширины шина?")
+    await core.op_wait("h1", VKEY, timeout=0)
+    clock.t += L.REMIND_AFTER
+
+    def down(a, e):
+        from fake_rcon import FakeModError
+        raise FakeModError("internal", "boom")
+    fake.mod.handlers["say"] = down
+    await core.packages.remind_questions()
+    evs = (await core.op_wait("h1", VKEY, timeout=0))["events"]
+    assert len(evs) == 1 and evs[0]["loud"] is True and evs[0]["data"]["in_chat"] is False
 
 
 # ---------------------------------------------------------------- the strategist's thoughts

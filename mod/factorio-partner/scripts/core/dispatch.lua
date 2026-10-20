@@ -125,7 +125,7 @@ local function execute(id, req)
   if not ok then
     local code, text, data = err.normalize(res)
     if code == "internal" then
-      err.count_module_error()
+      err.count_module_error("op " .. tostring(op), res)
       log("[factorio-partner] op " .. op .. " failed: " .. text)
     end
     return error_line(id, code, text, data)

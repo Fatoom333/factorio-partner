@@ -74,7 +74,7 @@ def test_brief_has_auto(notes_dir, tmp_path):
     assert build_brief(cfg, None)["auto"]["on"] is False   # другой сейв (default)
 
 
-async def test_auto_rule_question_names_the_mode(core, fake, notes_dir):
+async def test_auto_rule_question_names_the_mode(core, started, fake, notes_dir):
     own = fake.mod.emit("player_said", {"player": "Owner", "owner": True, "text": "иди к ракете сам"})
     await core.op_notes("h1", KEY, "rules", "add", "AUTO: иди к ракете", said_seq=own["seq"])
     said = [r for r in fake.mod.requests if r.get("op") == "say"][-1]["args"]["text"]
@@ -84,7 +84,7 @@ async def test_auto_rule_question_names_the_mode(core, fake, notes_dir):
     assert N.auto_state(N.save_name(core.cfg))["goal"] == "иди к ракете"
 
 
-async def test_plain_rule_question_unchanged(core, fake, notes_dir):
+async def test_plain_rule_question_unchanged(core, started, fake, notes_dir):
     own = fake.mod.emit("player_said", {"player": "Owner", "owner": True, "text": "заправляй турели"})
     await core.op_notes("h1", KEY, "rules", "add", "auto refuel turrets", said_seq=own["seq"])
     said = [r for r in fake.mod.requests if r.get("op") == "say"][-1]["args"]["text"]

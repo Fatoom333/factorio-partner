@@ -320,7 +320,7 @@ end
 
 local last_log = nil
 local function report(where, e)
-  err.count_module_error()
+  err.count_module_error(where, e)
   local tick = game.tick
   if last_log ~= nil and tick - last_log < 3600 then return end
   last_log = tick

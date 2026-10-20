@@ -42,7 +42,7 @@ end
 
 local last_log = {}
 local function log_error(where, e)
-  err.count_module_error() -- hello.module_errors: каждое падение, а в журнал — не чаще раза в минуту
+  err.count_module_error(where, e) -- hello.module_errors: каждое падение, а в журнал — не чаще раза в минуту
   local key = where
   local tick = game and game.tick or 0
   if last_log[key] ~= nil and tick - last_log[key] < 3600 then return end

@@ -57,7 +57,7 @@ TOOLS: dict[str, tuple[str, tuple[str, ...]]] = {
     "partner_inbox": ("op_inbox", ("ack", "report")),
     "partner_task": ("op_task", ("action", "to", "text", "duty", "area", "id", "said_seq")),
     "partner_ledger": ("op_ledger", ("action", "package", "id", "rev", "text", "on", "said_seq", "order",
-                                     "n", "tasks")),
+                                     "n", "tasks", "perm", "what")),
     "partner_rescale": ("op_rescale", ("action",)),
     "partner_relay": ("op_relay", ("to", "text")),
     "partner_plan": ("op_plan", ("task", "resource", "patch", "options")),
