@@ -290,7 +290,8 @@ def build_server(core: Core, admin: bool = False, packages: bool = True) -> Fast
                              approved: Approved = None, order: OrderId = None) -> dict:
         """Рефлексы тела: полный список заменяет прежний, [] снимает все; без set — только
         прочитать текущий набор. Ответ — {set}. Рефлекс на «спросить» в настройках мода (shoot,
-        upkeep) — с approved и order после «да» хозяина, как у partner_act."""
+        upkeep) — с approved и order после «да» хозяина, как у partner_act. evacuate, который хозяин
+        поставил кнопкой «Охранять здесь», убрать или изменить нельзя: owner_forbids, набор прежний."""
         return await _run(core.op_reflex(helper, key, set, approved, order))
 
     @mcp.tool()

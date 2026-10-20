@@ -963,7 +963,7 @@ pos, dir?, items?│fluid?}], dry_run?}` + поля `build_ghosts` после с
 | `mine` | `chop` | цель — не руда (дерево, камень); руда проверки не требует |
 | `walk`, `approach` (и цель `follow`) | `walk-far` | цель дальше `partner-far-distance` клеток от хозяина; хозяина нет в игре — не проверяется |
 | `reflexes{set}` | `shoot`, `turrets` (`ammo`), `upkeep` | рефлекс, которого ещё нет в наборе |
-| `reflexes{set}` (`evacuate`) | `deconstruct-owner`, `deconstruct-own`, `build` | при включении и смене области, `names` или `rebuild`; `build` — только при `rebuild` (EVENTS.md «`evacuate`»). Кнопка хозяина «Охранять здесь» — его слово: «спросить» не нужно, «нельзя» запрещает |
+| `reflexes{set}` (`evacuate`) | `deconstruct-owner`, `deconstruct-own`, `build` | при включении и смене области, `names` или `rebuild`; `build` — только при `rebuild` (EVENTS.md «`evacuate`»). Кнопка хозяина «Охранять здесь» — его слово: «спросить» не нужно, «нельзя» запрещает; такую охрану агент не убирает и не меняет (`owner_forbids`, EVENTS.md «Панель хозяина») |
 
 Особые случаи:
 - `shoot` по гнёздам и червям — `attack-nests`: при «нельзя» рефлекс в них не целится (кроме червя, в чьём

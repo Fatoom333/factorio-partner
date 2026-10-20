@@ -65,6 +65,29 @@ S.suite("owner_words", {
       S.eq(W.lower("СТОП Ёлка ABC"), "стоп елка abc")
   end },
 
+  { "разбор: «не охраняй» и похожие — снять охрану; поручения про охрану — нет", function()
+      B.setup()
+      local W = words()
+      local function kind(text) return W.classify(W.tokens(text)) end
+      for _, t in ipairs({ "не охраняй", "Не охраняй!", "сними охрану", "Сними охрану, пожалуйста", "хватит охранять",
+        "перестань охранять", "stop guarding", "Unguard", "don't guard", "не надо охранять" }) do
+        S.eq(kind(t), "unguard", t)
+      end
+      for _, t in ipairs({ "охраняй", "охраняй печи", "не охраняй печи, охраняй буры", "сними охрану и иди сюда",
+        "guard here" }) do
+        S.eq(kind(t), nil, t)
+      end
+  end },
+
+  { "«не охраняй» без охраны хозяина — обычное сообщение агенту; без hold и без снятия задач", function()
+      busy()
+      local jobs = require("scripts.core.jobs")
+      S.chat(1, "не охраняй")
+      S.eq(last_of("player_said").data.word, nil)
+      S.eq(jobs.queue_len("h1"), 2)
+      S.eq(storage.owner_hold and storage.owner_hold.h1, nil)
+  end },
+
   { "стоп: задачи сняты, ответ «Стою.», hold, owner_stop, player_said с пометкой", function()
       busy()
       local before = #say_lines()

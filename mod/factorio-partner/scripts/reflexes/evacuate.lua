@@ -11,6 +11,10 @@
 --   Включить или сменить область запросом агента можно, только если центр области не дальше MAX_DIST
 --   клеток от тела (too_far с расстоянием). Кнопка «Охранять здесь» в окне хозяина (M.owner_guard) —
 --   слово хозяина: без этого предела, без hold, «спросить» не нужно, «нельзя» всё равно запрещает.
+--   Охрану хозяина (owner = true в записи набора storage.reflexes[helper]; ставит только M.owner_guard)
+--   агент не убирает и не меняет (область, names, rebuild, threat_radius, return_after_s) — owner_forbids,
+--   прежний набор остаётся; тот же evacuate без изменений в наборе можно. Снимает её только хозяин:
+--   кнопкой «Снять охрану» или словом «не охраняй» (M.owner_unguard, scripts/core/owner_words.lua).
 --
 -- * Снимок. При включении (и при смене области или names) мод запоминает постройки своей силы в
 --   области: имя, предмет, позиция, направление, вход/выход подземной ленты и погрузчика, рецепт
@@ -1269,6 +1273,13 @@ local function same(a, b)
   return a ~= nil and b ~= nil and key_of(a) == key_of(b) and a.rebuild == b.rebuild
 end
 
+--- Все параметры одинаковы (охрана хозяина: агенту нельзя менять ни одного).
+local function same_all(a, b)
+  return same(a, b) and a.threat_radius == b.threat_radius and a.return_after_s == b.return_after_s
+end
+
+M.OWNER_TEXT = "охрану поставил хозяин — снять может только он"
+
 --- Агент включает охрану только там, где тело: центр области не дальше MAX_DIST (запрос по RCON —
 --- ctx.perm_gate; свои вызовы мода и кнопка хозяина — без предела).
 local function near_enough(v, ctx)
@@ -1320,6 +1331,16 @@ M.reflexes = {
     guard = function(id, v, old, ctx)
       local changed = v == nil or old == nil or key_of(v) ~= key_of(old)
       local word = ctx ~= nil and ctx.owner_word == true -- кнопка хозяина: это его слово
+      -- охрана хозяина: убрать или изменить — только его словом (ctx.owner_word ставит лишь этот модуль)
+      if old ~= nil and old.owner == true and not word then
+        if v == nil then
+          err.raise("owner_forbids", "evacuate: " .. M.OWNER_TEXT
+            .. " (кнопкой «Снять охрану» или словом «не охраняй»)", { owner_guard = true })
+        elseif not same_all(v, old) then
+          err.raise("owner_forbids", "evacuate: " .. M.OWNER_TEXT
+            .. "; менять область и параметры тоже нельзя", { owner_guard = true })
+        end
+      end
       if not word and v ~= nil and (old == nil or not same(v, old)) and jobs.held(id) ~= nil then
         err.raise("owner_hold", "evacuate: the owner said stop; wait for his next word before switching it on or changing it")
       end
@@ -1333,6 +1354,8 @@ M.reflexes = {
           .. " buildings in the pockets); keep the same area and names until evacuate_restored")
       end
       if v ~= nil and changed then near_enough(v, ctx) end
+      -- набор пишется заново из проверенных значений: метка хозяина переходит на ту же охрану
+      if v ~= nil and old ~= nil and old.owner == true then v.owner = true end
     end,
     on_set = function(id, v, old, ctx)
       local st = M.state(id)
@@ -1382,6 +1405,12 @@ function M.guarding(id)
   return evac_of(id) ~= nil
 end
 
+--- Охрану тела поставил хозяин (кнопкой «Охранять здесь»).
+function M.owner_guarded(id)
+  local r = evac_of(id)
+  return r ~= nil and r.owner == true
+end
+
 --- «Охранять здесь»: evacuate вокруг center с radius телу id — слово хозяина: «спросить» не нужно,
 --- hold не мешает, предела MAX_DIST нет; «нельзя» в настройках мода запрещает. Прочие рефлексы
 --- тела и прежние threat_radius, return_after_s, rebuild остаются.
@@ -1412,13 +1441,16 @@ function M.owner_guard(id, h, center, radius)
     local code, text, data = err.normalize(e)
     return nil, code, text, data
   end
+  local now = evac_of(id)
+  if now ~= nil then now.owner = true end -- охрана хозяина: агент её не снимет и не изменит
   local st = M.state(id)
   if st ~= nil then st.remove_after = nil end
   return true, nil, nil, { center = v.center, radius = r }
 end
 
---- «Снять охрану»: в спокойной фазе evacuate уходит из набора сразу ("removed"); идёт эвакуация или
---- постройки ждут возврата — уйдёт после возврата ("later"); охраны нет — "none".
+--- «Снять охрану» (кнопка или слово хозяина): в спокойной фазе evacuate уходит из набора сразу
+--- ("removed", с ним и метка хозяина); идёт эвакуация или постройки ждут возврата — уйдёт после
+--- возврата ("later", до того охрана остаётся хозяйской); охраны нет — "none".
 --- → результат │ nil, code, text.
 function M.owner_unguard(id, h)
   if evac_of(id) == nil then return "none" end

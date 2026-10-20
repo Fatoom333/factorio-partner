@@ -4,6 +4,7 @@ local S = require("stubs")
 local C = require("stubs_c")
 local F = require("stubs_f")
 local P = require("stubs_panel")
+local H = require("stubs_h")
 
 local AREA = { left_top = { x = 10, y = -6 }, right_bottom = { x = 22, y = 6 } }
 
@@ -1035,6 +1036,118 @@ S.suite("reflex_evacuate", {
       for _, n in pairs(r.data.placed) do placed = placed + n end
       S.eq(placed, taken)
       S.eq(storage.evacuate.h1, nil)
+  end },
+
+  { "охрана хозяина: агент не убирает и не меняет её (owner_forbids, набор прежний), тот же набор можно", function()
+      local W = world()
+      base()
+      local E = require("scripts.reflexes.evacuate")
+      S.ok(E.owner_guard("h1", W.h, { x = 16, y = 0 }, 8))
+      S.eq(E.owner_guarded("h1"), true)
+      local before = S.dump(storage.reflexes.h1)
+      local function refused(list, what)
+        local e = S.err(set(list), "owner_forbids", what)
+        S.ok(tostring(e.text):find("охрану поставил хозяин — снять может только он", 1, true) ~= nil, S.dump(e))
+        S.eq(S.dump(storage.reflexes.h1), before, what .. ": набор прежний")
+      end
+      refused({}, "убрать весь набор")
+      refused({ { type = "flee" } }, "набор без evacuate")
+      local g = S.okr(set(nil)).set[1]
+      S.eq(g.owner, nil, "метка хозяина в ответе агенту не видна")
+      local function changed(k, v)
+        local r = {}
+        for a, b in pairs(g) do r[a] = b end
+        r[k] = v
+        refused({ r }, "смена " .. k)
+      end
+      changed("radius", 9)
+      changed("center", { x = 17, y = 0 })
+      changed("names", { "iron-chest" })
+      changed("rebuild", false)
+      changed("threat_radius", 50)
+      changed("return_after_s", 300)
+      -- метку агент поставить не может: поле не из схемы
+      local forged = {}
+      for a, b in pairs(g) do forged[a] = b end
+      forged.owner = true
+      S.err(set{ forged }, "bad_args")
+      -- тот же evacuate с другими рефлексами — можно, охрана остаётся хозяйской
+      S.okr(set{ { type = "flee" }, g })
+      S.eq(E.owner_guarded("h1"), true)
+      S.eq(#storage.reflexes.h1, 2)
+      -- своя охрана агента снимается как раньше
+      S.eq(E.owner_unguard("h1", W.h), "removed")
+      S.eq(E.guarding("h1"), false)
+      evac()
+      S.eq(E.owner_guarded("h1"), false)
+      S.okr(set{ { type = "evacuate", area = AREA, return_after_s = 60 } }, "агент меняет свою охрану")
+      S.okr(set{}, "агент снимает свою охрану")
+      S.eq(storage.evacuate.h1, nil)
+  end },
+
+  { "охрана хозяина переживает сейв и загрузку; снятие хозяином снимает и метку", function()
+      local W = world()
+      base()
+      local E = require("scripts.reflexes.evacuate")
+      S.ok(E.owner_guard("h1", W.h, { x = 16, y = 0 }, 8))
+      S.reload()
+      E = require("scripts.reflexes.evacuate")
+      S.eq(E.owner_guarded("h1"), true)
+      S.err(set{}, "owner_forbids")
+      S.eq(E.owner_unguard("h1", W.h), "removed")
+      S.eq(E.guarding("h1"), false)
+      evac()
+      S.eq(E.owner_guarded("h1"), false, "новая охрана агента — без метки")
+      S.okr(set{})
+  end },
+
+  { "слово хозяина «не охраняй»: снимает охрану хозяина; чужой игрок — нет; посреди разбора — после возврата", function()
+      local W = world()
+      base()
+      local E = require("scripts.reflexes.evacuate")
+      S.add_player{ name = "Guest", position = { 1, 1 } }
+      S.ok(E.owner_guard("h1", W.h, { x = 16, y = 0 }, 8))
+      S.chat(2, "не охраняй")
+      S.eq(E.owner_guarded("h1"), true, "слово не хозяина не считается")
+      S.chat(1, "Хватит охранять!")
+      S.eq(E.guarding("h1"), false)
+      S.eq(game.printed[#game.printed], "Claude: Охрану снял.")
+      local said = events("player_said")
+      S.eq(said[#said].data.word, { kind = "unguard", helpers = { "h1" } })
+      -- охрана агента без обращения по имени — не трогается (сообщение уходит агенту)
+      evac()
+      S.chat(1, "не охраняй")
+      S.eq(E.guarding("h1"), true)
+      said = events("player_said")
+      S.eq(said[#said].data.word, nil)
+      -- по имени — снимается любая охрана адресата
+      S.chat(1, "Claude, stop guarding")
+      S.eq(E.guarding("h1"), false)
+      -- посреди разбора: как кнопка — после возврата (return_after_s остаётся от прежней охраны)
+      evac()
+      S.ok(E.owner_guard("h1", W.h, { x = 16, y = 0 }, 8))
+      S.eq(storage.reflexes.h1[1].return_after_s, 30)
+      local biter = enemy({ x = 60, y = 0 })
+      wait_for("evacuate_started", 1, 200)
+      S.chat(1, "сними охрану")
+      S.eq(storage.evacuate.h1.remove_after, true)
+      S.eq(game.printed[#game.printed], "Claude: Сниму охрану, когда поставлю разобранное обратно.")
+      S.err(set{}, "owner_forbids", "до возврата охрана хозяйская")
+      wait_for("evacuated", 1, 6000)
+      biter.destroy()
+      local r = wait_for("evacuate_restored", 1, 8000)
+      S.eq(r.data.off, true)
+      S.eq(E.guarding("h1"), false)
+  end },
+
+  { "helper_remove забывает охрану хозяина вместе с набором", function()
+      local _, h = H.setup()
+      local E = require("scripts.reflexes.evacuate")
+      S.ok(E.owner_guard("h1", h, h.position, 8))
+      S.eq(E.owner_guarded("h1"), true)
+      S.okr(S.req("helper_remove", {}, "h1"))
+      S.eq(storage.reflexes.h1, nil)
+      S.eq(E.guarding("h1"), false)
   end },
 
   { "возврат к делу после эвакуации: задача агента остаётся под гейтом разрешений", function()

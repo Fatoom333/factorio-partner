@@ -15,6 +15,9 @@
 --   статус    — «что делаешь», «чем занят», «что происходит», «статус»: мгновенный ответ шаблоном
 --               из состояния мода, работа не прерывается.
 --   продолжай — «продолжай», «continue» и т.п. при включённом hold: hold снимается, owner_resume.
+--   не охраняй — «не охраняй», «сними охрану», «хватит охранять», «stop guarding», «unguard» и т.п.:
+--               снять охрану (рефлекс evacuate) как кнопкой «Снять охрану» (reflexes/evacuate.lua
+--               owner_unguard): адресату — его охрану, без имени — всем телам с охраной хозяина.
 -- Адрес: имя помощника в начале или конце сообщения («Claude2, стоп») — только он; без имени — все
 -- живые помощники. Имя — как в подписи (nameplate.display_name): у h1 это «Claude», у остальных
 -- «Claude h2»; принимаются «claude2», «claude h2», «claudeh2», «h2». Имя и сообщение приводятся к
@@ -68,6 +71,11 @@ local STATUS_PHRASES = {
 local RESUME_PHRASES = {
   { "продолжай" }, { "продолжи" }, { "продолжай", "работу" }, { "продолжай", "работать" },
   { "работай" }, { "давай", "дальше" }, { "continue" }, { "resume" }, { "carry", "on" }, { "go", "on" },
+}
+local UNGUARD_PHRASES = {
+  { "не", "охраняй" }, { "не", "охраняйте" }, { "сними", "охрану" }, { "снимите", "охрану" },
+  { "снять", "охрану" }, { "хватит", "охранять" }, { "перестань", "охранять" }, { "не", "надо", "охранять" },
+  { "stop", "guarding" }, { "unguard" }, { "dont", "guard" }, { "don't", "guard" },
 }
 -- слова-наполнители: выбрасываются перед точным сравнением со статусом, «подойти», «продолжай»
 local FILLERS = {
@@ -216,13 +224,14 @@ end
 
 -- ------------------------------------------------------------------ разбор
 
---- Что за слово: "stop" | "come" | "status" | "resume" | nil. tokens — после снятия адреса.
+--- Что за слово: "stop" | "come" | "status" | "resume" | "unguard" | nil. tokens — после снятия адреса.
 function M.classify(tokens)
   if #tokens == 0 then return nil end
   local bare = without_fillers(tokens)
   if any_equal(bare, phrases_from(M.SETTING_COME, M.DEFAULT_COME)) then return "come" end
   if any_equal(bare, STATUS_PHRASES) then return "status" end
   if any_equal(bare, RESUME_PHRASES) then return "resume" end
+  if any_equal(bare, UNGUARD_PHRASES) then return "unguard" end
   -- стоп — только без поручения рядом: «stop mining and build furnaces» — новое поручение агенту
   local stops = phrases_from(M.SETTING_STOP, M.DEFAULT_STOP)
   local strong = {}
@@ -359,6 +368,21 @@ end
 
 -- ------------------------------------------------------------------ вызов из чата
 
+-- рефлекс evacuate грузится после ядра (control.lua): берётся при первом слове
+local function evacuate() return require("scripts.reflexes.evacuate") end
+
+--- «Не охраняй»: снять охрану, как кнопка «Снять охрану» окна хозяина.
+local function do_unguard(id, entity)
+  local res, code = evacuate().owner_unguard(id, entity)
+  if res == "removed" then
+    say(id, entity, "Охрану снял.")
+  elseif res == "later" then
+    say(id, entity, "Сниму охрану, когда поставлю разобранное обратно.")
+  elseif res == nil then
+    say(id, entity, "Не могу снять охрану (" .. tostring(code) .. ").")
+  end
+end
+
 local function alive_ids()
   local out = {}
   for _, id in ipairs(registry.ids("alive")) do
@@ -386,6 +410,14 @@ function M.on_owner_chat(data)
     local held = {}
     for _, id in ipairs(targets) do if holds()[id] ~= nil then held[#held + 1] = id end end
     targets = held
+  elseif kind == "unguard" then
+    -- по имени — охрана адресата, чья бы ни была; без имени — только охраны, что ставил хозяин
+    local guarded = {}
+    for _, id in ipairs(targets) do
+      local ok = next(named) ~= nil and evacuate().guarding(id) or evacuate().owner_guarded(id)
+      if ok then guarded[#guarded + 1] = id end
+    end
+    targets = guarded
   end
   if #targets == 0 then return nil end
   local extra = { auto_reply = true, word = { kind = kind, helpers = targets } }
@@ -408,6 +440,8 @@ function M.on_owner_chat(data)
         elseif kind == "resume" then
           holds()[id] = nil
           say(id, entity, "Продолжаю.")
+        elseif kind == "unguard" then
+          do_unguard(id, entity)
         end
       end
     end
