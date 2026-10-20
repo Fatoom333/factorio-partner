@@ -640,6 +640,11 @@ def _line(field: str, v: Any, limit: int) -> str:
     return re.sub(r"(?i)хозяин\s*:", "хозяин -", t)
 
 
+def check_line(field: str, v: Any, limit: int) -> str:
+    """One line the voice may read to the owner (the strategist's note and questions)."""
+    return _line(field, v, limit)
+
+
 # a package runs on the body without the pilot's turn: only building steps. Nothing that takes from or
 # breaks the owner's buildings (deconstruct, extract, collect, pickup, mine{target}, rotate,
 # set_recipe), no superforced or partial blueprint (only with the owner's word, given to the pilot)

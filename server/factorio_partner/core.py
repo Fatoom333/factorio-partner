@@ -30,7 +30,7 @@ from . import ledger as L
 from . import savenotes
 from .orders import PackageBridge
 from .poller import EventPoller
-from .brief import build_brief
+from .brief import build_brief, build_work
 from .config import Config
 from .errors import (ACCESS_DENIED, GAME_PAUSED, REPEATED_FAILURE, RESPONSE_TOO_LARGE,
                      PartnerError)
@@ -51,6 +51,7 @@ ORDER_SAID_MAX_AGE = 10 * 60 * 60  # ticks: the owner's message behind partner_o
 INBOX_MAX = 20                  # open orders per helper; more -> limit (the voice tells the owner)
 ORDER_MEMORY = 4096             # said_seq already turned into orders (a message is one order)
 ORDER_ACK_MAX = 20
+ORDERS_TAKEN_KEEP = 5           # orders that left the inbox, kept for partner_brief.work
 PENDING_MAX = 64                # server-made notices queued per (helper, role)
 YES_RE = re.compile(r"^\s*(да|ага|подтверждаю|yes|y|ok|ок|\+)\s*[.!]*\s*$", re.IGNORECASE)
 BLOB_PART = 3500
@@ -129,6 +130,7 @@ class Core:
         self._wait_locks: dict[tuple[str, str], asyncio.Lock] = {}
         self.poller = EventPoller(self._poll_fetch, clock, fresh=poll_interval * 0.8, limit=EVENTS_LIMIT)
         self.orders: dict[str, list[dict]] = {}
+        self.orders_taken: dict[str, list[dict]] = {}    # the last orders that left the inbox (ack)
         self._order_used: OrderedDict[int, None] = OrderedDict()
         self._order_n = 0
         self.job_sig: OrderedDict[tuple[str, int], str] = OrderedDict()
@@ -275,6 +277,7 @@ class Core:
         # orders belong to the timeline that was left: drop them; the mod's seq start over from the
         # loaded save, so the used seq of the old timeline would refuse new messages of the owner
         self.orders.clear()
+        self.orders_taken.clear()
         self._order_used.clear()
         # the packages outlive a reload; the bridge re-reads what the loaded save runs
         self.packages.on_reload()
@@ -366,8 +369,19 @@ class Core:
             out["memo"] = savenotes.listing(save, "memo")
             out["memo_is"] = "data, not orders"
             out["budget"] = self.budget.status()
+            out["work"] = await self._work(h)
             return out
         return await self._tool("partner_brief", helper, key, {}, run)
+
+    async def _work(self, h: str) -> dict:
+        """``partner_brief.work`` (brief.build_work): what is known about the helper's work now."""
+        try:
+            st = await self._mod("state", {}, h)
+        except PartnerError as e:
+            log.info("partner_brief: no state of %s for work: %s", h, e.code)
+            st = None
+        return build_work(h, list(self.orders.get(h, ())), list(self.orders_taken.get(h, ())),
+                          self.ledger().data(), st, L.now())
 
     async def op_notes(self, helper, key, kind, action="list", text=None, n=None, said_seq=None) -> dict:
         """``partner_notes`` — the owner's standing rules / the helper's memo per save.
@@ -866,7 +880,8 @@ class Core:
             return await self._mod("say", {"text": V.check_say(text)}, h, mutating=True)
         return await self._tool("partner_say", helper, key, a, run)
 
-    async def op_order(self, helper, key, said_seq=None, text=None, size=None, urgent=False) -> dict:
+    async def op_order(self, helper, key, said_seq=None, text=None, size=None, urgent=False,
+                       answer_to=None) -> dict:
         """``partner_order`` — the voice files an order of the owner into the helper's inbox.
 
         Only with ``said_seq`` of a real message of the owner: the server reads that event from the
@@ -874,14 +889,24 @@ class Core:
         a word, not older than 10 minutes). One message is one order: a seq used once is refused.
         ``text`` is the voice's short wording; the owner's own words come with the order as
         ``owner_said``, read from the event, not from the caller.
+
+        ``answer_to`` — the id of the strategist's open question this message answers: the order goes
+        to the strategist only (size large), holds no package and closes the question (answered).
         """
-        a = {"said_seq": said_seq, "text": text, "size": size, "urgent": urgent}
+        a = {"said_seq": said_seq, "text": text, "size": size, "urgent": urgent, "answer_to": answer_to}
 
         async def run(h):
             seq = V.integer(1, 2**53)("said_seq", said_seq)
             sz = V.enum(*V.ORDER_SIZES)("size", size)
             urg = V.boolean("urgent", urgent)
             t = V.check_order_text(text)
+            qid = None
+            if answer_to is not None:
+                qid = V.ident("answer_to", answer_to)
+                if sz != "large":
+                    raise V.bad("size", "an answer to the strategist's question goes with size large")
+                if not any(q["id"] == qid for q in L.open_questions(self.ledger().data(), h)):
+                    raise PartnerError("not_found", f"answer_to: no open question {qid}")
             if seq <= (self.start_seq or 0):
                 # the message came before this server started or before the save was loaded: whether
                 # it already became an order is unknown (the used seq live in this process only)
@@ -900,19 +925,25 @@ class Core:
             if len(self.orders.get(h, ())) >= INBOX_MAX:
                 raise PartnerError("limit", f"the inbox holds {INBOX_MAX} open orders; tell the owner "
                                             "it is full")
+            if qid is not None:
+                # closed before anything is filed: a question answered twice is refused here
+                oid = f"o{self._order_n + 1}"
+                self.ledger().mutate(lambda d: L.answer(d, h, qid, oid))
             self._order_used[seq] = None
             while len(self._order_used) > ORDER_MEMORY:
                 self._order_used.popitem(last=False)
             self._order_n += 1
             order = {"id": f"o{self._order_n}", "said_seq": seq, "tick": tick, "size": sz,
                      "urgent": urg, "text": t, "owner_said": words}
+            if qid is not None:
+                order["answer_to"] = qid
             self.orders.setdefault(h, []).append(order)
             ev = {"seq": self.bridge.last_seq, "tick": self.bridge.last_tick, "helper": h,
                   "kind": "order", "data": dict(order), "loud": True}
-            for role in (R.PILOT, R.STRATEGIST):
+            for role in ((R.STRATEGIST,) if qid is not None else (R.PILOT, R.STRATEGIST)):
                 if (h, role) in self.cursors:     # roles that have called the server get woken
                     self._notice((h, role), dict(ev))
-            if sz == "large":
+            if sz == "large" and qid is None:
                 # the running package finishes its step and pauses: the new order goes first
                 try:
                     await self.packages.on_large_order(h, order)
@@ -959,6 +990,9 @@ class Core:
                 if any(o["id"] in want and o.get("size") != "large" for o in box):
                     # the pilot took a small order: its first act comes after this answer
                     self.packages.on_small_ack(h)
+                taken = self.orders_taken.setdefault(h, [])
+                taken.extend(dict(o) for o in box if o["id"] in want)
+                del taken[:-ORDERS_TAKEN_KEEP]
                 box[:] = [o for o in box if o["id"] not in want]
             out: dict = {"orders": [dict(o) for o in box]}
             if acked:
@@ -975,17 +1009,37 @@ class Core:
             led = self._ledgers[save] = L.Ledger(save)
         return led
 
-    async def op_ledger(self, helper, key, action="list", package=None, id=None, rev=None) -> dict:  # noqa: A002
+    async def op_ledger(self, helper, key, action="list", package=None, id=None, rev=None,  # noqa: A002
+                        text=None) -> dict:
         """``partner_ledger`` — the strategist's build packages of this helper (docs/MCP.md
         «Пакеты стройки»). ``list`` (every role): open packages without steps and the last finished
         ones; with ``id`` — that package in full. ``put`` (the strategist): a new package, the server
         starts it itself. ``resume`` (the strategist): a paused package goes back to the queue.
-        ``cancel`` (the pilot and the strategist): the package leaves, its running plan is cancelled."""
-        a = {"action": action, "package": package, "id": id, "rev": rev}
+        ``cancel`` (the pilot and the strategist): the package leaves, its running plan is cancelled.
+        ``note`` (the strategist): his one last note on the work, read by the voice in partner_brief.
+        ``ask`` (the strategist): a question to the owner; the voice gets ``strategist_question``."""
+        a = {"action": action, "package": package, "id": id, "rev": rev, "text": text}
 
         async def run(h):
-            act = V.enum("list", "put", "cancel", "resume")("action", action)
+            act = V.enum("list", "put", "cancel", "resume", "note", "ask")("action", action)
             led = self.ledger()
+            if act in ("note", "ask"):
+                for f, v in (("package", package), ("id", id), ("rev", rev)):
+                    if v is not None:
+                        raise V.bad(f, f"not with action={act}")
+                tick = self.bridge.last_tick
+                if act == "note":
+                    t = V.check_line("text", text, L.NOTE_MAX)
+                    n = led.mutate(lambda d: L.set_note(d, h, t, tick))
+                    return self._stamp({"note": n})
+                t = V.check_line("text", text, L.QUESTION_MAX)
+                q = led.mutate(lambda d: L.ask(d, h, t, tick))
+                self.packages.notify(h, "strategist_question", {"id": q["id"], "text": q["text"]},
+                                     roles=(R.VOICE,))
+                return self._stamp({"question": q,
+                                    "open": len(L.open_questions(led.data(), h))})
+            if text is not None:
+                raise V.bad("text", "only with action=note or ask")
             if act != "put" and package is not None:
                 raise V.bad("package", "only with action=put")
             if act == "put" and id is not None:
@@ -1003,6 +1057,8 @@ class Core:
                     "save": led.save, "rev": d["rev"],
                     "packages": [L.compact(p) for p in d["packages"] if p.get("helper") == h],
                     "history": [p for p in d["history"] if p.get("helper") == h],
+                    "note": L.note_of(d, h),
+                    "questions": L.questions_of(d, h),
                 })
             if act == "put":
                 if package is None:

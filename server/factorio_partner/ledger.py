@@ -12,7 +12,9 @@ restart of the server:
 ``packages`` — open packages (``queued``, ``posting``, ``running``, ``pausing``, ``paused``,
 ``verifying``);
 ``history`` — the last finished ones (``verified``, ``unmet``, ``failed``, ``cancelled``), without
-steps. Every change goes through ``mutate``: a lock file, a fresh read of the file, the change, an
+steps; ``notes`` — the strategist's last note on the work, one per helper; ``questions`` — his
+questions to the owner per helper (``open`` / ``answered``), ``qnext`` numbers them. Notes and
+questions do not move ``rev``: ``rev`` guards the packages only. Every change goes through ``mutate``: a lock file, a fresh read of the file, the change, an
 atomic write — two server processes (two sessions on one save) never lose each other's change.
 The bridge of one process at a time drives the packages (``take_lease``).
 """
@@ -43,6 +45,14 @@ PRIORITY_RANK = {"now": 0, "next": 1, "later": 2}
 LOCK_WAIT = 3.0             # s: how long a change waits for the lock of another process
 LOCK_STALE = 10.0           # s: a lock file older than this was left by a dead process
 LEASE_TTL = 60.0            # s: the bridge of one process drives the packages of a save (renewed per helper)
+NOTE_MAX = 200              # characters of the strategist's note on the work
+QUESTION_MAX = 200          # characters of a question to the owner
+QUESTIONS_OPEN_MAX = 5      # open questions per helper
+QUESTIONS_KEEP = 5          # answered questions kept per helper
+REMIND_AFTER = 10 * 60.0    # s: an open question unanswered this long is reminded once
+_SIDE = ("notes", "questions", "qnext")      # parts of the file that do not move rev
+
+now = time.time             # wall clock of notes and questions: it outlives a restart (tests patch it)
 
 
 def path_for(save: str) -> Path:
@@ -156,9 +166,11 @@ class Ledger:
             data = self._read()
             data = json.loads(json.dumps(data))          # fn works on a copy: a raise changes nothing
             before = json.dumps(data, sort_keys=True)
+            before_pk = _packages_part(data)
             out = fn(data)
             if json.dumps(data, sort_keys=True) != before:
-                data["rev"] = int(data.get("rev", 0)) + 1
+                if _packages_part(data) != before_pk:
+                    data["rev"] = int(data.get("rev", 0)) + 1
                 _prune(data)
                 tmp = self.path.with_name(FILE + f".{os.getpid()}.tmp")
                 tmp.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
@@ -188,6 +200,10 @@ class Ledger:
         except (OSError, PartnerError):
             return False
         return True
+
+def _packages_part(data: dict) -> str:
+    return json.dumps({k: v for k, v in data.items() if k not in _SIDE and k != "rev"}, sort_keys=True)
+
 
 def _prune(data: dict) -> None:
     """Finished packages leave ``packages`` for ``history`` (without steps); history keeps the last ones."""
@@ -224,3 +240,81 @@ def next_up(pkgs: list[dict]) -> list[dict]:
     """Queued packages of one helper in the order they start: priority, then age."""
     q = [p for p in pkgs if p.get("status") == "queued"]
     return sorted(q, key=lambda p: (PRIORITY_RANK.get(p.get("priority"), 1), p.get("n", 0)))
+
+
+# ---------------------------------------------------------------- the strategist's note and questions
+def _side(data: dict, part: str) -> dict:
+    v = data.get(part)
+    if not isinstance(v, dict):
+        v = data[part] = {}
+    return v
+
+
+def note_of(data: dict, helper: str) -> dict | None:
+    v = data.get("notes")
+    n = v.get(helper) if isinstance(v, dict) else None
+    return n if isinstance(n, dict) and isinstance(n.get("text"), str) else None
+
+
+def set_note(data: dict, helper: str, text: str, tick: int | None) -> dict:
+    """The strategist's one last note on the work of a helper: a new one replaces the old."""
+    n = {"text": text, "at": now(), "tick": tick}
+    _side(data, "notes")[helper] = n
+    return dict(n)
+
+
+def questions_of(data: dict, helper: str) -> list[dict]:
+    v = data.get("questions")
+    qs = v.get(helper) if isinstance(v, dict) else None
+    return [q for q in qs if isinstance(q, dict) and isinstance(q.get("id"), str)] if isinstance(qs, list) else []
+
+
+def open_questions(data: dict, helper: str) -> list[dict]:
+    return [q for q in questions_of(data, helper) if q.get("status") == "open"]
+
+
+def ask(data: dict, helper: str, text: str, tick: int | None) -> dict:
+    """A new open question of the strategist to the owner (``q<N>``); at most QUESTIONS_OPEN_MAX open."""
+    if len(open_questions(data, helper)) >= QUESTIONS_OPEN_MAX:
+        raise PartnerError("limit", f"at most {QUESTIONS_OPEN_MAX} open questions per helper; wait for "
+                                    "the owner's answers")
+    n = int(data.get("qnext", 1)) if isinstance(data.get("qnext"), int) else 1
+    data["qnext"] = n + 1
+    q = {"id": f"q{n}", "text": text, "status": "open", "at": now(), "tick": tick}
+    qs = _side(data, "questions").setdefault(helper, [])
+    qs.append(q)
+    _keep_questions(data, helper)
+    return dict(q)
+
+
+def answer(data: dict, helper: str, qid: str, order_id: str) -> dict:
+    """Close an open question: the owner's answer came as the order ``order_id``."""
+    for q in questions_of(data, helper):
+        if q["id"] == qid:
+            if q.get("status") != "open":
+                raise PartnerError("bad_args", f"answer_to: question {qid} is already {q.get('status')}")
+            q.update(status="answered", answer=order_id, answered_at=now())
+            _keep_questions(data, helper)
+            return dict(q)
+    raise PartnerError("not_found", f"answer_to: no question {qid}")
+
+
+def due_reminders(data: dict, helper: str, at: float | None = None) -> list[dict]:
+    """Open questions unanswered REMIND_AFTER seconds and not reminded yet: they are marked reminded."""
+    t = now() if at is None else at
+    out = []
+    for q in open_questions(data, helper):
+        if not q.get("reminded") and isinstance(q.get("at"), (int, float)) and t - q["at"] >= REMIND_AFTER:
+            q["reminded"] = t
+            out.append(dict(q))
+    return out
+
+
+def _keep_questions(data: dict, helper: str) -> None:
+    qs = _side(data, "questions").get(helper)
+    if not isinstance(qs, list):
+        return
+    opened = [q for q in qs if isinstance(q, dict) and q.get("status") == "open"]
+    closed = [q for q in qs if isinstance(q, dict) and q.get("status") != "open"][-QUESTIONS_KEEP:]
+    keep = {id(q) for q in opened + closed}
+    qs[:] = [q for q in qs if id(q) in keep]

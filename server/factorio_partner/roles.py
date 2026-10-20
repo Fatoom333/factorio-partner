@@ -41,7 +41,9 @@ READ = _READS | _READ_FORMS
 #   "partner_act.dry_run"  — a trial run of an action that only plans (DRY_RUN_ACTS) with
 #                            args.dry_run exactly true and no replace: the mod changes nothing;
 #   "partner_ledger.cancel" — take a build package off (the pilot may drop one the body cannot do);
-#                            "partner_ledger.write" (put, resume) is the strategist's alone.
+#                            "partner_ledger.write" (put, resume) is the strategist's alone;
+#   "partner_ledger.note"  — the strategist's note on the work (the voice reads it in partner_brief);
+#   "partner_ledger.ask"   — the strategist's question to the owner (the voice asks it in chat).
 DRY_RUN_ACTS = frozenset({"plan_mining", "plan_belt", "build_blueprint", "build_layout",
                           "connect_entities"})
 _PILOT_WRITES = frozenset({
@@ -53,13 +55,15 @@ ALLOWED: dict[str, frozenset[str]] = {
     VOICE: READ | {"partner_say", "partner_order", "partner_cancel.all", "partner_notes.rules"},
     PILOT: READ | _PILOT_WRITES,
     STRATEGIST: READ | {"partner_plan", "partner_inbox.write", "partner_act.dry_run",
-                        "partner_ledger.write", "partner_ledger.cancel"},
+                        "partner_ledger.write", "partner_ledger.cancel", "partner_ledger.note",
+                        "partner_ledger.ask"},
 }
 
 # which events a role's partner_wait hands over (docs/MCP.md «Роли»); None — every event, as before
 WAKE: dict[str, frozenset[str] | None] = {
     PILOT: None,
-    VOICE: frozenset({"player_said", "owner_stop", "owner_resume", "game_reloaded", "budget_low"}),
+    VOICE: frozenset({"player_said", "owner_stop", "owner_resume", "game_reloaded", "budget_low",
+                      "strategist_question"}),
     STRATEGIST: frozenset({"order", "plan_done", "owner_stop", "owner_resume", "game_reloaded",
                            "died", "helper_lost", "package_verified", "package_unmet"}),
 }
@@ -92,7 +96,9 @@ def capability(tool: str, args: dict | None) -> str:
         act = a.get("action", "list")
         if act == "list":
             return tool
-        return tool + (".cancel" if act == "cancel" else ".write")
+        if act in ("cancel", "note", "ask"):
+            return tool + "." + act
+        return tool + ".write"
     return tool
 
 
@@ -125,7 +131,7 @@ def budget_gate(level: str, role: str, tool: str, args: dict | None = None) -> N
 
 _WRITE_FORM = {"partner_notes": "add/remove/confirm", "partner_hold": "release",
                "partner_reflex": "set", "partner_inbox": "ack", "partner_cancel": "all",
-               "partner_act": "dry_run", "partner_ledger": "put/resume/cancel"}
+               "partner_act": "dry_run", "partner_ledger": "put/resume/cancel/note/ask"}
 
 
 def keys_of(entry: Any, min_key: int) -> dict[str, str]:

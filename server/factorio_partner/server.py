@@ -294,13 +294,15 @@ def build_server(core: Core, admin: bool = False, packages: bool = True) -> Fast
                             text: Annotated[str, Field(description="поручение своими словами, одной строкой ≤ 300 символов")],
                             size: Annotated[Literal["small", "large"], Field(
                                 description="small — одно-два действия (пилот сам); large — стройка, проект (стратег)")],
-                            urgent: bool = False) -> dict:
+                            urgent: bool = False,
+                            answer_to: Annotated[str | None, Field(
+                                description="id вопроса стратега (q<N>), на который этим сообщением ответил хозяин; тогда size large")] = None) -> dict:
         """(голос) Положить поручение хозяина во входящие помощника. Только со ссылкой на его
         настоящее сообщение: сервер сам читает это событие у мода (хозяин, не старше 10 минут, мод не
         ответил на него как на слово); одно сообщение — одно поручение. Слова хозяина приходят в
         поручении полем owner_said. Ответ {order:{id, said_seq, tick, size, urgent, text, owner_said},
         open}."""
-        return await _run(core.op_order(helper, key, said_seq, text, size, urgent))
+        return await _run(core.op_order(helper, key, said_seq, text, size, urgent, answer_to))
 
     @mcp.tool()
     async def partner_inbox(helper: Helper, key: Key,
@@ -313,22 +315,27 @@ def build_server(core: Core, admin: bool = False, packages: bool = True) -> Fast
 
     @mcp.tool()
     async def partner_ledger(helper: Helper, key: Key,
-                             action: Annotated[Literal["list", "put", "cancel", "resume"], Field(
+                             action: Annotated[Literal["list", "put", "cancel", "resume", "note", "ask"], Field(
                                  description="list — пакеты помощника (с id — один целиком); put — новый пакет "
                                              "(стратег); resume — вернуть приостановленный в очередь (стратег); "
-                                             "cancel — снять пакет (пилот и стратег)")] = "list",
+                                             "cancel — снять пакет (пилот и стратег); note — заметка о ходе работы "
+                                             "(стратег, одна последняя); ask — вопрос хозяину (стратег)")] = "list",
                              package: Annotated[dict[str, Any] | None, Field(
                                  description="для put: {name, anchor, priority?, steps, on_fail?, verify, note?, order?}")] = None,
                              id: Annotated[str | None, Field(  # noqa: A002
                                  description="id пакета (pk<N>) для list/cancel/resume")] = None,
                              rev: Annotated[int | None, Field(
-                                 description="для put: rev, который ты читал; изменилось — отказ")] = None) -> dict:
+                                 description="для put: rev, который ты читал; изменилось — отказ")] = None,
+                             text: Annotated[str | None, Field(
+                                 description="для note и ask: одна строка ≤ 200 символов")] = None) -> dict:
         """Пакеты стройки: именованный план из шагов act (как действие plan) с якорем, приоритетом
         (now/next/later) и 1–3 проверками (stock, rate, ghosts). Пишет только стратег; сервер сам ставит
         пакет телу, когда оно свободно и хозяин не держит, и через 2 минуты игры после plan_done
         проверяет результат: события package_verified / package_unmet / package_failed. Активных
-        пакетов у помощника ≤ 2, пакет ≤ 8 КБ."""
-        return await _run(core.op_ledger(helper, key, action, package, id, rev))
+        пакетов у помощника ≤ 2, пакет ≤ 8 КБ. note — заметка о ходе работы (голос пересказывает её
+        хозяину из partner_brief.work); ask — вопрос хозяину (≤ 5 открытых): голос получает событие
+        strategist_question, ответ хозяина приходит во входящие поручением с answer_to."""
+        return await _run(core.op_ledger(helper, key, action, package, id, rev, text))
 
     @mcp.tool()
     async def partner_plan(helper: Helper, key: Key, task: Literal["mining", "block"] = "mining",

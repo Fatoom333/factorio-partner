@@ -166,9 +166,30 @@ class PackageBridge:
         self._state_at.clear()
         self.reconcile = True
 
+    def remind_questions(self) -> None:
+        """A question of the strategist unanswered for 10 minutes: the voice is woken once more (only a
+        voice that has called the server: until then it sees the question in partner_brief)."""
+        led = self.ledger()
+        qs = led.data().get("questions")
+        names = [h for h, v in qs.items() if isinstance(v, list) and L.HELPER_RE.match(h)
+                 and (h, R.VOICE) in self.core.cursors] if isinstance(qs, dict) else []
+        for h in names:
+            t = L.now()
+            if not any(not q.get("reminded") and isinstance(q.get("at"), (int, float))
+                       and t - q["at"] >= L.REMIND_AFTER for q in L.open_questions(led.data(), h)):
+                continue
+            for q in led.mutate(lambda d, h=h: L.due_reminders(d, h)):
+                self.notify(h, "strategist_question", {"id": q["id"], "text": q["text"], "remind": True,
+                                                       "waiting_s": int(L.now() - q["at"])},
+                            roles=(R.VOICE,))
+
     async def step(self) -> None:
         async with self._lock:
             led = self.ledger()
+            try:
+                self.remind_questions()
+            except PartnerError as e:
+                log.info("question reminders: %s", e.code)
             helpers = sorted(led.helpers())
             if not helpers or not led.take_lease(self.owner):
                 return
@@ -425,6 +446,8 @@ class PackageBridge:
         if at is not None and tick is not None and 0 <= tick - at < ACK_GRACE_TICKS:
             return True
         for o in self.core.orders.get(h, ()):
+            if o.get("answer_to"):
+                continue                     # an answer to the strategist's question is no new work
             ot = o.get("tick")
             if tick is not None and _is_int(ot) and tick - ot > ORDER_GATE_TICKS:
                 continue
