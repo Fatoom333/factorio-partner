@@ -11,6 +11,7 @@ from factorio_partner.core import Core
 from factorio_partner.errors import PartnerError
 
 from conftest import KEY, make_bridge
+from fake_rcon import FakeModError
 
 VKEY = "v" * 40
 SKEY = "s" * 40
@@ -535,3 +536,51 @@ async def test_server_runs_the_bridge_while_it_lives(core, monkeypatch):
     async with srv._mcp_server.lifespan(srv._mcp_server):
         await asyncio.wait_for(ran.wait(), 1)
     assert stopped.is_set()
+
+
+# ---------------------------------------------------------------- the owner's hold and packages
+
+async def test_held_body_tells_the_voice_once_that_the_package_waits(core, fake, body):
+    await core.op_brief("h1", VKEY)
+    body.hold = {"h1": {"kind": "come", "tick": 1, "seq": 1}}
+    p = await put(core, name="ЛЭП")
+    await core.packages.step()
+    await core.packages.step()
+    assert not body.acts
+    w = await core.op_wait("h1", VKEY, timeout=0)
+    waits = [e for e in w["events"] if e["kind"] == "package_waits"]
+    assert len(waits) == 1
+    assert waits[0]["data"]["package"] == p["id"] and waits[0]["data"]["hold"] == "come"
+    body.hold = {}
+    await core.packages.step()
+    assert len(body.acts) == 1
+
+
+async def test_new_order_lifts_the_hold_of_its_body(core, fake, body):
+    await core.op_brief("h1", VKEY)
+    body.hold = {"h1": {"kind": "come", "tick": 1, "seq": 1}}
+    lifted = []
+
+    def owner_hold(a, e):
+        if a.get("release"):
+            lifted.append((e.get("helper"), a["seq"]))
+            body.hold = {}
+            return {"released": [e.get("helper")]}
+        return {"hold": body.hold}
+    fake.mod.handlers["owner_hold"] = owner_hold
+    ev = fake.mod.emit("player_said", {"player": "Owner", "owner": True, "text": "веди лэп"}, helper=None)
+    r = await core.op_order("h1", VKEY, ev["seq"], "вести ЛЭП", "large")
+    assert lifted == [("h1", ev["seq"])] and r["released"] == ["h1"]
+
+
+async def test_hold_the_mod_keeps_is_no_error_for_the_order(core, fake, body):
+    await core.op_brief("h1", VKEY)
+
+    def owner_hold(a, e):
+        if a.get("release"):
+            raise FakeModError("bad_args", "args.seq: the message is older than the hold")
+        return {"hold": {}}
+    fake.mod.handlers["owner_hold"] = owner_hold
+    ev = fake.mod.emit("player_said", {"player": "Owner", "owner": True, "text": "принеси железо"}, helper=None)
+    r = await core.op_order("h1", VKEY, ev["seq"], "железо", "small")
+    assert "released" not in r and r["order"]["id"]
