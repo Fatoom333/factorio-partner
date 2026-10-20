@@ -6,6 +6,7 @@
 local owner = require("scripts.core.owner")
 local util = require("scripts.core.util")
 local path = require("scripts.lib.path")
+local ops = require("scripts.core.ops")
 
 local M = {}
 M.name = "follow"
@@ -16,10 +17,20 @@ M.schema = {
 M.HYSTERESIS = 1 -- стоим рядом, пока хозяин не дальше distance + 1
 -- Хозяин близко — идём к нему напрямую, без запроса пути: иначе, догнав его, помощник стоял, пока
 -- движок считал новый маршрут (живой прогон 14.10). Прямо не идётся (не сдвинулся DIRECT_STALL тиков)
--- — DIRECT_COOLDOWN тиков обычный поиск пути.
+-- — обычный поиск пути (модуль пути: пара широкий/тонкий, выход на свободную клетку, выбирание из
+-- зоны), и он ведёт до конца: напрямую — снова только после того, как подход дошёл. Снимать подход
+-- прямым ходом раньше нельзя: вместе с ним пропадает его состояние выбирания, и тело в проходе между
+-- постройками раз за разом упирается в ту же стену, не получая ни маршрута, ни честного отказа.
 M.DIRECT = 8
 M.DIRECT_STALL = 20
-M.DIRECT_COOLDOWN = 300
+-- Ответ хозяину в чат, если follow от его слова («иди сюда») кончился неудачей пути.
+M.SAY_FAILED = {
+  path_failed = "Не могу пройти к тебе: не нахожу дороги. Стою.",
+  stuck = "Не могу пройти к тебе: застрял между постройками. Стою.",
+  not_charted = "Не могу пройти к тебе: дорога идёт по неоткрытой карте. Стою.",
+  not_reachable = "Не могу подойти: ты на другой поверхности. Стою.",
+}
+M.OWNER_REQ = "owner_words"
 
 local function stop_walk(e)
   local ws = e.walking_state
@@ -60,7 +71,7 @@ function M.tick(task, ctx)
     task.progress_tick = ctx.tick -- законно стоим рядом: ядро не снимет задачу со stuck
     return nil
   end
-  if d <= M.DIRECT and ctx.tick >= (task.direct_off_until or 0) then
+  if d <= M.DIRECT and not task.direct_blocked then
     if task.approach ~= nil then ctx.cancel_approach(task) end
     local dr = task.direct
     if dr == nil then
@@ -69,9 +80,9 @@ function M.tick(task, ctx)
     elseif util.dist(pos, dr) >= 0.1 then
       dr.x, dr.y, dr.tick = pos.x, pos.y, ctx.tick
     elseif ctx.tick - dr.tick >= M.DIRECT_STALL then
-      -- прямо не идётся (стена, машина): дальше — обычный поиск пути
+      -- прямо не идётся (стена, машина): дальше — обычный поиск пути, пока подход не дойдёт
       task.direct = nil
-      task.direct_off_until = ctx.tick + M.DIRECT_COOLDOWN
+      task.direct_blocked = true
       stop_walk(e)
     end
     if task.direct ~= nil then
@@ -88,14 +99,20 @@ function M.tick(task, ctx)
   local r = ctx.approach(task, goal, dist)
   if r == nil then return nil end
   if r == true then
+    task.direct_blocked = nil -- дошли маршрутом: дальше снова можно напрямую
     task.progress_tick = ctx.tick
     return nil
   end
   return r
 end
 
-function M.stop(task, ctx)
+function M.stop(task, ctx, res)
   ctx.cancel_approach(task)
+  -- follow от слова хозяина кончился неудачей пути — сказать ему, а не стоять молча
+  if task.req == M.OWNER_REQ and type(res) == "table" and res.status == "failed" then
+    local text = M.SAY_FAILED[res.code]
+    if text ~= nil then pcall(ops.say, { text = text }, { helper_id = task.helper, entity = ctx.entity }) end
+  end
 end
 
 return M

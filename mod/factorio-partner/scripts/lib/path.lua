@@ -20,6 +20,8 @@
 --     extends,            -- маршрут кончился далеко от цели → новый запрос (≤ MAX_EXTENDS)
 --     best_dist, last_move_tick, last_pos,
 --     noted,              -- шумное stuck об этом перепланировании уже отправлено (сброс — когда пришёл маршрут)
+--     center, centered,   -- шаг на центр свободной клетки (state "center") и что он уже был
+--     escape, start_escaped, zones, -- выбирание из зоны
 --     goal,               -- цель, под которую строился маршрут (настоящая, без смещения обхода)
 --     distance, plan_tick, retry_tick, goal_moved }
 --
@@ -89,6 +91,16 @@ M.ESCAPE_ORDER = { 2, -2, 4, -4, 6, -6, 8, 0 } -- сдвиг от нужного
 -- следующей точке. Пока цель движется (follow), отсчёт сбрасывается.
 M.NO_PROGRESS_TICKS = 180
 M.PROGRESS_MOVE = 0.3
+-- Выход на свободную клетку. Пути нет ни широкого, ни тонкого, а тело стоит центром на клетке постройки
+-- (Squeak Through 2 уменьшает рамки: тело, идущее напрямую, заходит в щель между ножками литейной;
+-- движок оттуда не строит путь ни с какой коробкой). Выбирание из зоны тут не помогает: в проходе между
+-- рядами построек тело скользит вдоль ряда, не сходя с его клеток, и новый запрос снова падает (живой
+-- прогон, Вулканус, «иди ко мне» из прохода между литейными). Поэтому сначала — шаг на центр ближайшей
+-- свободной клетки (find_non_colliding_position с выравниванием по клетке, не дальше CENTER_RADIUS):
+-- дошло — путь заново (снова парой); не дошло за CENTER_TICKS или упёрлось — обычное выбирание из зоны.
+M.CENTER_RADIUS = 2
+M.CENTER_MIN = 0.15   -- центр ближе — тело и так на нём
+M.CENTER_TICKS = 120
 
 local floor, abs, max, sqrt = math.floor, math.abs, math.max, math.sqrt
 local TAN_22_5 = 0.41421356237
@@ -344,14 +356,40 @@ local function good(r)
     and type(r.waypoints) == "table" and r.waypoints[1] ~= nil
 end
 
---- Пути нет ни широкого, ни тонкого. Если ещё не выбирались в этой задаче — сначала выбраться пешком
---- из зоны (как при застревании), потом искать заново (например, follow напрямую завёл тело в
---- щель между ножками литейной — Squeak Through 2; оттуда движок не строит путь ни с какой коробкой,
---- хотя шагнуть можно). Не помогло — честный path_failed.
+--- Пути нет ни широкого, ни тонкого. Сначала (раз за задачу) — шаг на центр ближайшей свободной
+--- клетки (см. CENTER_RADIUS), потом — выбраться пешком из зоны (как при застревании), каждый раз
+--- искать заново (например, follow напрямую завёл тело в щель между ножками литейной — Squeak
+--- Through 2; оттуда движок не строит путь ни с какой коробкой, хотя шагнуть можно). Не помогло —
+--- честный path_failed.
+--- Центр ближайшей свободной для тела клетки (см. CENTER_RADIUS) или nil.
+local function free_tile_center(e, pos)
+  local ok, c = pcall(function()
+    return e.surface.find_non_colliding_position(e.name, pos, M.CENTER_RADIUS, 0.5, true)
+  end)
+  if not ok or c == nil then return nil end
+  c = util.xy(c)
+  if type(c.x) ~= "number" or type(c.y) ~= "number" then return nil end
+  local d = util.dist(pos, c)
+  if d < M.CENTER_MIN or d > M.CENTER_RADIUS + 1 then return nil end
+  return c
+end
+
 local function no_path(task, ctx, st, pos)
   -- рефлекс бегства (req "reflex:…") сам переберёт другие точки отхода: гулять рядом с врагом незачем
   if st.start_escaped or task.req == "reflex:flee" then
     return give_up(task, ctx, "path_failed", "no path to the goal", pos)
+  end
+  if not st.centered then
+    st.centered = true
+    local c = free_tile_center(ctx.entity, pos)
+    if c ~= nil then
+      st.tight, st.thin, st.unstick = nil, nil, nil
+      st.state = "center"
+      st.center = { x = c.x, y = c.y, start = ctx.tick, moved_pos = { x = pos.x, y = pos.y }, moved_tick = ctx.tick }
+      noisy_stuck(task, ctx, st, pos, "no_progress")
+      st.last_move_tick = ctx.tick
+      return nil
+    end
   end
   st.start_escaped = true
   st.tight, st.thin, st.unstick = nil, nil, nil
@@ -538,6 +576,36 @@ function M.step(task, ctx, goal_pos, distance)
       st.req_goal = nil
       request(task, ctx, st, goal, goal, false)
     end
+    return nil
+  end
+
+  -- шаг на центр свободной клетки (см. CENTER_RADIUS)
+  if st.center ~= nil then
+    local c = st.center
+    st.last_move_tick = tick
+    if floor(pos.x) == floor(c.x) and floor(pos.y) == floor(c.y) and util.dist(pos, c) <= arrive_threshold(e) then
+      -- на свободной клетке: путь заново, снова парой широкий + тонкий
+      st.center = nil
+      stop_walking(e)
+      st.paired = nil
+      st.req_goal = nil
+      st.last_pos = pos
+      request(task, ctx, st, goal, goal, false)
+      return nil
+    end
+    if util.dist(pos, c.moved_pos) >= M.STUCK_MOVE then
+      c.moved_pos = { x = pos.x, y = pos.y }
+      c.moved_tick = tick
+    end
+    if tick - c.start >= M.CENTER_TICKS or tick - c.moved_tick >= M.ESCAPE_STEP_TICKS then
+      -- до клетки не дойти: обычное выбирание из зоны
+      st.center = nil
+      st.start_escaped = true
+      st.state = "escape"
+      escape_start(task, ctx, st, e, pos, goal, tick)
+      return nil
+    end
+    walk_towards(e, pos, c)
     return nil
   end
 

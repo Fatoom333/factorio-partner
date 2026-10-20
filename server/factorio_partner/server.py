@@ -11,6 +11,7 @@ import argparse
 import asyncio
 import contextlib
 import logging
+import os
 import sys
 from typing import Annotated, Any, Literal
 
@@ -411,7 +412,14 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     setup_logging(cfg)
     core = Core(cfg)
-    build_server(core, admin=ns.admin).run("stdio")
+    log = logging.getLogger("factorio_partner.server")
+    log.info("server start pid=%s admin=%s", os.getpid(), ns.admin)
+    try:
+        build_server(core, admin=ns.admin).run("stdio")
+    except BaseException as e:   # stdin closed by the client, Ctrl+C, a crash: the reason goes to server.log
+        log.exception("server stop: %s", type(e).__name__)
+        raise
+    log.info("server stop: stdin closed by the client")
     return 0
 
 
