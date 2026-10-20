@@ -418,3 +418,121 @@ def check_order_text(v: Any) -> str:
         raise PartnerError("limit", f"text: at most {ORDER_TEXT_MAX} characters")
     t = t.replace("«", '"').replace("»", '"')
     return re.sub(r"(?i)хозяин\s*:", "хозяин -", t)
+
+
+# ---- build packages (MCP.md «Пакеты стройки») ---------------------------------------
+
+PACKAGE_MAX = 8 * 1024             # the whole package as JSON
+PACKAGE_NAME_MAX = 60
+PACKAGE_NOTE_MAX = 300
+PACKAGE_PRIORITIES = ("now", "next", "later")
+PACKAGE_CHECKS_MAX = 3
+CHECK_RADIUS_DEFAULT = 32
+CHECK_VALUE_MAX = 10_000_000
+ORDER_ID_RE = re.compile(r"^o[0-9]{1,9}$")
+_PACKAGE_FIELDS = ("name", "anchor", "priority", "steps", "on_fail", "verify", "note", "order")
+_CHECK_FIELDS = {
+    "stock": {"kind", "item", "at_least", "radius", "center"},
+    "rate": {"kind", "item", "at_least", "surface"},
+    "ghosts": {"kind", "at_most", "radius", "center"},
+}
+
+
+def _line(field: str, v: Any, limit: int) -> str:
+    """One line of text the voice may read to the owner: « » become ``"`` (as in orders)."""
+    if not isinstance(v, str):
+        raise bad(field, "must be a string")
+    t = " ".join(v.split())
+    if not t:
+        raise bad(field, "must not be empty")
+    if len(t) > limit:
+        raise PartnerError("limit", f"{field}: at most {limit} characters")
+    t = t.replace("«", '"').replace("»", '"')
+    return re.sub(r"(?i)хозяин\s*:", "хозяин -", t)
+
+
+# a package runs on the body without the pilot's turn: only building steps. Nothing that takes from or
+# breaks the owner's buildings (deconstruct, extract, collect, pickup, mine{target}, rotate,
+# set_recipe), no superforced or partial blueprint (only with the owner's word, given to the pilot)
+PACKAGE_DO = ("walk", "approach", "get_items", "craft", "mine", "insert", "place", "build_blueprint",
+              "build_ghosts", "plan_mining", "plan_belt", "wait")
+
+
+def package_steps(field: str, v: Any) -> list:
+    """``package.steps``: ``plan_steps`` limited to ``PACKAGE_DO``."""
+    out = plan_steps(field, v)
+    for i, st in enumerate(out, 1):
+        f = f"{field}[{i}]"
+        do, args = st["do"], st["args"]
+        if do not in PACKAGE_DO:
+            raise bad(f"{f}.do", f"{do} is not a building step; a package allows: " + ", ".join(PACKAGE_DO))
+        if do == "mine" and "target" in args:
+            raise bad(f"{f}.args.target", "a package mines only by resource or item")
+        if do == "build_blueprint" and (args.get("force") == "superforced" or args.get("partial")):
+            raise bad(f"{f}.args", "superforced and partial need the owner's word: not in a package")
+    return out
+
+
+def check_package_check(field: str, v: Any) -> dict:
+    """One check of ``verify``: ``stock`` — at least N of an item in the stores around ``center``
+    (the anchor by default); ``rate`` — at least N made per minute on the surface (statistics of the
+    last minute); ``ghosts`` — at most N ghosts left around ``center``."""
+    if not isinstance(v, dict):
+        raise bad(field, "must be an object {kind, ...}")
+    kind = enum(*_CHECK_FIELDS)(f"{field}.kind", v.get("kind"))
+    for k in v:
+        if k not in _CHECK_FIELDS[kind]:
+            raise bad(f"{field}.{k}", f"unknown field for {kind}; allowed: "
+                      + ", ".join(sorted(_CHECK_FIELDS[kind])))
+    out: dict = {"kind": kind}
+    if kind in ("stock", "rate"):
+        if "item" not in v:
+            raise bad(f"{field}.item", "required")
+        out["item"] = name(f"{field}.item", v["item"])
+        if "at_least" not in v:
+            raise bad(f"{field}.at_least", "required")
+        out["at_least"] = number(0, CHECK_VALUE_MAX)(f"{field}.at_least", v["at_least"])
+        if out["at_least"] <= 0:
+            raise bad(f"{field}.at_least", "must be > 0")
+    if kind == "ghosts":
+        out["at_most"] = integer(0, CHECK_VALUE_MAX)(f"{field}.at_most", v.get("at_most", 0))
+    if kind in ("stock", "ghosts"):
+        out["radius"] = number(1, AREA_SIDE_MAX)(f"{field}.radius", v.get("radius", CHECK_RADIUS_DEFAULT))
+        if "center" in v:
+            out["center"] = pos(f"{field}.center", v["center"])
+    if kind == "rate" and "surface" in v:
+        out["surface"] = name(f"{field}.surface", v["surface"])
+    return out
+
+
+def check_package(v: Any) -> dict:
+    """``partner_ledger{action:"put", package}``: a named plan of ``plan`` steps with an anchor, a
+    priority and 1..3 checks; the whole package ≤ 8 KB of JSON. Each step is checked as its own act
+    (``plan_steps``), so a package the server accepts is a plan the mod would accept; only building
+    steps (``PACKAGE_DO``)."""
+    if not isinstance(v, dict):
+        raise bad("package", "must be an object")
+    if json_size(v) > PACKAGE_MAX:
+        raise PartnerError("limit", f"package: larger than {PACKAGE_MAX} bytes of JSON")
+    for k in v:
+        if k not in _PACKAGE_FIELDS:
+            raise bad(f"package.{k}", "unknown field; allowed: " + ", ".join(_PACKAGE_FIELDS))
+    for k in ("name", "anchor", "steps", "verify"):
+        if k not in v:
+            raise bad(f"package.{k}", "required")
+    out: dict = {"name": _line("package.name", v["name"], PACKAGE_NAME_MAX),
+                 "anchor": pos("package.anchor", v["anchor"]),
+                 "priority": enum(*PACKAGE_PRIORITIES)("package.priority", v.get("priority", "next")),
+                 "steps": package_steps("package.steps", v["steps"]),
+                 "on_fail": enum("stop", "continue")("package.on_fail", v.get("on_fail", "stop"))}
+    checks = v["verify"]
+    if not isinstance(checks, list) or not 1 <= len(checks) <= PACKAGE_CHECKS_MAX:
+        raise bad("package.verify", f"must be a list of 1..{PACKAGE_CHECKS_MAX} checks")
+    out["verify"] = [check_package_check(f"package.verify[{i}]", c) for i, c in enumerate(checks, 1)]
+    if "note" in v:
+        out["note"] = _line("package.note", v["note"], PACKAGE_NOTE_MAX)
+    if "order" in v:
+        if not isinstance(v["order"], str) or not ORDER_ID_RE.match(v["order"]):
+            raise bad("package.order", "must be an order id from partner_inbox (o<N>)")
+        out["order"] = v["order"]
+    return out

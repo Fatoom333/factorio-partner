@@ -72,8 +72,10 @@ def short_name(name: str) -> str:
     return name.rsplit("__", 1)[-1] if "__" in name else name
 
 
-def parse_lines(lines: Iterable[str], gap_s: float = GAP_S) -> Dict[str, Any]:
-    """Разобрать строки журнала → словарь показателей (см. docstring модуля)."""
+def parse_lines(lines: Iterable[str], gap_s: float = GAP_S, until: Optional[float] = None) -> Dict[str, Any]:
+    """Разобрать строки журнала → словарь показателей (см. docstring модуля).
+    `until` — метка времени (секунды с эпохи): строки позже неё не считаются (смена, которую оборвали
+    остановкой стенда, не должна копить ошибки о мёртвом соединении)."""
     turns: Dict[str, Dict[str, int]] = {}
     anon_turns = 0
     calls: Dict[str, str] = {}
@@ -99,6 +101,8 @@ def parse_lines(lines: Iterable[str], gap_s: float = GAP_S) -> Dict[str, Any]:
             skipped += 1
             continue
         ts = _parse_time(row.get("timestamp"))
+        if until is not None and ts is not None and ts > until:
+            continue
         if ts is not None:
             stamps.append(ts)
         msg = row.get("message")
@@ -167,9 +171,14 @@ def parse_lines(lines: Iterable[str], gap_s: float = GAP_S) -> Dict[str, Any]:
     }
 
 
-def parse_file(path: str, gap_s: float = GAP_S) -> Dict[str, Any]:
+def parse_time(value: Any) -> Optional[float]:
+    """ISO-время → секунды с эпохи (None, если не разобрать)."""
+    return _parse_time(value)
+
+
+def parse_file(path: str, gap_s: float = GAP_S, until: Optional[float] = None) -> Dict[str, Any]:
     with open(path, "r", encoding="utf-8", errors="replace") as f:
-        return parse_lines(f, gap_s)
+        return parse_lines(f, gap_s, until)
 
 
 def format_text(stats: Dict[str, Any]) -> str:
@@ -188,9 +197,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("transcript")
     ap.add_argument("--json", action="store_true", help="вывести JSON")
     ap.add_argument("--gap", type=float, default=GAP_S, help="пауза, длиннее которой время не считается рабочим, с")
+    ap.add_argument("--until", help="ISO-время: строки журнала позже не считаются")
     args = ap.parse_args(argv)
     try:
-        stats = parse_file(args.transcript, args.gap)
+        stats = parse_file(args.transcript, args.gap, _parse_time(args.until))
     except OSError as e:
         print("не прочитать журнал: %s" % e.strerror, file=sys.stderr)
         return 2

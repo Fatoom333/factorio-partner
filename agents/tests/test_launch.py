@@ -348,3 +348,107 @@ def test_main_without_answers_exits_with_question(monkeypatch, capsys):
     monkeypatch.setattr("sys.stdin", SimpleNamespace(isatty=lambda: False))
     assert launch.main([]) == 2
     assert "спроси игрока" in capsys.readouterr().err
+
+
+# ---- режим ролей ---------------------------------------------------------------------
+
+def run_roles(tmp_path, n=1, pilot_model="sonnet", ids=None, body="character", players=()):
+    said: list[str] = []
+    cfg = make_cfg(tmp_path)
+    core = Core(cfg, FakeBridge())
+    result = asyncio.run(launch.launch(cfg, n, body, list(players), core=core, ids=ids, roles=True,
+                                       pilot_model=pilot_model, env={"FP_RCON_PORT": "27015"},
+                                       python="python", say=said.append))
+    session = json.loads(Path(result["session"]).read_text(encoding="utf-8"))
+    return result, session, cfg
+
+
+def test_role_keys_are_three_different_and_the_pilot_key_is_kept(tmp_path):
+    f = tmp_path / "helpers.json"
+    f.write_text(json.dumps({"h1": "o" * 40, "other": "x" * 40}), encoding="utf-8")
+    keys = launch.ensure_role_keys(f, ["h1", "h2"])
+    assert keys["h1"]["pilot"] == "o" * 40
+    for hid in ("h1", "h2"):
+        assert set(keys[hid]) == {"voice", "pilot", "strategist"}
+        assert len(set(keys[hid].values())) == 3 and all(len(k) >= 32 for k in keys[hid].values())
+    data = json.loads(f.read_text(encoding="utf-8"))
+    assert data["other"] == "x" * 40 and data["h1"] == keys["h1"]
+    assert launch.ensure_role_keys(f, ["h1", "h2"]) == keys          # второй запуск ключей не меняет
+
+
+def test_roles_launch_session_has_a_prompt_with_its_own_key_per_role(tmp_path):
+    result, session, cfg = run_roles(tmp_path, n=2, body="player", players=["Bob", "Eve"])
+    keys = json.loads(cfg.helpers_file.read_text(encoding="utf-8"))
+    assert session["mode"] == "roles" and session["pilot_model"] == "sonnet"
+    assert [h["id"] for h in session["helpers"]] == ["h1", "h2"]
+    for h in session["helpers"]:
+        assert "prompt" not in h and set(h["roles"]) == {"voice", "pilot", "strategist"}
+        for role, entry in h["roles"].items():
+            assert entry["agent"] == f"partner-{role}"
+            assert f"role: {role}" in entry["prompt"] and f"helper: {h['id']}" in entry["prompt"]
+            assert f"key: {keys[h['id']][role]}" in entry["prompt"]
+            others = [k for r, k in keys[h["id"]].items() if r != role]
+            assert not any(k in entry["prompt"] for k in others)    # чужой ключ роли в сообщение не попадает
+            assert Path(entry["mcp_config"]).name == f"mcp-{role}.json" and Path(entry["mcp_config"]).is_file()
+    assert "персонаж игрока «Eve»" in session["helpers"][1]["roles"]["pilot"]["prompt"]
+
+
+def test_roles_models_and_launch_summary_have_no_keys(tmp_path):
+    result, session, cfg = run_roles(tmp_path, pilot_model="haiku")
+    models = {a["role"]: a["model"] for a in result["agents"]}
+    assert models == {"voice": "haiku", "pilot": "haiku", "strategist": "sonnet"}
+    assert {a["agent"] for a in result["agents"]} == {"partner-voice", "partner-pilot", "partner-strategist"}
+    keys = json.loads(cfg.helpers_file.read_text(encoding="utf-8"))["h1"].values()
+    assert not any(k in json.dumps(result, default=str) for k in keys)
+    result, _, _ = run_roles(tmp_path / "again")
+    assert {a["role"]: a["model"] for a in result["agents"]}["pilot"] == "sonnet"
+
+
+def test_role_mcp_configs_have_no_secrets_and_no_admin(tmp_path):
+    result, session, cfg = run_roles(tmp_path)
+    keys = json.loads(cfg.helpers_file.read_text(encoding="utf-8"))["h1"].values()
+    for entry in session["helpers"][0]["roles"].values():
+        text = Path(entry["mcp_config"]).read_text(encoding="utf-8")
+        assert not any(k in text for k in keys) and "--admin" not in text
+        assert list(json.loads(text)["mcpServers"]) == ["partner"]
+
+
+def test_strategist_gets_the_knowledge_others_do_not(tmp_path):
+    _, session, _ = run_roles(tmp_path)
+    roles = session["helpers"][0]["roles"]
+    assert "=== справка: factory-math.md ===" in roles["strategist"]["prompt"]
+    assert "=== справка: forge-blocks.md ===" in roles["strategist"]["prompt"]
+    assert "справка" not in roles["voice"]["prompt"] and "справка" not in roles["pilot"]["prompt"]
+
+
+def test_plain_launch_is_unchanged_by_the_roles_mode(tmp_path):
+    result, _, cfg, _ = run_launch(tmp_path)
+    session = json.loads(Path(result["session"]).read_text(encoding="utf-8"))
+    assert "mode" not in session and result["agents"] == [] and "prompt" in session["helpers"][0]
+    assert isinstance(json.loads(cfg.helpers_file.read_text(encoding="utf-8"))["h1"], str)
+    assert not (Path(result["session"]).parent / "mcp-voice.json").exists()
+
+
+def test_pilot_model_is_checked():
+    assert launch.parse_pilot_model(" Haiku ") == "haiku"
+    with pytest.raises(launch.LaunchError):
+        launch.parse_pilot_model("opus")
+    ap = launch.build_parser()
+    assert ap.parse_args(["--roles", "--pilot-model", "haiku"]).roles is True
+    assert ap.parse_args([]).roles is False and ap.parse_args([]).pilot_model == "sonnet"
+
+
+def test_role_message_refuses_an_unknown_role():
+    with pytest.raises(launch.LaunchError):
+        launch.role_message("admin", "h1", "k" * 40, "character", None, 1, 0)
+
+
+def test_launch_roles_match_the_agent_files():
+    """Тип агента и модель по умолчанию в launch.py совпадают с файлами правил."""
+    import lint
+    for role, (agent, model) in launch.ROLE_AGENTS.items():
+        path = lint.AGENT_FILE.parent / f"{agent}.md"
+        meta, _ = lint.parse_agent(path.read_text(encoding="utf-8").replace("\r\n", "\n"))
+        assert meta["name"] == agent and meta["model"] == model
+        assert launch.ROLE_AGENTS[role][1] in lint.ROLE_MODELS[role]
+    assert set(launch.PILOT_MODELS) == lint.ROLE_MODELS["pilot"]

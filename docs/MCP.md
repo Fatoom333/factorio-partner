@@ -16,6 +16,8 @@ stdout принадлежит протоколу MCP, журналы — тол�
   знает про MCP.
 - `roles.py` — роли ключей и права на инструменты (раздел «Роли»); `poller.py` — общий опрос
   событий мода для всех `partner_wait` одного помощника.
+- `ledger.py` — файл пакетов стройки сейва; `orders.py` — мост пакетов: сам ставит пакет телу и
+  проверяет результат (раздел «Пакеты стройки»).
 - `validate.py` — проверки аргументов до похода в мод; `savenotes.py` — файлы правил и памяти
   (`partner_notes`); `brief.py` — ответ `partner_brief`; `forge.py` — связка с factorio-forge
   (`partner_plan`).
@@ -47,7 +49,8 @@ stdout принадлежит протоколу MCP, журналы — тол�
 - Заметки по сейвам (`partner_notes`): `FP_NOTES_DIR` — папка, по умолчанию `save-notes/` в корне
   репозитория (в `.gitignore`: это записи хозяина); имя сейва — `FP_SAVE_NAME`, иначе
   `FP_FORGE_PROFILE`, иначе активный профиль forge, иначе `default` (имя —
-  `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`).
+  `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`). Там же, в папке сейва, — пакеты стройки (`packages.json`,
+  раздел «Пакеты стройки»).
 - Стиль общения — `FP_HOME/style.md` (≤ 4 КБ, длиннее обрезается); его отдаёт `partner_brief`.
 - Процесс сервера для агентов запускается **без** `--admin` (служебные `admin_*` ключа не требуют).
 
@@ -58,14 +61,14 @@ stdout принадлежит протоколу MCP, журналы — тол�
 
 | роль | что может | чего не может |
 |---|---|---|
-| `voice` (голос) — отвечает хозяину в чате | чтение, `partner_say`, `partner_order`, `partner_cancel{all:true}`, запись правил хозяина (`partner_notes` с `kind:"rules"`) | любые действия тела, `partner_cancel{job}`, `partner_hold{release}`, `partner_reflex{set}`, запись `memo`, `partner_plan`, `partner_inbox{ack}` |
-| `pilot` (пилот) — тело | всё, кроме `partner_order` | `partner_order` |
-| `strategist` (стратег) — планы | чтение, `partner_plan`, `partner_inbox{ack}`, проба `partner_act` с `dry_run:true` | действия тела, `partner_cancel`, чат, `partner_order`, запись `partner_notes`, `partner_hold{release}`, `partner_reflex{set}` |
+| `voice` (голос) — отвечает хозяину в чате | чтение, `partner_say`, `partner_order`, `partner_cancel{all:true}`, запись правил хозяина (`partner_notes` с `kind:"rules"`) | любые действия тела, `partner_cancel{job}`, `partner_hold{release}`, `partner_reflex{set}`, запись `memo`, `partner_plan`, `partner_inbox{ack}`, запись `partner_ledger` |
+| `pilot` (пилот) — тело | всё, кроме `partner_order` и записи пакетов; `partner_ledger{action:"cancel"}` — снять пакет | `partner_order`, `partner_ledger{put│resume}` |
+| `strategist` (стратег) — планы | чтение, `partner_plan`, `partner_inbox{ack}`, проба `partner_act` с `dry_run:true`, пакеты стройки (`partner_ledger` — `put`, `resume`, `cancel`); шаги пакета мост исполняет телом с правами пилота, но только шаги стройки (ниже «Пакеты стройки») | прямые действия тела (`partner_act` без `dry_run`), `partner_cancel`, чат, `partner_order`, запись `partner_notes`, `partner_hold{release}`, `partner_reflex{set}`; в пакете — разбор и изъятие у построек хозяина |
 
 - Чтение — `partner_brief`, `state`, `map`, `resources`, `stock`, `find`, `status`, `access`,
   `ghosts`, `rates`, `recipes`, `supply`, `lookup`, `wait`, `inbox` без `ack`, `notes` с
-  `action:"list"`, `hold` без `release`, `reflex` без `set`. Любое другое значение этих аргументов —
-  запись.
+  `action:"list"`, `hold` без `release`, `reflex` без `set`, `ledger` с `action:"list"`. Любое другое
+  значение этих аргументов — запись.
 - Узкие формы. `partner_cancel{all:true}` без `job` — снять все задачи помощника: так голос исполняет
   «стоп» в свободной форме, которое мод не узнал как слово. Правила хозяина голос пишет потому, что
   каждая запись требует сообщения хозяина и его «да» (ниже «partner_notes»). Проба стратега —
@@ -76,10 +79,11 @@ stdout принадлежит протоколу MCP, журналы — тол�
 - **Ожидание по ролям.** У каждой пары (помощник, роль) свой курсор событий, свои уведомления
   сервера и своя очередь `partner_wait`: роли ждут одновременно и не забирают события друг у друга.
   Что отдаёт `partner_wait` роли:
-  - пилот — всё, как раньше (громкие будят, шумные — выборка последних 6), плюс `order`;
+  - пилот — всё, как раньше (громкие будят, шумные — выборка последних 6), плюс `order` и события
+    пакетов `package_started`, `package_paused`, `package_verified`, `package_unmet`, `package_failed`;
   - голос — `player_said`, `owner_stop`, `owner_resume`, `game_reloaded`;
   - стратег — `order`, `plan_done`, `owner_stop`, `owner_resume`, `died`, `helper_lost`,
-    `game_reloaded` (и будущие `package_verified`, `package_unmet`).
+    `game_reloaded`, `package_paused`, `package_verified`, `package_unmet`, `package_failed`.
 
   Остальные события роль пропускает: курсор проходит мимо них. Счётчик `repeated_failure` ведётся
   только по событиям, отданным пилоту.
@@ -117,6 +121,93 @@ urgent?=false}`.
 (`game_reloaded`) — тоже: поручения относятся к оставленной линии игры, а номера сообщений мода после
 загрузки идут заново.
 
+### Пакеты стройки
+Пакет — именованный план стройки стратега: шаги действия `plan` (ACTIONS.md «plan») с якорем,
+приоритетом и проверками результата. Пишет пакеты только стратег (`partner_ledger`), читают все роли.
+Ставит пакет телу и проверяет его **мост** — код сервера (`orders.py`), без хода агента.
+
+`partner_ledger{action?="list"│"put"│"cancel"│"resume", package?, id?, rev?}`:
+- `list` — `{save, rev, packages:[…], history:[…], tick, seq}`: открытые пакеты помощника без шагов
+  (`steps_n` вместо `steps`) и до 10 последних законченных; с `id` — `{save, rev, package}` целиком.
+- `put` (стратег) — `{package:{…}, rev}`; новый пакет встаёт в очередь `queued`. `rev` — номер
+  файла, который стратег читал: файл с тех пор изменился → `bad_args`, перечитать.
+- `resume` (стратег) — приостановленный пакет (`paused`) снова в очереди; продолжит с `from_step`.
+- `cancel` (пилот и стратег) — `{cancelled, was, job?, warning?, rev}`: пакет снят; если его план
+  шёл — план снимается сразу (`cancel{job}`).
+
+Пакет на входе `put`: `{name, anchor:pos, priority?="next", steps, on_fail?="stop", verify, note?,
+order?}`:
+- `name` — название одной строкой (≤ 60 символов), `note` — пояснение для пилота и голоса (≤ 300);
+  « » заменяются на `"`, «хозяин:» — на «хозяин -».
+- `priority` — `now`│`next`│`later`: из ждущих первым идёт `now`, при равенстве — старший пакет.
+- `steps` — шаги `{do, args?, on_fail?}`, каждый проверяется как отдельный `partner_act` (без
+  вложенного `plan`; шаг `build_blueprint` может брать `plan` из `partner_plan`), до 200 шагов.
+  Пакет исполняется телом без хода пилота, поэтому в нём только шаги стройки: `walk`, `approach`,
+  `get_items`, `craft`, `mine` (только `resource` или `item`, не `target`), `insert`, `place`,
+  `build_blueprint` (без `force:"superforced"` и `partial`), `build_ghosts`, `plan_mining`,
+  `plan_belt`, `wait`. Остальное (`deconstruct`, `extract`, `collect`, `pickup`, `rotate`,
+  `set_recipe`, `follow`) — отказ `bad_args`; это работа пилота. Стратег читает слова хозяина и
+  пересказы голоса, поэтому пакет — это право действовать телом, суженное до стройки, а не проба.
+- `verify` — 1–3 проверки:
+  - `{kind:"stock", item, at_least, radius?=32, center?}` — в складах вокруг `center` (по умолчанию
+    `anchor`) не меньше `at_least` предмета (op `stock`, `total`);
+  - `{kind:"rate", item, at_least, surface?}` — сделано не меньше `at_least` в минуту по статистике
+    поверхности за последнюю минуту (op `rates`, `made`);
+  - `{kind:"ghosts", at_most?=0, radius?=32, center?}` — призраков вокруг не больше `at_most`
+    (op `ghosts`, `count`).
+- `order` — id поручения хозяина (`partner_inbox`), ради которого пакет.
+- Весь пакет ≤ 8 КБ JSON (`limit`); активных (`queued`, `running`, `pausing`, `paused`) пакетов у
+  помощника ≤ 2 (`limit`); `verifying` не считается. Пакеты относятся к помощнику ключа вызова.
+
+Состояния: `queued` → `posting` → `running` → `verifying` → `verified`│`unmet`; `running` →
+`failed` (план оборван отказом шага); `running` → `pausing` → `paused` (ниже); любое открытое →
+`cancelled`. `posting` — мост отправляет план в мод: переход из `queued` идёт сравнением с записью в
+файле, поэтому один пакет уходит телу одной задачей, даже если мостов два. Пакет, оставшийся в
+`posting` дольше минуты (процесс умер посреди отправки), сверяется с телом: идёт задача `plan` —
+это его план (`running`), тело свободно — пакет снова ждёт.
+Поля сервера в пакете: `id` (`pk<N>`), `status`, `job`, `from_step`, `created_tick`, `started_tick`,
+`done_tick`, `verify_at`, `plan` (итоги `plan_done`: `status, code?, text?, at?, marks, failures?`),
+`checks` (`[{kind, item?, at_least│at_most, value, ok, error?}]`), `paused_reason`, `paused_for`.
+
+Мост, каждые 2 с, для каждого помощника с открытыми пакетами:
+1. **Ставит.** Если план пакета у помощника не идёт, тело свободно (нет задачи, очередь пуста, простой
+   не меньше 2 с — `idle_ticks` ≥ 120), hold хозяина не стоит и нет открытого поручения хозяина моложе
+   10 минут игры (мелкое — следующая работа пилота; крупное ждёт своих пакетов: идут только пакеты с
+   его `order`; мелкое, только что отмеченное `partner_inbox{ack}`, держит пакеты ещё 10 с игры — первое
+   действие пилота встаёт раньше пакета), — следующий пакет уходит в мод одной задачей `plan`
+   (`replace:false`). План, который
+   не влезает в 4 КБ `act.args`, уходит через `blob_put` (`blob`). Пилоту — событие `package_started`.
+   Ошибка сети или пауза игры — повтор на следующем шаге (до 5 раз), отказ мода — `package_failed`.
+2. **Следит** за событиями помощника: `plan_done` с `status:"done"` → `verifying`; оборван отменой
+   или hold хозяина → `paused` с шага, на котором оборван (`from_step`); оборван отказом шага →
+   `failed`. Отступление `flee`, вернувшее план (`reflex_resumed`), продолжает тот же пакет.
+3. **Проверяет.** Через 2 минуты игрового времени (7200 тиков) после `plan_done` меряет проверки теми
+   же чтениями, что есть у агента → `verified` (`package_verified`) или `unmet` (`package_unmet`,
+   `checks` с найденными значениями). Чтение не удалось 3 раза — `unmet` с `error` у проверки.
+
+Приостановка (`paused_reason`):
+- `owner_order` — пришло крупное поручение хозяина (`partner_order{size:"large"}`): шедший пакет
+  доделывает текущий шаг (`cancel{job, at_boundary:true}`) и встаёт. Новое — первым: пока поручение
+  открыто, идут только пакеты с его `order`; приостановленный продолжает сам, когда ждущих пакетов нет
+  и открытых поручений нет.
+- `owner_stop` — хозяин сказал «стоп» или «иди сюда» (или hold оборвал план): пакет продолжает сам
+  после «продолжай» хозяина (`owner_resume`). Мод шлёт `plan_done` раньше `owner_stop`, поэтому стоп
+  хозяина узнаётся и по тексту отказа (`stopped by owner`).
+- `cancelled` — план сняли мимо пакета (`partner_cancel`, `replace`); `cancel_all` — кто-то из ролей
+  снял все задачи помощника (`partner_cancel{all:true}`, так голос исполняет «хватит» в свободной
+  форме): ждущие пакеты встают вместе с идущим; `reloaded` — загружен сейв, а план в загруженной игре
+  не идёт. Все три продолжает только `resume` стратега. Пока есть пакет, вставший как `cancelled` или
+  `cancel_all`, мост не ставит никакой другой: тело остановили мимо моста.
+
+Хранение: `<папка заметок>/<сейв>/packages.json` (как у `partner_notes`); запись — под файлом-замком
+с атомарной заменой. Пакеты переживают перезапуск сервера: мост дочитывает события с номера, на
+котором план ставился, а если `plan_done` уже нет в буфере мода и тело задачу не держит — переходит
+к проверкам. Загрузка сейва (`game_reloaded`): план, который загруженная игра продолжает (та же задача
+`plan` у тела), остаётся `running`, остальные идущие — `paused` (`reloaded`); отсчёт 2 минут до
+проверок — заново. Несколько процессов сервера на одном сейве: пакеты ведёт мост одного из них
+(аренда на 60 с под тем же файлом-замком, продлевается перед каждым помощником; файл
+`packages.json.lease`). Отладочный CLI моста не запускает.
+
 ## Инструменты агента
 Все принимают `helper`, `key`. Ответ агенту ≤ 24 КБ (больше → `response too large` с
 подсказкой, каким аргументом сузить; кроме `partner_wait` — он отдаёт страницами, EVENTS.md).
@@ -146,6 +237,7 @@ urgent?=false}`.
 | `partner_say` | `text ≤ 200` | op `say` (префикс с именем помощника ставит мод, PROTOCOL §4) |
 | `partner_order` | `said_seq, text ≤ 300, size:"small"│"large", urgent?=false` | голос: поручение хозяина во входящие помощника, только по его настоящему сообщению (раздел «Роли») |
 | `partner_inbox` | `ack?: list` (≤ 20 id) | открытые поручения хозяина этого помощника; `ack` — убрать сделанные (раздел «Роли») |
+| `partner_ledger` | `action?="list"│"put"│"cancel"│"resume", package?, id?, rev?` | пакеты стройки помощника: читают все, пишет стратег, снимают пилот и стратег; ставит и проверяет их сервер (раздел «Пакеты стройки») |
 | `partner_plan` | см. ниже | спроектировать добычу через forge |
 
 ### `partner_brief`
@@ -277,5 +369,5 @@ P.U.M.P. / чертёж) и строит `build_ghosts`.
 транспорт и сбои. Ключи и пароль — никогда.
 
 ## Лимиты
-Запрос к моду ≤ 8 КБ; `act.args` ≤ 4 КБ; набор рефлексов ≤ 16 и ≤ 4 КБ; часть `blob_put` ≤ 3500
+Запрос к моду ≤ 8 КБ; `act.args` ≤ 4 КБ; пакет стройки ≤ 8 КБ, активных ≤ 2 на помощника; набор рефлексов ≤ 16 и ≤ 4 КБ; часть `blob_put` ≤ 3500
 байт; чертёж ≤ 1 МБ; `say` ≤ 200 символов; ответ агенту ≤ 24 КБ; `partner_wait` ≤ 55 с.

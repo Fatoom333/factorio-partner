@@ -6,6 +6,7 @@
     {"label": "sonnet-1",              # имя строки в таблице
      "model": "sonnet",                # по какой модели группировать (иначе — модель из журнала)
      "transcript": "agent-a1.jsonl",   # журнал смены (путь от каталога манифеста)
+     "until": "2026-10-20T10:15:00Z", # не считать строки журнала позже этого времени (стенд остановили)
      "result": "results-1.json",       # результат сценария pilot_bench (фаза judge или full)
      "usage_before": 12.0,             # get_usage до прогона: число (5-часовое окно, %) или
      "usage_after": 19.5}              # словарь {"five_hour": 12, "weekly": 30}
@@ -68,7 +69,8 @@ def summarize_run(spec: Dict[str, Any], base_dir: str = ".") -> Dict[str, Any]:
     errors: List[str] = []
     if spec.get("transcript"):
         try:
-            st = transcript_stats.parse_file(os.path.join(base_dir, spec["transcript"]))
+            st = transcript_stats.parse_file(os.path.join(base_dir, spec["transcript"]),
+                                             until=transcript_stats.parse_time(spec.get("until")))
             row.update(tool_calls=st["tool_calls"], model_turns=st["model_turns"],
                        active_min=round(st["active_s"] / 60.0, 1), wall_min=round(st["duration_s"] / 60.0, 1),
                        errors=st["tool_errors"] + st["soft_errors"], tool_errors=st["tool_errors"],

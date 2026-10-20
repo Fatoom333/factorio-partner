@@ -4,6 +4,7 @@
    "command": "<python из venv, где установлен пакет server>",
    "args": ["-m", "factorio_partner.server"],
    "env": {
+    "FP_HOME": "<папка данных: helpers.json, style.md; вне репозитория>",
     "FP_RCON_HOST": "127.0.0.1",
     "FP_RCON_PORT": "27015",
     "FP_RCON_PASSWORD_FILE": "<путь к файлу с паролем RCON, вне репозитория>"

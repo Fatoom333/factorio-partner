@@ -8,6 +8,8 @@ stdout belongs to the MCP protocol: logs go only to ``FP_HOME/logs/server.log``.
 from __future__ import annotations
 
 import argparse
+import asyncio
+import contextlib
 import logging
 import sys
 from typing import Annotated, Any, Literal
@@ -39,8 +41,20 @@ async def _run(coro):
         raise ToolError(str(e)) from None
 
 
-def build_server(core: Core, admin: bool = False) -> FastMCP:
-    mcp = FastMCP("factorio-partner", instructions=INSTRUCTIONS, log_level="WARNING")
+def build_server(core: Core, admin: bool = False, packages: bool = True) -> FastMCP:
+    @contextlib.asynccontextmanager
+    async def lifespan(_server):
+        # the package bridge (orders.py) runs beside the tools while the server lives
+        task = asyncio.create_task(core.packages.run()) if packages else None
+        try:
+            yield {}
+        finally:
+            if task is not None:
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await task
+
+    mcp = FastMCP("factorio-partner", instructions=INSTRUCTIONS, log_level="WARNING", lifespan=lifespan)
 
     @mcp.tool()
     async def partner_brief(helper: Helper, key: Key) -> dict:
@@ -289,6 +303,25 @@ def build_server(core: Core, admin: bool = False) -> FastMCP:
         size, urgent, text, owner_said}], acked?}. Верь owner_said (его слова), text — пересказ голоса.
         ack — убрать сделанные (пилот и стратег)."""
         return await _run(core.op_inbox(helper, key, ack))
+
+    @mcp.tool()
+    async def partner_ledger(helper: Helper, key: Key,
+                             action: Annotated[Literal["list", "put", "cancel", "resume"], Field(
+                                 description="list — пакеты помощника (с id — один целиком); put — новый пакет "
+                                             "(стратег); resume — вернуть приостановленный в очередь (стратег); "
+                                             "cancel — снять пакет (пилот и стратег)")] = "list",
+                             package: Annotated[dict[str, Any] | None, Field(
+                                 description="для put: {name, anchor, priority?, steps, on_fail?, verify, note?, order?}")] = None,
+                             id: Annotated[str | None, Field(  # noqa: A002
+                                 description="id пакета (pk<N>) для list/cancel/resume")] = None,
+                             rev: Annotated[int | None, Field(
+                                 description="для put: rev, который ты читал; изменилось — отказ")] = None) -> dict:
+        """Пакеты стройки: именованный план из шагов act (как действие plan) с якорем, приоритетом
+        (now/next/later) и 1–3 проверками (stock, rate, ghosts). Пишет только стратег; сервер сам ставит
+        пакет телу, когда оно свободно и хозяин не держит, и через 2 минуты игры после plan_done
+        проверяет результат: события package_verified / package_unmet / package_failed. Активных
+        пакетов у помощника ≤ 2, пакет ≤ 8 КБ."""
+        return await _run(core.op_ledger(helper, key, action, package, id, rev))
 
     @mcp.tool()
     async def partner_plan(helper: Helper, key: Key, task: Literal["mining"] = "mining",

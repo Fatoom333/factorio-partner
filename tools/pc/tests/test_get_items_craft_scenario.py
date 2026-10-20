@@ -18,12 +18,18 @@ def load():
 
 
 class World:
-    def __init__(self, stock=None, furnace=True, leak=False, instant=False, bad_cancel_event=False,
-                 ready=None):
+    def __init__(self, stock=None, furnace="own", leak=False, instant=False, bad_cancel_event=False,
+                 ready=None, far=False, place_fail=False, decon_fail=False):
         self.stock = dict(stock if stock is not None else {"iron-plate": 400, "copper-plate": 400})
         self.stock.update(ready or {})      # готовые предметы на складе
         self.inv = {}
+        # True: на базе есть подходящая печь; "own": плавка идёт только в печи, поставленной помощником;
+        # False: печей нет совсем
         self.furnace = furnace
+        self.far = far                    # склады видны только в радиусе 128
+        self.place_fail = place_fail      # place всегда cannot_place
+        self.decon_fail = decon_fail      # deconstruct не убирает печь
+        self.placed = []
         self.leak = leak                  # cancel не снимает крафт
         self.instant = instant            # крафт кончается раньше, чем его снимают
         self.bad_cancel_event = bad_cancel_event
@@ -49,6 +55,11 @@ class World:
             self.inv[item] = target
             return self._done("get_items", {"have": {item: target},
                                             "from": {"crafted": {item: target, "copper-cable": target * 3}}})
+        if item in ("assembling-machine-1", "small-electric-pole", "burner-mining-drill"):
+            mid = {"assembling-machine-1": "electronic-circuit", "small-electric-pole": "copper-cable",
+                   "burner-mining-drill": "iron-gear-wheel"}[item]
+            self.inv[item] = target
+            return self._done("get_items", {"have": {item: target}, "from": {"crafted": {item: target, mid: target}}})
         if item == "inserter":
             for raw, n in (("iron-plate", 4 * target), ("copper-plate", 2 * target)):
                 self.stock[raw] -= max(0, n - self.inv.get(raw, 0))
@@ -58,7 +69,7 @@ class World:
                                             "from": {"crafted": {item: target, "electronic-circuit": target}}})
         if item in ("stone-brick", "iron-plate", "copper-plate"):
             ore, per = {"stone-brick": ("stone", 2), "iron-plate": ("iron-ore", 1), "copper-plate": ("copper-ore", 1)}[item]
-            if not self.furnace:
+            if not (self.furnace is True or (self.furnace == "own" and self.placed)):
                 return self._emit("job_failed", {"job": self.job, "do": "get_items", "code": "no_items",
                                                  "detail": {"have": {}, "shortfall": [
                                                      {"item": item, "missing": target, "reason": "no_furnace"}]}})
@@ -89,6 +100,8 @@ class World:
             return ok(st)
         if op == "stock":
             want = args.get("items")
+            if self.far and args.get("radius", 64) < 128:
+                return ok({"containers": [], "total": {}, "hidden": 0, "truncated": False})
             total = {k: v for k, v in self.stock.items() if v > 0 and (not want or k in want)}
             containers = [{"unit": 5, "pos": {"x": 3, "y": 3}, "dist": 4, "items": dict(total)}] if total else []
             return ok({"containers": containers, "total": total or {}, "hidden": 0, "truncated": False})
@@ -107,6 +120,23 @@ class World:
                 self.stock[item] -= take
                 self.inv[item] = self.inv.get(item, 0) + take
                 self._done("collect", {"collected": {item: take}})
+            elif do == "place":
+                if self.place_fail:
+                    return self._emit("job_failed", {"job": self.job, "do": "place", "code": "cannot_place"})                         or ok({"job": self.job, "queued_before": 0})
+                self.inv[a["item"]] -= 1
+                self.placed.append({"name": a["item"], "pos": a["pos"], "unit": 100 + len(self.placed)})
+                self._done("place", {"unit_number": 100 + len(self.placed) - 1})
+            elif do == "deconstruct":
+                t = a["target"]
+                gone = [e for e in self.placed if e["unit"] == t["unit_number"]]
+                if gone and not self.decon_fail:
+                    self.placed.remove(gone[0])
+                    self.inv[gone[0]["name"]] = self.inv.get(gone[0]["name"], 0) + 1
+                self._done("deconstruct", {"removed": len(gone) if not self.decon_fail else 1, "got": {}})
+            elif do == "craft" and a["recipe"] == "stone-furnace":
+                self.inv["stone"] -= 5 * a["count"]
+                self.inv["stone-furnace"] = self.inv.get("stone-furnace", 0) + a["count"]
+                self._done("craft", {"crafted": {"stone-furnace": a["count"]}})
             elif do == "craft":
                 if self.instant:
                     self.inv[a["recipe"]] = a["count"]
@@ -116,6 +146,10 @@ class World:
             else:
                 raise AssertionError(do)
             return ok({"job": self.job, "queued_before": 0})
+        if op == "map":
+            names = args.get("names") or []
+            return ok({"entities": [{"name": e["name"], "pos": e["pos"]} for e in self.placed
+                                    if not names or e["name"] in names]})
         if op == "events":
             return ok({"seq": self.seq, "events": [e for e in self.events if e["seq"] > args["since"]] or {},
                        "lost": False})
@@ -205,6 +239,71 @@ def test_cancel_wrong_event_code_fails(fake_rcon):
 def test_craft_that_never_runs_is_setup(fake_rcon):
     res = run(World(instant=True), fake_rcon)
     assert "не стала активной" in res["setup_failed"]["cancel"]
+
+
+def test_smelt_places_own_furnace_and_removes_it(fake_rcon):
+    w = World()
+    res = run(w, fake_rcon)
+    dos = [d for d, _ in w.acts]
+    # печь: крафт из камня, place до get_items плавки, deconstruct после; на карте пусто
+    assert dos.index("place") < max(i for i, (d, a) in enumerate(w.acts)
+                                    if d == "get_items" and "stone-brick" in a["items"])
+    assert dos.index("deconstruct") > dos.index("place")
+    assert ("craft", {"recipe": "stone-furnace", "count": 1}) in w.acts
+    assert w.placed == [] and w.inv.get("stone-furnace") == 1
+    assert res["smelt_deconstruct"]["data"]["detail"]["removed"] == 1
+    assert res["smelt_deconstruct"]["left_on_map"] == 0
+
+
+def test_furnace_from_storage_skips_crafting(fake_rcon):
+    w = World(ready={"stone-furnace": 3})
+    res = run(w, fake_rcon)
+    assert res["ok"] is True, res.get("reasons") or res.get("setup_failed")
+    assert not any(d == "craft" and a.get("recipe") == "stone-furnace" for d, a in w.acts)
+    assert w.placed == []
+
+
+def test_furnace_removed_even_when_smelt_fails(fake_rcon):
+    w = World(furnace=False)
+    res = run(w, fake_rcon)
+    assert "no_furnace" in res["setup_failed"]["smelt"]
+    assert w.placed == []                  # печь убрана и в этом случае
+
+
+def test_place_failure_is_setup_not_mod_failure(fake_rcon):
+    res = run(World(place_fail=True), fake_rcon)
+    assert "не ставится" in res["setup_failed"]["smelt"] and "reasons" not in res
+
+
+def test_furnace_left_standing_is_a_failure(fake_rcon):
+    res = run(World(decon_fail=True), fake_rcon)
+    assert any("печь" in r for r in res["reasons"]), res
+    assert res["ok"] is False
+
+
+def test_craft_uses_radius_where_raw_was_found(fake_rcon):
+    w = World(far=True)
+    res = run(w, fake_rcon)
+    assert res["ok"] is True, res.get("reasons") or res.get("setup_failed")
+    assert res["craft"]["radius"] == 128
+    assert ("get_items", {"items": {"electronic-circuit": 5}, "radius": 128}) in w.acts
+
+
+def test_craft_skips_candidates_with_ready_middle(fake_rcon):
+    # промежуточный copper-cable лежит на складе: его в crafted не будет, поэтому выбирается другой предмет
+    w = World(ready={"copper-cable": 50})
+    res = run(w, fake_rcon)
+    assert res["craft"]["item"] == "inserter", res["craft"]
+
+
+def test_new_candidates_are_reachable(fake_rcon):
+    w = World(stock={"iron-plate": 400, "copper-plate": 400, "wood": 10, "stone": 20})
+    sc_ = load()
+    only = tuple(c for c in sc_.CRAFT_CANDIDATES if c[0] in ("assembling-machine-1", "small-electric-pole", "burner-mining-drill"))
+    assert len(only) == 3
+    for cand in only:
+        res = run(World(stock=dict(w.stock)), fake_rcon, CRAFT_CANDIDATES=(cand,))
+        assert res["craft"]["item"] == cand[0] and not res["craft"].get("setup_failed"), (cand, res["craft"])
 
 
 # ---------- hold в ServerClient ----------

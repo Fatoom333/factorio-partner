@@ -26,8 +26,9 @@ _READS = frozenset({
     "partner_recipes", "partner_supply", "partner_lookup", "partner_wait",
 })
 # the read form of a tool that also writes: ``partner_notes`` list, ``partner_hold`` without
-# release, ``partner_reflex`` without set, ``partner_inbox`` without ack
-_READ_FORMS = frozenset({"partner_notes", "partner_hold", "partner_reflex", "partner_inbox"})
+# release, ``partner_reflex`` without set, ``partner_inbox`` without ack, ``partner_ledger`` list
+_READ_FORMS = frozenset({"partner_notes", "partner_hold", "partner_reflex", "partner_inbox",
+                         "partner_ledger"})
 READ = _READS | _READ_FORMS
 
 # capability names: a tool, or "<tool>.write" for the writing form of a tool from _READ_FORMS, and
@@ -37,17 +38,20 @@ READ = _READS | _READ_FORMS
 #   "partner_notes.rules"  — add/remove/confirm of the owner's rules (kind "rules"): each needs a
 #                            message of the owner and his "да" (notes.py), so the voice may file them;
 #   "partner_act.dry_run"  — a trial run of an action that only plans (DRY_RUN_ACTS) with
-#                            args.dry_run exactly true and no replace: the mod changes nothing.
+#                            args.dry_run exactly true and no replace: the mod changes nothing;
+#   "partner_ledger.cancel" — take a build package off (the pilot may drop one the body cannot do);
+#                            "partner_ledger.write" (put, resume) is the strategist's alone.
 DRY_RUN_ACTS = frozenset({"plan_mining", "plan_belt", "build_blueprint"})
 _PILOT_WRITES = frozenset({
     "partner_act", "partner_act.dry_run", "partner_cancel", "partner_cancel.all", "partner_say",
     "partner_plan", "partner_notes.write", "partner_notes.rules", "partner_hold.write",
-    "partner_reflex.write", "partner_inbox.write",
+    "partner_reflex.write", "partner_inbox.write", "partner_ledger.cancel",
 })
 ALLOWED: dict[str, frozenset[str]] = {
     VOICE: READ | {"partner_say", "partner_order", "partner_cancel.all", "partner_notes.rules"},
     PILOT: READ | _PILOT_WRITES,
-    STRATEGIST: READ | {"partner_plan", "partner_inbox.write", "partner_act.dry_run"},
+    STRATEGIST: READ | {"partner_plan", "partner_inbox.write", "partner_act.dry_run",
+                        "partner_ledger.write", "partner_ledger.cancel"},
 }
 
 # which events a role's partner_wait hands over (docs/MCP.md «Роли»); None — every event, as before
@@ -82,6 +86,11 @@ def capability(tool: str, args: dict | None) -> str:
         return tool if a.get("set") is None else tool + ".write"
     if tool == "partner_inbox":
         return tool if a.get("ack") is None else tool + ".write"
+    if tool == "partner_ledger":
+        act = a.get("action", "list")
+        if act == "list":
+            return tool
+        return tool + (".cancel" if act == "cancel" else ".write")
     return tool
 
 
@@ -98,7 +107,7 @@ def require(role: str, tool: str, args: dict | None = None) -> None:
 
 _WRITE_FORM = {"partner_notes": "add/remove/confirm", "partner_hold": "release",
                "partner_reflex": "set", "partner_inbox": "ack", "partner_cancel": "all",
-               "partner_act": "dry_run"}
+               "partner_act": "dry_run", "partner_ledger": "put/resume/cancel"}
 
 
 def keys_of(entry: Any, min_key: int) -> dict[str, str]:

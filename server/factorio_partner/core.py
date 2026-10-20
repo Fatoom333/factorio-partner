@@ -24,7 +24,9 @@ from typing import Any, Awaitable, Callable
 from . import roles as R
 from . import validate as V
 from .bridge import HELPER_RE, Bridge
+from . import ledger as L
 from . import savenotes
+from .orders import PackageBridge
 from .poller import EventPoller
 from .brief import build_brief
 from .config import Config
@@ -125,6 +127,8 @@ class Core:
         self._order_n = 0
         self.job_sig: OrderedDict[tuple[str, int], str] = OrderedDict()
         self.fail_counts: dict[tuple[str, str], int] = {}
+        self._ledgers: dict[str, L.Ledger] = {}
+        self.packages = PackageBridge(self)     # starts and checks the strategist's packages
         self.bridge.on_reload(self._on_reload)
 
     # ================================================================ access
@@ -243,6 +247,8 @@ class Core:
         # loaded save, so the used seq of the old timeline would refuse new messages of the owner
         self.orders.clear()
         self._order_used.clear()
+        # the packages outlive a reload; the bridge re-reads what the loaded save runs
+        self.packages.on_reload()
 
     def _cursor(self, key: tuple[str, str]) -> int:
         if key not in self.cursors:
@@ -707,7 +713,14 @@ class Core:
                     args["at_boundary"] = True
             else:
                 raise V.bad("args", "pass job or all=true")
-            return self._stamp(await self._mod("cancel", args, h, mutating=True))
+            out = await self._mod("cancel", args, h, mutating=True)
+            if args.get("all"):
+                # «хватит» in free form: the bridge must not start the next package on the freed body
+                try:
+                    self.packages.on_cancel_all(h)
+                except PartnerError as e:
+                    out = dict(out, warning=f"waiting packages were not paused: {e.code}")
+            return self._stamp(out)
         return await self._tool("partner_cancel", helper, key, a, run)
 
     async def op_hold(self, helper, key, release=False, said_seq=None) -> dict:
@@ -805,6 +818,12 @@ class Core:
             for role in (R.PILOT, R.STRATEGIST):
                 if (h, role) in self.cursors:     # roles that have called the server get woken
                     self._notice((h, role), dict(ev))
+            if sz == "large":
+                # the running package finishes its step and pauses: the new order goes first
+                try:
+                    await self.packages.on_large_order(h, order)
+                except PartnerError as e:
+                    log.info("cannot pause the running package for order %s: %s", order["id"], e.code)
             return {"order": order, "open": len(self.orders[h])}
         return await self._tool("partner_order", helper, key, a, run)
 
@@ -843,12 +862,80 @@ class Core:
                     raise V.bad("ack", "no open order " + ", ".join(x[:20] for x in unknown[:5]))
                 want = set(ack)
                 acked = [o["id"] for o in box if o["id"] in want]
+                if any(o["id"] in want and o.get("size") != "large" for o in box):
+                    # the pilot took a small order: its first act comes after this answer
+                    self.packages.on_small_ack(h)
                 box[:] = [o for o in box if o["id"] not in want]
             out: dict = {"orders": [dict(o) for o in box]}
             if acked:
                 out["acked"] = acked
             return self._stamp(out)
         return await self._tool("partner_inbox", helper, key, a, run)
+
+    # ================================================================ build packages
+    def ledger(self) -> L.Ledger:
+        """The packages of the save the notes belong to (savenotes.save_name)."""
+        save = getattr(self, "_notes_save", None) or savenotes.save_name(self.cfg)
+        led = self._ledgers.get(save)
+        if led is None:
+            led = self._ledgers[save] = L.Ledger(save)
+        return led
+
+    async def op_ledger(self, helper, key, action="list", package=None, id=None, rev=None) -> dict:  # noqa: A002
+        """``partner_ledger`` — the strategist's build packages of this helper (docs/MCP.md
+        «Пакеты стройки»). ``list`` (every role): open packages without steps and the last finished
+        ones; with ``id`` — that package in full. ``put`` (the strategist): a new package, the server
+        starts it itself. ``resume`` (the strategist): a paused package goes back to the queue.
+        ``cancel`` (the pilot and the strategist): the package leaves, its running plan is cancelled."""
+        a = {"action": action, "package": package, "id": id, "rev": rev}
+
+        async def run(h):
+            act = V.enum("list", "put", "cancel", "resume")("action", action)
+            led = self.ledger()
+            if act != "put" and package is not None:
+                raise V.bad("package", "only with action=put")
+            if act == "put" and id is not None:
+                raise V.bad("id", "not with action=put")
+            if rev is not None and act != "put":
+                raise V.bad("rev", "only with action=put")
+            if act == "list":
+                if id is not None:
+                    p = led.get(h, V.ident("id", id))
+                    if p is None:
+                        raise PartnerError("not_found", f"id: no package {id}")
+                    return self._stamp({"save": led.save, "rev": led.data()["rev"], "package": p})
+                d = led.data()
+                return self._stamp({
+                    "save": led.save, "rev": d["rev"],
+                    "packages": [L.compact(p) for p in d["packages"] if p.get("helper") == h],
+                    "history": [p for p in d["history"] if p.get("helper") == h],
+                })
+            if act == "put":
+                if package is None:
+                    raise V.bad("package", "required for action=put")
+                clean = V.check_package(package)
+                r = None if rev is None else V.integer(0, 2**53)("rev", rev)
+                tick = self.bridge.last_tick
+                p = led.mutate(lambda d: L.add(d, h, clean, tick, r))
+                return self._stamp({"package": L.compact(p), "rev": led.data()["rev"]})
+            pid = V.ident("id", id) if id is not None else None
+            if pid is None:
+                raise V.bad("id", f"required for action={act}")
+            if act == "cancel":
+                return self._stamp(dict(await self.packages.cancel(h, pid), rev=led.data()["rev"]))
+
+            def resume(d):
+                p = L.find(d, pid)
+                if p is None or p.get("helper") != h:
+                    raise PartnerError("not_found", f"id: no open package {pid}")
+                if p.get("status") != "paused":
+                    raise V.bad("id", f"package {pid} is {p.get('status')}, not paused")
+                p["status"] = "queued"
+                p["paused_reason"] = None
+                return L.compact(p)
+            p = led.mutate(resume)
+            return self._stamp({"package": p, "rev": led.data()["rev"]})
+        return await self._tool("partner_ledger", helper, key, a, run)
 
     async def op_wait(self, helper, key, timeout=30, quiet=True, since=None) -> dict:
         a = {"timeout": timeout, "quiet": quiet, "since": since}

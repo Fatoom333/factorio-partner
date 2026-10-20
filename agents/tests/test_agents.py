@@ -378,3 +378,89 @@ def test_role_agents_are_checked_against_role_rights(tmp_path):
     bad.write_text(voice.replace("mcp__partner__partner_wait",
                                  "mcp__partner__partner_wait, mcp__partner__ledger_apply"), encoding="utf-8")
     assert any("ledger_apply" in p for p in lint.lint_role(bad, "voice"))
+
+
+# ---- агенты ролей ---------------------------------------------------------------------
+
+def _role_text(name: str) -> str:
+    return (lint.AGENT_FILE.parent / name).read_text(encoding="utf-8").replace("\r\n", "\n")
+
+
+def _role_problems(tmp_path, name: str, role: str, text: str) -> list[str]:
+    path = tmp_path / name
+    path.write_text(text, encoding="utf-8")
+    return lint.lint_role(path, role)
+
+
+def test_role_whitelists_are_inside_the_rights_of_the_role():
+    rights = lint.role_rights()
+    for file, role in lint.ROLE_FILES.items():
+        meta, _ = lint.parse_agent(_role_text(file))
+        for full in lint.agent_tools(meta):
+            assert lint.tool_allowed(full[len(lint.TOOL_PREFIX):], rights[role]), (file, full)
+    voice, _ = lint.parse_agent(_role_text("partner-voice.md"))
+    assert "mcp__partner__partner_act" not in lint.agent_tools(voice)        # голос не видит act
+    pilot, _ = lint.parse_agent(_role_text("partner-pilot.md"))
+    assert "mcp__partner__partner_order" not in lint.agent_tools(pilot)      # поручения подаёт только голос
+    assert "mcp__partner__partner_plan" not in lint.agent_tools(voice)
+
+
+def test_role_models_in_frontmatter():
+    assert lint.parse_agent(_role_text("partner-voice.md"))[0]["model"] == "haiku"
+    assert lint.parse_agent(_role_text("partner-pilot.md"))[0]["model"] in {"sonnet", "haiku"}
+    assert lint.parse_agent(_role_text("partner-strategist.md"))[0]["model"] == "sonnet"
+
+
+def test_role_with_a_wrong_model_is_reported(tmp_path):
+    text = _role_text("partner-voice.md").replace("model: haiku", "model: sonnet")
+    assert any("model роли voice" in p for p in _role_problems(tmp_path, "partner-voice.md", "voice", text))
+
+
+def test_strategist_act_call_needs_dry_run(tmp_path):
+    text = _role_text("partner-strategist.md")
+    ok = text + '\n```call\npartner_act {"do":"plan_mining","args":{"resource":"iron-ore","near":{"x":0,"y":0},"dry_run":true}}\n```\n'
+    assert not [p for p in _role_problems(tmp_path, "partner-strategist.md", "strategist", ok) if "вне прав" in p]
+    bad = text + '\n```call\npartner_act {"do":"plan_mining","args":{"resource":"iron-ore","near":{"x":0,"y":0}}}\n```\n'
+    assert any("вне прав роли strategist в этой форме" in p
+               for p in _role_problems(tmp_path, "partner-strategist.md", "strategist", bad))
+    bad = text + '\n```call\npartner_act {"do":"walk","args":{"to":{"x":1,"y":1}}}\n```\n'
+    assert any("вне прав роли strategist" in p
+               for p in _role_problems(tmp_path, "partner-strategist.md", "strategist", bad))
+
+
+def test_voice_cancel_is_only_the_all_form(tmp_path):
+    text = _role_text("partner-voice.md")
+    ok = text + '\n```call\npartner_cancel {"all":true}\n```\n'
+    assert not [p for p in _role_problems(tmp_path, "partner-voice.md", "voice", ok) if "вне прав" in p]
+    bad = text + '\n```call\npartner_cancel {"job":3}\n```\n'
+    assert any("partner_cancel" in p and "вне прав роли voice" in p
+               for p in _role_problems(tmp_path, "partner-voice.md", "voice", bad))
+
+
+def test_role_text_with_admin_console_or_unknown_tool_is_reported(tmp_path):
+    base = _role_text("partner-pilot.md")
+    for extra, needle in (("Служебный `admin_spawn` вызови сам.", "admin_spawn"),
+                          ("Выполни `" + "/" + "c game.speed = 5`.", "консольная команда"),
+                          ("Вызови partner_teleport.", "partner_teleport")):
+        problems = _role_problems(tmp_path, "partner-pilot.md", "pilot", base + "\n" + extra + "\n")
+        assert any(needle in p for p in problems), (extra, problems)
+    admin_tool = base.replace("mcp__partner__partner_wait", "mcp__partner__partner_wait, mcp__partner__admin_hello")
+    assert any("admin_hello" in p for p in _role_problems(tmp_path, "partner-pilot.md", "pilot", admin_tool))
+
+
+def test_role_rules_name_what_the_server_returns(tmp_path):
+    text = _role_text("partner-pilot.md")
+    for word in ("not_allowed", "plan_done", "partner_inbox"):
+        stripped = text.replace(word, "xxxx")
+        assert any(word in p for p in _role_problems(tmp_path, "partner-pilot.md", "pilot", stripped)), word
+    text = _role_text("partner-voice.md").replace("said_seq", "yyyy")
+    assert any("said_seq" in p for p in _role_problems(tmp_path, "partner-voice.md", "voice", text))
+
+
+def test_roles_script_may_use_the_role_agent_types(tmp_path):
+    js = tmp_path / "roles.js"
+    js.write_text("export const meta = { name: 'x' }\nconst t = { voice: 'partner-voice' }\n"
+                  "agent({ agentType: t.voice })\n", encoding="utf-8")
+    assert lint.lint_files([js]) == []
+    js.write_text("export const meta = { name: 'x' }\nagent({ agentType: 'general-purpose' })\n", encoding="utf-8")
+    assert any("типа partner" in p for p in lint.lint_files([js]))

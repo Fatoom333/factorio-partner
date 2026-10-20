@@ -24,7 +24,17 @@ ROOT = Path(__file__).resolve().parent.parent
 AGENT_FILE = ROOT / ".claude" / "agents" / "partner.md"
 # агенты ролей одного помощника (docs/MCP.md «Роли»): файл -> роль
 ROLE_FILES = {"partner-voice.md": "voice", "partner-pilot.md": "pilot", "partner-strategist.md": "strategist"}
-ROLE_MODELS = {"sonnet", "haiku"}
+# модель агента роли (frontmatter): голос быстрый и дешёвый, пилот — sonnet или haiku (launch.py --pilot-model)
+ROLE_MODELS = {"voice": {"haiku"}, "pilot": {"sonnet", "haiku"}, "strategist": {"sonnet"}}
+# что обязано быть в правилах роли: поручения, ack, отказы сервера и права
+_ROLE_REFUSALS = ("access denied", "transport_timeout", "game_paused", "repeated_failure", "not_allowed", "limit")
+ROLE_WORDS = {
+    "voice": ("partner_order", "said_seq", "auto_reply", "owner:true", "owner:false", "player_said",
+              "owner_stop", "bad_args", "urgent", "large", "small", *_ROLE_REFUSALS),
+    "pilot": ("partner_inbox", "ack", "order", "owner_said", "plan_done", "partner_plan", "owner_hold",
+              "job_failed", "owner:true", "owner:false", "hold", "inbox", *_ROLE_REFUSALS),
+    "strategist": ("partner_inbox", "not_allowed", "order"),
+}
 # без чего роль не делает свою работу: голос подаёт поручения, пилот и стратег снимают их из входящих
 ROLE_NEEDS = {"voice": ("partner_order", "partner_say"), "pilot": ("partner_act", "partner_inbox"),
               "strategist": ("partner_inbox", "partner_plan")}
@@ -38,7 +48,7 @@ TOOL_PREFIX = "mcp__partner__"
 PENDING_TOOLS: set[str] = set()
 # инструменты только для режима нескольких ролей: одиночному агенту partner (ключ старого вида —
 # пилот без голоса и стратега) они не нужны — поручений ему никто не кладёт
-MULTI_ROLE_TOOLS = {"partner_order", "partner_inbox"}
+MULTI_ROLE_TOOLS = {"partner_order", "partner_inbox", "partner_ledger"}
 # аргументы partner_plan описаны в MCP.md отдельным разделом, а не в таблице
 PLAN_ARGS = {"task", "resource", "patch", "options"}
 # MCP.md: для build_blueprint вместо blob можно plan; mirror — аргумент мода, которым применяется
@@ -77,6 +87,7 @@ PRIVATE_RE = re.compile(
     r"|[\\/]" + _U + r"[\\/]|[\\/]home[\\/]\w"  # домашние папки
     r"|\b(?!127\.0\.0\.1\b)(?:\d{1,3}\.){3}\d{1,3}\b")  # адреса, кроме локального
 CONSOLE_RE = re.compile(r"""["'`]/(?:c|sc|silent-command|command)\b""")
+CONSOLE_MD_RE = re.compile(r"`/(?:c|sc|silent-command|command)\b|^/(?:c|sc|silent-command|command)\s", re.M)
 TEXT_SUFFIXES = {".md", ".py", ".js", ".json", ".txt"}
 
 
@@ -188,6 +199,16 @@ def role_rights() -> dict[str, frozenset[str]]:
     finally:
         sys.path.pop(0)
     return dict(roles.ALLOWED)
+
+
+def role_allowed(role: str, tool: str, args: dict) -> bool:
+    """Разрешён ли роли именно этот вызов (с аргументами): та же проверка, что делает сервер."""
+    sys.path.insert(0, str(SERVER_FILE.parent.parent))
+    try:
+        from factorio_partner import roles  # noqa: PLC0415
+    finally:
+        sys.path.pop(0)
+    return roles.allowed(role, tool, args)
 
 
 def tool_allowed(name: str, rights: frozenset[str]) -> bool:
@@ -446,8 +467,9 @@ def lint_role(path: Path, role: str, server_file: Path = SERVER_FILE, docs: Path
     problems: list[str] = []
     if meta.get("name") != path.stem:
         problems.append(f"{name}: frontmatter: name должен быть {path.stem}")
-    if meta.get("model") not in ROLE_MODELS:
-        problems.append(f"{name}: frontmatter: model — одна из " + ", ".join(sorted(ROLE_MODELS)))
+    if meta.get("model") not in ROLE_MODELS.get(role, set()):
+        problems.append(f"{name}: frontmatter: model роли {role} — одна из "
+                        + ", ".join(sorted(ROLE_MODELS.get(role, set()))))
     if len(meta.get("description", "")) < 20:
         problems.append(f"{name}: frontmatter: нужно описание (description)")
     unknown = set(meta) - {"name", "description", "model", "tools"}
@@ -480,6 +502,24 @@ def lint_role(path: Path, role: str, server_file: Path = SERVER_FILE, docs: Path
     acts, reflexes = actions(docs), reflex_types(docs)
     for tool, raw in call_blocks(body):
         problems += [f"{name}: {p}" for p in check_call(tool, raw, short, tools, acts, reflexes)]
+        try:
+            args = json.loads(raw) if raw else {}
+        except ValueError:
+            continue
+        if isinstance(args, dict) and tool in tools and not role_allowed(role, tool, args):
+            problems.append(f"{name}: вызов {tool} {raw[:60]} вне прав роли {role} в этой форме (roles.py)")
+    # всё, что названо в тексте: инструменты есть в docs/MCP.md, служебных и консольных команд нет
+    for word in sorted(set(re.findall(r"\bpartner_[a-z_]+\b", body))):
+        if word not in tools:
+            problems.append(f"{name}: в тексте назван {word}, которого нет в таблице docs/MCP.md")
+    for word in sorted(set(re.findall(r"\badmin_[a-z_]+\b", body))):
+        problems.append(f"{name}: в тексте служебный инструмент {word}: агенту роли он недоступен")
+    if CONSOLE_MD_RE.search(body):
+        problems.append(f"{name}: в тексте консольная команда игры (/c, /sc, /silent-command): "
+                        "разрешён только /partner через мост")
+    for word in ROLE_WORDS.get(role, ()):
+        if word not in body:
+            problems.append(f"{name}: в правилах нет обязательного слова «{word}»")
     return problems
 
 
@@ -504,8 +544,9 @@ def lint_files(paths: list[Path]) -> list[str]:
         if path.suffix == ".js":
             if not re.search(r"^export const meta = \{", text, flags=re.M):
                 problems.append(f"{rel}: сценарий должен начинаться с export const meta")
-            if not re.search(r"agentType:\s*'partner'", text):
-                problems.append(f"{rel}: агенты сценария должны быть типа partner")
+            if not re.search(r"agentType:\s*'partner'", text) and not re.search(
+                    r"partner-(?:voice|pilot|strategist)'", text):
+                problems.append(f"{rel}: агенты сценария должны быть типа partner (или его ролей)")
             if re.search(r"Date\.now\(|Math\.random\(|new Date\(\)", text):
                 problems.append(f"{rel}: в сценарии нельзя Date.now / Math.random / new Date()")
     return problems

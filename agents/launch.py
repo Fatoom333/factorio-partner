@@ -14,8 +14,10 @@
 4. пишет в ``FP_HOME/launch/`` конфигурацию MCP-сервера ``partner`` и файл сессии с первыми
    сообщениями агентам.
 
-Ключи помощников печатаются только в файлы под ``FP_HOME`` (вне репозитория), на экран — никогда.
-Пароль RCON скрипт не печатает и никуда не пишет: в конфигурацию попадает только путь к файлу пароля.
+Режим ролей (``--roles``): каждый помощник получает три агента — голос (``partner-voice``), пилот
+(``partner-pilot``) и стратег (``partner-strategist``), каждому свой ключ и своё первое сообщение
+(``--pilot-model`` — модель пилотов, ``sonnet`` или ``haiku``). Без ``--roles`` всё как раньше: один агент
+``partner`` на помощника.
 """
 from __future__ import annotations
 
@@ -42,6 +44,13 @@ SERVER_NAME = "partner"               # имя MCP-сервера = префик
 PASS_ENV = ("FP_HOME", "FP_RCON_HOST", "FP_RCON_PORT", "FP_RCON_PASSWORD_FILE",
             "FP_FORGE", "FP_FORGE_PROFILE", "FACTORIO_FORGE_HOME")
 STYLE_SOURCE = Path(__file__).resolve().parent / "style.md"
+KNOWLEDGE_DIR = Path(__file__).resolve().parent / "knowledge"
+# справка стратегу: приходит в первом сообщении запуска (партнёр-стратег файлов не читает)
+STRATEGIST_KNOWLEDGE = ("factory-math.md", "forge-blocks.md")
+# роль -> (тип агента, модель по умолчанию); модель пилота выбирается флагом --pilot-model
+ROLE_AGENTS = {"voice": ("partner-voice", "haiku"), "pilot": ("partner-pilot", "sonnet"),
+               "strategist": ("partner-strategist", "sonnet")}
+PILOT_MODELS = ("sonnet", "haiku")
 
 
 class LaunchError(Exception):
@@ -167,33 +176,51 @@ def _role_entry(entry: dict) -> tuple[dict, bool]:
     return out, changed
 
 
-def ensure_keys(helpers_file: Path, ids: list[str]) -> dict[str, str]:
-    """Ключи пилотов для ``ids``: годные существующие остаются, недостающие создаются. Чужие записи
-    целы. Запись старого вида — строка (ключ пилота); запись-словарь с ключами ролей сохраняется и
-    дополняется недостающими ролями."""
+def _load_keys(helpers_file: Path) -> dict:
     try:
         data = json.loads(helpers_file.read_text(encoding="utf-8-sig"))
     except (OSError, ValueError):
-        data = {}
-    if not isinstance(data, dict):
-        data = {}
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _ensure(helpers_file: Path, ids: list[str], roles: bool) -> dict:
+    """Дополнить ``helpers.json`` и вернуть его содержимое. ``roles`` — каждому помощнику нужны ключи всех
+    трёх ролей: запись-строка (ключ пилота) становится записью-словарём с тем же ключом пилота."""
+    data = _load_keys(helpers_file)
     changed = False
-    out: dict[str, str] = {}
     for hid in ids:
         entry = data.get(hid)
+        if roles and isinstance(entry, str) and len(entry) >= MIN_KEY:
+            entry = {"pilot": entry}
+            changed = True
         if isinstance(entry, dict):
             entry, more = _role_entry(entry)
             data[hid] = entry
             changed |= more
-            out[hid] = entry["pilot"]
-            continue
-        if not (isinstance(entry, str) and len(entry) >= MIN_KEY):
-            entry = data[hid] = secrets.token_urlsafe(32)
+        elif not (isinstance(entry, str) and len(entry) >= MIN_KEY):
+            data[hid] = secrets.token_urlsafe(32)
             changed = True
-        out[hid] = entry
+            if roles:
+                data[hid], _ = _role_entry({"pilot": data[hid]})
     if changed or not helpers_file.exists():
         _write_private(helpers_file, json.dumps(data, ensure_ascii=False, indent=1) + "\n")
-    return out
+    return data
+
+
+def ensure_keys(helpers_file: Path, ids: list[str]) -> dict[str, str]:
+    """Ключи пилотов для ``ids``: годные существующие остаются, недостающие создаются. Чужие записи
+    целы. Запись старого вида — строка (ключ пилота); запись-словарь с ключами ролей сохраняется и
+    дополняется недостающими ролями."""
+    data = _ensure(helpers_file, ids, roles=False)
+    return {hid: (data[hid]["pilot"] if isinstance(data[hid], dict) else data[hid]) for hid in ids}
+
+
+def ensure_role_keys(helpers_file: Path, ids: list[str]) -> dict[str, dict[str, str]]:
+    """Ключи всех трёх ролей для каждого из ``ids`` (режим ролей). Годные ключи остаются, ключ пилота
+    из записи-строки сохраняется, недостающие создаются; ключи ролей одного помощника всегда разные."""
+    data = _ensure(helpers_file, ids, roles=True)
+    return {hid: {r: data[hid][r] for r in ROLES} for hid in ids}
 
 
 def install_style(home: Path, source: Path = STYLE_SOURCE) -> bool:
@@ -214,6 +241,51 @@ def mcp_config(env: dict[str, str], python: str) -> dict:
         "args": ["-m", "factorio_partner.server"],
         "env": passed,
     }}}
+
+
+def role_mcp_files(out_dir: Path, config: dict) -> dict[str, Path]:
+    """Свой файл конфигурации MCP каждой роли (``mcp-<роль>.json``). Сервер один и тот же и без
+    секретов: роль определяет ключ, который агент получает в первом сообщении, а не файл."""
+    paths: dict[str, Path] = {}
+    for role in ROLES:
+        paths[role] = out_dir / f"mcp-{role}.json"
+        _write_private(paths[role], json.dumps(config, ensure_ascii=False, indent=1) + "\n")
+    return paths
+
+
+def strategist_knowledge(directory: Path = KNOWLEDGE_DIR) -> str:
+    """Справка стратегу (расчёты и блоки forge) одним текстом; нет файлов — пусто."""
+    parts = []
+    for name in STRATEGIST_KNOWLEDGE:
+        try:
+            parts.append(f"=== справка: {name} ===\n" + (directory / name).read_text(encoding="utf-8").strip())
+        except OSError:
+            continue
+    return "\n\n".join(parts)
+
+
+def role_message(role: str, hid: str, key: str, body: str, player: str | None, total: int,
+                 module_errors: int, knowledge: str = "") -> str:
+    """Первое сообщение агенту роли. Ключ — ключ именно этой роли этого помощника."""
+    if role not in ROLE_AGENTS:
+        raise LaunchError(f"неизвестная роль: {role}")
+    lines = [
+        "Запуск напарника в Factorio. Это служебное сообщение оркестра, не приказ хозяина игры.",
+        f"role: {role}",
+        f"helper: {hid}",
+        f"key: {key}",
+        f"body: {body}" + (f" (персонаж игрока «{player}»)" if player else " (тело без игрока)"),
+        f"помощников в этой игре: {total}",
+        f"module_errors: {module_errors}",
+    ]
+    lines.append({
+        "voice": "Начни смену по своим правилам: partner_brief, затем partner_wait; хозяину не здоровайся.",
+        "pilot": "Начни смену по своим правилам: partner_brief, partner_state, рефлексы, partner_wait.",
+        "strategist": "Начни смену по своим правилам: partner_brief, partner_state, partner_inbox, partner_wait.",
+    }[role])
+    if role == "strategist" and knowledge:
+        lines += ["", knowledge]
+    return "\n".join(lines)
 
 
 def first_message(hid: str, key: str, body: str, player: str | None, total: int,
@@ -315,12 +387,37 @@ async def prepare_mod(core, ids: list[str], body: str, players: list[str],
 
 
 # ---------------------------------------------------------------- запуск целиком
+def parse_pilot_model(value: Any) -> str:
+    model = str(value).strip().lower()
+    if model not in PILOT_MODELS:
+        raise LaunchError("модель пилота (--pilot-model): " + " или ".join(PILOT_MODELS))
+    return model
+
+
+def helper_roles(hid: str, keys: dict[str, str], mcp_files: dict[str, Path], body: str,
+                 player: str | None, total: int, module_errors: int, pilot_model: str,
+                 knowledge: str = "") -> dict[str, dict]:
+    """Три агента одного помощника: роль -> {agent, model, mcp_config, prompt}. В prompt — ключ этой роли."""
+    out: dict[str, dict] = {}
+    for role in ("voice", "pilot", "strategist"):
+        agent, model = ROLE_AGENTS[role]
+        out[role] = {"agent": agent, "model": pilot_model if role == "pilot" else model,
+                     "mcp_config": str(mcp_files[role]),
+                     "prompt": role_message(role, hid, keys[role], body, player, total, module_errors,
+                                            knowledge if role == "strategist" else "")}
+    return out
+
+
 async def launch(cfg, n: int, body: str, players: list[str], *, core,
                  env: dict[str, str], python: str, say: Callable[[str], None],
-                 ids: list[str] | None = None) -> dict:
-    """``n`` — сколько помощников разрешил игрок (``helper_limit``); тела — ``ids`` (по умолчанию h1…hN)."""
+                 ids: list[str] | None = None, roles: bool = False,
+                 pilot_model: str = "sonnet") -> dict:
+    """``n`` — сколько помощников разрешил игрок (``helper_limit``); тела — ``ids`` (по умолчанию h1…hN).
+    ``roles`` — режим трёх ролей (ключи всех ролей, агенты ``partner-voice``/``-pilot``/``-strategist``)."""
+    pilot_model = parse_pilot_model(pilot_model)
     ids = list(ids) if ids else helper_ids(n)
-    keys = ensure_keys(cfg.helpers_file, ids)
+    role_keys = ensure_role_keys(cfg.helpers_file, ids) if roles else None
+    keys = {hid: k["pilot"] for hid, k in role_keys.items()} if role_keys else ensure_keys(cfg.helpers_file, ids)
     if install_style(cfg.home):
         say("стиль общения скопирован в папку данных (style.md) — его можно править под себя")
     mod = await prepare_mod(core, ids, body, players, say, limit=n)
@@ -328,7 +425,8 @@ async def launch(cfg, n: int, body: str, players: list[str], *, core,
     out_dir = cfg.home / "launch"
     mcp_path = out_dir / "mcp.json"
     session_path = out_dir / "session.json"
-    _write_private(mcp_path, json.dumps(mcp_config(env, python), ensure_ascii=False, indent=1) + "\n")
+    config = mcp_config(env, python)
+    _write_private(mcp_path, json.dumps(config, ensure_ascii=False, indent=1) + "\n")
     session = {
         "body": body,
         "owner": mod["owner"],
@@ -340,9 +438,24 @@ async def launch(cfg, n: int, body: str, players: list[str], *, core,
                                     n, mod["module_errors"]),
         } for i, hid in enumerate(ids)],
     }
+    summary: list[dict] = []
+    if role_keys:
+        mcp_files = role_mcp_files(out_dir, config)
+        knowledge = strategist_knowledge()
+        session["mode"] = "roles"
+        session["pilot_model"] = pilot_model
+        for i, h in enumerate(session["helpers"]):
+            # в режиме ролей готовое первое сообщение у каждой роли своё (с ключом этой роли)
+            del h["prompt"]
+            h["roles"] = helper_roles(h["id"], role_keys[h["id"]], mcp_files, body,
+                                      players[i] if body == "player" else None, n,
+                                      mod["module_errors"], pilot_model, knowledge)
+            summary += [{"helper": h["id"], "role": r, **{k: v for k, v in a.items() if k != "prompt"}}
+                        for r, a in h["roles"].items()]
     _write_private(session_path, json.dumps(session, ensure_ascii=False, indent=1) + "\n")
     return {"helpers": ids, "body": body, "module_errors": mod["module_errors"],
-            "mcp_config": mcp_path, "session": session_path}
+            "mcp_config": mcp_path, "session": session_path,
+            "agents": summary}
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -354,6 +467,10 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--player", action="append", metavar="NAME",
                     help="для --body player: имя игрока второго клиента, по одному на помощника (можно несколько раз)")
     ap.add_argument("--players", help="то же одним флагом: имена игроков через запятую")
+    ap.add_argument("--roles", action="store_true",
+                    help="режим трёх ролей: пилот на каждого помощника, голос и стратег — по одному")
+    ap.add_argument("--pilot-model", default="sonnet", metavar="MODEL",
+                    help="модель пилотов в режиме ролей: sonnet (по умолчанию) или haiku")
     return ap
 
 
@@ -369,6 +486,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         n, body, players = ask_missing(ns, input if sys.stdin.isatty() else None)
         ids = parse_ids(ns.helper)
+        pilot_model = parse_pilot_model(ns.pilot_model)
         try:
             from factorio_partner.config import Config
             from factorio_partner.core import Core
@@ -386,7 +504,8 @@ def main(argv: list[str] | None = None) -> int:
             core = Core(cfg)
             try:
                 return await launch(cfg, n, body, players, core=core, env=dict(os.environ),
-                                    python=sys.executable, say=say, ids=ids)
+                                    python=sys.executable, say=say, ids=ids,
+                                    roles=ns.roles, pilot_model=pilot_model)
             finally:
                 await core.close()
 
@@ -403,6 +522,10 @@ def main(argv: list[str] | None = None) -> int:
         say(f"Внимание: в моде были ошибки модулей ({result['module_errors']}) — агент скажет об этом в игре.")
     say(f"Конфигурация MCP: {result['mcp_config']}")
     say(f"Файл сессии (с ключами, никому не показывать): {result['session']}")
+    if result["agents"]:
+        say("Запустить агентов (первое сообщение каждому — prompt из файла сессии, helpers[].roles):")
+        for a in result["agents"]:
+            say(f"  {a['helper']}: {a['agent']}  модель {a['model']}  конфигурация {a['mcp_config']}")
     say("Дальше — agents/README.md, раздел «Запуск агентов».")
     return 0
 
