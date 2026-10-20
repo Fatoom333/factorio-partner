@@ -42,7 +42,8 @@ READ = _READS | _READ_FORMS
 #                            args.dry_run exactly true and no replace: the mod changes nothing;
 #   "partner_ledger.cancel" — take a build package off (the pilot may drop one the body cannot do);
 #                            "partner_ledger.write" (put, resume) is the strategist's alone.
-DRY_RUN_ACTS = frozenset({"plan_mining", "plan_belt", "build_blueprint"})
+DRY_RUN_ACTS = frozenset({"plan_mining", "plan_belt", "build_blueprint", "build_layout",
+                          "connect_entities"})
 _PILOT_WRITES = frozenset({
     "partner_act", "partner_act.dry_run", "partner_cancel", "partner_cancel.all", "partner_say",
     "partner_plan", "partner_notes.write", "partner_notes.rules", "partner_hold.write",

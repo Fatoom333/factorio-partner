@@ -19,7 +19,8 @@ def load():
 
 class World:
     def __init__(self, stock=None, furnace="own", leak=False, instant=False, bad_cancel_event=False,
-                 ready=None, far=False, place_fail=False, decon_fail=False):
+                 ready=None, far=False, place_fail=False, decon_fail=False, drift=False, no_mine=False,
+                 no_approach=False):
         self.stock = dict(stock if stock is not None else {"iron-plate": 400, "copper-plate": 400})
         self.stock.update(ready or {})      # готовые предметы на складе
         self.inv = {}
@@ -30,6 +31,11 @@ class World:
         self.place_fail = place_fail      # place всегда cannot_place
         self.decon_fail = decon_fail      # deconstruct не убирает печь
         self.placed = []
+        self.pos = {"x": 0, "y": 0}
+        self.drift = drift                # добыча уводит тело далеко от печи (как на живом стенде)
+        self.no_mine = no_mine            # mine ничего не добывает (руды и камня нет)
+        self.no_approach = no_approach    # approach всегда не удаётся
+        self.asked = []                   # (предмет, радиус, расстояние до своей печи) для get_items плавки
         self.leak = leak                  # cancel не снимает крафт
         self.instant = instant            # крафт кончается раньше, чем его снимают
         self.bad_cancel_event = bad_cancel_event
@@ -45,12 +51,21 @@ class World:
     def _done(self, do, detail):
         self._emit("job_done", {"job": self.job, "do": do, "detail": detail})
 
-    def _get_items(self, items):
+    def _dist_to_furnace(self):
+        f = self.placed[0]["pos"]
+        return ((f["x"] - self.pos["x"]) ** 2 + (f["y"] - self.pos["y"]) ** 2) ** 0.5
+
+    def _get_items(self, items, radius=64):
         (item, target), = items.items()
         have = self.inv.get(item, 0)
+        if item in ("iron-plate", "copper-plate", "stone", "wood", "stone-brick")                 and self.stock.get(item, 0) >= target - have:
+            take = max(0, target - have)
+            self.stock[item] -= take
+            self.inv[item] = target
+            return self._done("get_items", {"have": {item: target}, "from": {"storage": {item: take}}})
         if item == "electronic-circuit":
             for raw, n in (("iron-plate", target), ("copper-plate", target * 2)):
-                self.stock[raw] -= max(0, n - self.inv.get(raw, 0))     # недостающее сырьё берётся со склада
+                self.stock[raw] = self.stock.get(raw, 0) - max(0, n - self.inv.get(raw, 0))     # недостающее сырьё берётся со склада
                 self.inv[raw] = max(0, self.inv.get(raw, 0) - n)
             self.inv[item] = target
             if self.stock.get("copper-cable", 0) >= target * 3:     # промежуточный со склада
@@ -65,20 +80,28 @@ class World:
             return self._done("get_items", {"have": {item: target}, "from": {"crafted": {item: target, mid: target}}})
         if item == "inserter":
             for raw, n in (("iron-plate", 4 * target), ("copper-plate", 2 * target)):
-                self.stock[raw] -= max(0, n - self.inv.get(raw, 0))
+                self.stock[raw] = self.stock.get(raw, 0) - max(0, n - self.inv.get(raw, 0))
                 self.inv[raw] = max(0, self.inv.get(raw, 0) - n)
             self.inv[item] = target
             return self._done("get_items", {"have": {item: target},
                                             "from": {"crafted": {item: target, "electronic-circuit": target}}})
         if item in ("stone-brick", "iron-plate", "copper-plate"):
             ore, per = {"stone-brick": ("stone", 2), "iron-plate": ("iron-ore", 1), "copper-plate": ("copper-ore", 1)}[item]
-            if not (self.furnace is True or (self.furnace == "own" and self.placed)):
+            own_near = self.furnace == "own" and self.placed and self._dist_to_furnace() <= radius
+            if self.placed:
+                self.asked.append((item, radius, round(self._dist_to_furnace(), 1)))
+            if not (self.furnace is True or own_near):
                 return self._emit("job_failed", {"job": self.job, "do": "get_items", "code": "no_items",
                                                  "detail": {"have": {}, "shortfall": [
                                                      {"item": item, "missing": target, "reason": "no_furnace"}]}})
-            self.inv[ore] -= target * per
+            need = max(0, target - have)
+            if self.inv.get(ore, 0) < need * per:
+                return self._emit("job_failed", {"job": self.job, "do": "get_items", "code": "no_items",
+                                                 "detail": {"have": {}, "shortfall": [
+                                                     {"item": item, "missing": need, "reason": "no_source"}]}})
+            self.inv[ore] -= need * per
             self.inv[item] = target
-            return self._done("get_items", {"have": {item: target}, "from": {"smelted": {item: target}}})
+            return self._done("get_items", {"have": {item: target}, "from": {"smelted": {item: need}}})
         raise AssertionError(item)
 
     def __call__(self, cmd):
@@ -97,7 +120,7 @@ class World:
         if op == "helper_spawn":
             return ok({"helper": env["helper"], "unit_number": 7, "surface": "vulcanus", "pos": {"x": 0, "y": 0}})
         if op == "state":
-            st = {"helper": env["helper"], "pos": {"x": 0, "y": 0}, "inv": dict(self.inv), "queue": 0}
+            st = {"helper": env["helper"], "pos": dict(self.pos), "inv": dict(self.inv), "queue": 0}
             if self.active:
                 st["job"] = {"job": self.active, "do": "craft"}
             return ok(st)
@@ -113,10 +136,20 @@ class World:
             do, a = args["do"], args["args"]
             self.acts.append((do, a))
             if do == "get_items":
-                self._get_items(a["items"])
+                self._get_items(a["items"], a.get("radius", 64))
+            elif do == "mine" and self.no_mine:
+                self._emit("job_failed", {"job": self.job, "do": "mine", "code": "not_found"})
             elif do == "mine":
                 self.inv[a["item"]] = self.inv.get(a["item"], 0) + a["count"]
+                if self.drift:
+                    self.pos = {"x": self.pos["x"] + 30, "y": self.pos["y"]}
                 self._done("mine", {"mined": {a["item"]: a["count"]}})
+            elif do == "approach" and self.no_approach:
+                self._emit("job_failed", {"job": self.job, "do": "approach", "code": "path_failed"})
+            elif do == "approach":
+                t = a["target"]
+                self.pos = {"x": t["pos"]["x"] - a.get("distance", 1), "y": t["pos"]["y"]}
+                self._done("approach", {"pos": dict(self.pos)})
             elif do == "collect":
                 (item, n), = a["items"].items()
                 take = min(n, self.stock.get(item, 0))
@@ -222,9 +255,9 @@ def test_plates_everywhere_but_no_ore_source_is_setup(fake_rcon):
 
 
 def test_empty_base_everything_setup(fake_rcon):
-    res = run(World(stock={}), fake_rcon)
+    res = run(World(stock={}, no_mine=True), fake_rcon)
     assert res["ok"] is False and res["error"]["kind"] == "setup"
-    assert set(res["setup_failed"]) >= {"craft", "cancel"}
+    assert set(res["setup_failed"]) >= {"smelt", "craft", "cancel"}
 
 
 def test_cancel_that_leaves_craft_running_fails(fake_rcon):
@@ -341,16 +374,16 @@ def test_craft_spare_fails_when_middle_on_storage_not_taken(fake_rcon, monkeypat
 
 def test_craft_skipped_only_when_item_itself_is_on_storage(fake_rcon):
     w = World(ready={"electronic-circuit": 3})
-    res = run(w, fake_rcon)
-    assert res["craft"]["item"] == "inserter", res["craft"]
+    cands = tuple(c for c in load().CRAFT_CANDIDATES if c[0] in ("electronic-circuit", "inserter"))
+    res = run(w, fake_rcon, CRAFT_CANDIDATES=cands)
+    assert res["craft"]["item"] == "inserter" and res["craft"]["middle_from"] == "storage", res["craft"]
 
 
 def test_smelt_asks_with_small_radius_near_own_furnace(fake_rcon):
     w = World()
     res = run(w, fake_rcon)
-    asks = [a for do, a in w.acts if do == "get_items" and list(a["items"]) in (["iron-plate"], ["copper-plate"], ["stone-brick"])]
-    assert asks and all(a["radius"] <= 6 for a in asks), asks
-    assert res["smelt"]["radius"] == asks[-1]["radius"]
+    assert w.asked and all(radius <= 6 and dist <= radius for _, radius, dist in w.asked), w.asked
+    assert res["smelt"]["radius"] == w.asked[0][1]
     assert res["smelt"]["furnace_dist"] <= 5
 
 
@@ -362,6 +395,75 @@ def test_new_candidates_are_reachable(fake_rcon):
     for cand in only:
         res = run(World(stock=dict(w.stock)), fake_rcon, CRAFT_CANDIDATES=(cand,))
         assert res["craft"]["item"] == cand[0] and not res["craft"].get("setup_failed"), (cand, res["craft"])
+
+
+# ---------- печь далеко от тела, сырьё приносится плавкой, порядок частей ----------
+
+def test_corners_are_within_six_cells():
+    assert all((dx * dx + dy * dy) ** 0.5 <= 6 for dx, dy in load().CORNERS)
+
+
+def test_far_furnace_is_approached_and_radius_counted_after(fake_rcon):
+    # добыча руды уводит тело на 30 клеток от печи: без подхода печь в get_items не попадает
+    w = World(drift=True)
+    res = run(w, fake_rcon)
+    assert res["ok"] is True, res.get("reasons") or res.get("setup_failed")
+    dos = [d for d, _ in w.acts]
+    smelt_ask = next(i for i, (d, a) in enumerate(w.acts) if d == "get_items" and "stone-brick" in a["items"])
+    last_mine = max(i for i, (d, a) in enumerate(w.acts[:smelt_ask]) if d == "mine")
+    appr = [i for i, d in enumerate(dos) if d == "approach"]
+    assert appr and last_mine < appr[0] < smelt_ask
+    unit = w.placed[0]["unit"] if w.placed else 100
+    approach = w.acts[appr[0]][1]
+    assert approach["target"]["unit_number"] == unit and approach["target"]["pos"] == res["smelt_place"]["pos"]
+    assert 2 <= approach["distance"] <= 3
+    assert res["smelt"]["furnace_dist"] <= 3.5 and res["smelt"]["radius"] <= 6
+    assert w.asked[0][2] <= 3.5, w.asked
+
+
+def test_failed_approach_to_own_furnace_is_setup(fake_rcon):
+    res = run(World(no_approach=True), fake_rcon)
+    assert "подойти" in res["setup_failed"]["smelt"] and "reasons" not in res
+
+
+def test_raw_without_storage_is_brought_by_smelting(fake_rcon):
+    # на складе ни пластин, ни руды: железо и медь для электронной схемы выплавляются в своей печи
+    w = World(stock={"stone": 50, "wood": 10}, drift=True)
+    res = run(w, fake_rcon)
+    # долгая партия снятия очереди берёт 40+ пластин со склада, которых нет: это setup именно её части
+    assert "reasons" not in res and set(res["setup_failed"]) == {"cancel"}, res
+    assert res["craft"]["item"] == "electronic-circuit" and res["craft"]["chain_checked"] is True
+    assert ("copper-plate", ) in {(a[0],) for a in w.asked} and ("iron-plate", ) in {(a[0],) for a in w.asked}
+    assert all(radius <= 6 for _, radius, _ in w.asked), w.asked
+    assert res["craft_prep"]["copper-plate"]["smelt"] == "job_done"
+    # плавка идёт раньше крафта, печь одна, разобрана последней и на карте пусто
+    firsts = {d: min(i for i, (x, _) in enumerate(w.acts) if x == d) for d in ("place", "deconstruct")}
+    craft_ask = next(i for i, (d, a) in enumerate(w.acts) if d == "get_items" and "electronic-circuit" in a["items"])
+    assert firsts["place"] < craft_ask < firsts["deconstruct"]
+    assert [d for d, _ in w.acts].count("place") == 1 and w.acts[-1][0] == "deconstruct"
+    assert w.placed == []
+
+
+def test_furnace_stands_until_end_of_run(fake_rcon):
+    w = World()
+    run(w, fake_rcon)
+    dos = [d for d, _ in w.acts]
+    cancel_craft = max(i for i, d in enumerate(dos) if d == "craft")
+    assert dos.count("deconstruct") == 1 and dos.index("deconstruct") > cancel_craft
+
+
+def test_top_up_when_part_of_plates_already_in_pockets(fake_rcon):
+    # плавка части «плавка» оставила 5 железных пластин; на схему нужно 6 — докладывается одна, не шесть
+    w = World(stock={"stone": 50, "wood": 10}, drift=True)
+    res = run(w, fake_rcon)
+    iron_asks = [a for d, a in w.acts if d == "get_items" and list(a["items"]) == ["iron-plate"]]
+    assert [a["items"]["iron-plate"] for a in iron_asks][:2] == [5, 6], iron_asks
+
+
+def test_craft_without_any_raw_source_is_setup(fake_rcon):
+    # ни пластин на складе, ни руды: плавка части 1 не вышла, крафт честно «не подготовлено», а не провал мода
+    res = run(World(stock={}, no_mine=True), fake_rcon)
+    assert "не подготовлено" in res["setup_failed"]["craft"] and "reasons" not in res
 
 
 # ---------- hold в ServerClient ----------

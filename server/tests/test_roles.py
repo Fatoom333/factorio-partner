@@ -394,3 +394,24 @@ async def test_reload_drops_orders_and_used_seq(core, fake):
     assert core._order_used == {}
     again = owner_said(fake, "новое")
     assert (await core.op_order("h1", VKEY, again["seq"], "новое", "small"))["open"] == 1
+
+
+@pytest.mark.parametrize("do,inner", [
+    ("build_layout", {"anchor": {"x": 0, "y": 0}, "entities": [{"name": "stone-furnace", "dx": 0, "dy": 0}]}),
+    ("connect_entities", {"kind": "belt", "from": {"pos": {"x": 0, "y": 0}}, "to": {"pos": {"x": 4, "y": 0}}}),
+])
+async def test_strategist_probes_the_layout_actions_only_with_dry_run(core, fake, do, inner):
+    await core.op_act("h1", SKEY, do, dict(inner, dry_run=True))
+    assert fake.mod.executed["act"] == 1
+    for bad in ({}, {"dry_run": False}, {"dry_run": 1}, {"dry_run": "true"}):
+        e = await refused(core.op_act("h1", SKEY, do, dict(inner, **bad)))
+        assert e.code == "not_allowed"
+    e = await refused(core.op_act("h1", SKEY, do, dict(inner, dry_run=True), True))     # replace
+    assert e.code == "not_allowed"
+    assert fake.mod.executed["act"] == 1
+    assert R.capability("partner_act", {"do": do, "args": {"dry_run": True}}) == "partner_act.dry_run"
+    assert R.capability("partner_act", {"do": do, "args": {}}) == "partner_act"
+    assert R.capability("partner_act", {"do": do, "args": {"dry_run": True}, "replace": False}) \
+        == "partner_act.dry_run"
+    assert R.allowed("pilot", "partner_act", {"do": do, "args": {}})
+    assert not R.allowed("voice", "partner_act", {"do": do, "args": {"dry_run": True}})

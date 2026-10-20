@@ -5,6 +5,7 @@ import types
 
 import pytest
 
+from factorio_partner import validate as V
 from factorio_partner.core import Core
 from factorio_partner.errors import PartnerError
 
@@ -751,3 +752,214 @@ async def test_admin_ops(core, fake):
     r = await core.admin_raw_events(0)
     assert "events" in r["data"]
     assert (await code_of(core.admin_spawn("BAD!"))).code == "bad_args"
+
+
+# ---------------------------------------------------------------- build_layout / connect_entities
+
+LAYOUT_ENTS = [{"name": "stone-furnace", "cx": 1.0, "cy": 1.0},
+               {"name": "assembling-machine-1", "cx": 4.5, "cy": 1.5, "recipe": "iron-gear-wheel"}]
+FORGE_PORTS = [{"id": "in0", "kind": "belt", "io": "in", "dx": 0, "dy": 0, "dir": 4, "items": ["iron-ore"]},
+               {"id": "out0", "kind": "belt", "io": "out", "dx": 5, "dy": 0, "dir": 4, "rate": 0.5}]
+ANCHOR = {"x": 5, "y": 5}
+
+
+def install_layout_forge(monkeypatch, name, calls=None, entities=LAYOUT_ENTS, ports=FORGE_PORTS):
+    def load_layout(plan_id, *, config):
+        if calls is not None:
+            calls.append((plan_id, config))
+        if plan_id != "blk-1":
+            raise PartnerError("bad_args", "plan: no such plan")
+        return {"entities": entities, "ports": ports}
+    return install_forge(monkeypatch, name, load_layout=load_layout)
+
+
+async def test_build_layout_plan_goes_as_a_blob_with_ports(cfg, fake, monkeypatch):
+    calls = []
+    name = install_layout_forge(monkeypatch, "fake_forge_layout", calls)
+    c = Core(cfg, make_bridge(cfg), poll_interval=0.01, forge_module=name)
+    mine = {"id": "out0", "dx": 9, "dy": 9, "kind": "belt", "io": "out", "dir": 0}
+    await c.op_act("h1", KEY, "build_layout", {"plan": "blk-1", "anchor": ANCHOR, "direction": 4,
+                                               "tag": "b1", "ports": [mine]})
+    assert calls == [("blk-1", cfg)]                       # exactly load_layout(id, config=Config)
+    a = last_env(fake, "act")["args"]["args"]
+    assert "plan" not in a and "entities" not in a and "ports" not in a
+    assert a["direction"] == 4 and a["tag"] == "b1" and a["anchor"] == ANCHOR
+    body = json.loads(fake.mod.blob_text(a["blob"]))
+    assert body["entities"] == LAYOUT_ENTS
+    by_id = {p["id"]: p for p in body["ports"]}
+    assert by_id["out0"] == mine                          # the agent's port wins by id
+    assert by_id["in0"] == FORGE_PORTS[0]                 # the rest is the forge's
+    for cmd in fake.commands:
+        assert len(cmd.encode()) <= 8 * 1024 + len("/partner ")
+    await c.close()
+
+
+async def test_build_layout_plan_forge_port_shape(cfg, fake, monkeypatch):
+    # a forge port carries both lanes (one may be "") and a rate; it reaches the mod as is
+    port = {"id": "in0", "kind": "belt", "io": "in", "dx": 0, "dy": 0, "dir": 4,
+            "items": ["iron-plate", ""], "rate": 7.5}
+    name = install_layout_forge(monkeypatch, "fake_forge_layout_shape", ports=[port])
+    c = Core(cfg, make_bridge(cfg), poll_interval=0.01, forge_module=name)
+    await c.op_act("h1", KEY, "build_layout", {"plan": "blk-1", "anchor": ANCHOR})
+    body = json.loads(fake.mod.blob_text(last_env(fake, "act")["args"]["args"]["blob"]))
+    assert body["ports"] == [port]
+    await c.close()
+    # a saved port with a field the mod does not know: the plan is damaged
+    bad_port = dict(port, extra=1)
+    name = install_layout_forge(monkeypatch, "fake_forge_layout_shape2", ports=[bad_port])
+    c = Core(cfg, make_bridge(cfg), poll_interval=0.01, forge_module=name)
+    e = await code_of(c.op_act("h1", KEY, "build_layout", {"plan": "blk-1", "anchor": ANCHOR}))
+    assert e.code == "not_found"
+    await c.close()
+
+
+async def test_build_layout_plan_errors(cfg, fake, monkeypatch, core):
+    name = install_layout_forge(monkeypatch, "fake_forge_layout2")
+    c = Core(cfg, make_bridge(cfg), poll_interval=0.01, forge_module=name)
+    e = await code_of(c.op_act("h1", KEY, "build_layout", {"plan": "nope", "anchor": ANCHOR}))
+    assert e.code == "bad_args"                           # the forge's own refusal, as is
+    await c.close()
+    # no forge at all
+    e = await code_of(core.op_act("h1", KEY, "build_layout", {"plan": "blk-1", "anchor": ANCHOR}))
+    assert e.code == "not_found"
+
+    # forge crashes / answers with rubbish
+    def boom(plan_id, *, config):
+        raise RuntimeError("C:/secret/path")
+    for n, fn in (("fake_forge_layout3", boom), ("fake_forge_layout4", lambda p, *, config: {"entities": []}),
+                  ("fake_forge_layout5", lambda p, *, config: "text")):
+        c = Core(cfg, make_bridge(cfg), poll_interval=0.01,
+                 forge_module=install_forge(monkeypatch, n, load_layout=fn))
+        e = await code_of(c.op_act("h1", KEY, "build_layout", {"plan": "blk-1", "anchor": ANCHOR}))
+        assert e.code == "not_found" and "secret" not in str(e)
+        await c.close()
+    assert not any('"op":"blob_put"' in cmd for cmd in fake.commands)
+
+
+async def test_build_layout_too_many_ports_after_merge(cfg, fake, monkeypatch):
+    ports = [{"id": f"f{i}", "kind": "belt", "io": "in", "dx": 0, "dy": 0} for i in range(16)]
+    name = install_layout_forge(monkeypatch, "fake_forge_layout6", ports=ports)
+    c = Core(cfg, make_bridge(cfg), poll_interval=0.01, forge_module=name)
+    mine = {"id": "extra", "dx": 0, "dy": 0, "kind": "belt", "io": "out"}
+    e = await code_of(c.op_act("h1", KEY, "build_layout", {"plan": "blk-1", "anchor": ANCHOR, "ports": [mine]}))
+    assert e.code == "limit"
+    await c.close()
+
+
+def big_entities(n=60):
+    return [{"name": "wooden-chest", "dx": i % 30, "dy": i // 30, "insert": {"iron-plate": 100}}
+            for i in range(n)]
+
+
+async def test_build_layout_big_inline_entities_go_as_a_blob(core, fake):
+    ents = big_entities(70)
+    ports = [{"id": "a", "dx": 0, "dy": 0, "kind": "belt", "io": "in"}]
+    args = {"anchor": ANCHOR, "entities": ents, "ports": ports, "search": 8}
+    assert V.json_size(args) > V.MAX_ACT_ARGS
+    await core.op_act("h1", KEY, "build_layout", args)
+    a = last_env(fake, "act")["args"]["args"]
+    assert "entities" not in a and "ports" not in a and a["search"] == 8 and a["anchor"] == ANCHOR
+    assert json.loads(fake.mod.blob_text(a["blob"])) == {"entities": ents, "ports": ports}
+    assert V.json_size(a) <= V.MAX_ACT_ARGS
+
+
+async def test_build_layout_small_inline_entities_stay_inline(core, fake):
+    ents = [{"name": "stone-furnace", "dx": 0, "dy": 0}]
+    await core.op_act("h1", KEY, "build_layout", {"anchor": ANCHOR, "entities": ents})
+    a = last_env(fake, "act")["args"]["args"]
+    assert a["entities"] == ents and "blob" not in a
+    assert not any('"op":"blob_put"' in cmd for cmd in fake.commands)
+
+
+async def test_build_layout_too_big_for_the_server_is_refused(core, fake):
+    ents = [{"name": "n" * 99, "dx": 0, "dy": 0, "insert": {("i%d" % k) * 20: 99_999 for k in range(4)}}
+            for _ in range(100)]
+    e = await code_of(core.op_act("h1", KEY, "build_layout", {"anchor": ANCHOR, "entities": ents}))
+    assert e.code == "limit"
+    assert not any('"op":"act"' in cmd for cmd in fake.commands)
+
+
+async def test_plan_steps_with_layouts_upload_blobs(cfg, fake, monkeypatch):
+    name = install_layout_forge(monkeypatch, "fake_forge_layout7")
+    c = Core(cfg, make_bridge(cfg), poll_interval=0.01, forge_module=name)
+    connect = {"kind": "belt", "from": {"layout": "b1", "port": "out0"}, "to": {"pos": {"x": 30, "y": 5}}}
+    await c.op_act("h1", KEY, "plan", {"steps": [
+        {"do": "build_layout", "args": {"plan": "blk-1", "anchor": ANCHOR, "tag": "b1"}},
+        {"do": "build_layout", "args": {"anchor": ANCHOR, "entities": [{"name": "wooden-chest", "dx": 0, "dy": 0}]}},
+        {"do": "connect_entities", "args": connect}]})
+    steps = last_env(fake, "act")["args"]["args"]["steps"]
+    assert "plan" not in steps[0]["args"] and steps[0]["args"]["tag"] == "b1"
+    assert json.loads(fake.mod.blob_text(steps[0]["args"]["blob"]))["entities"] == LAYOUT_ENTS
+    assert steps[1]["args"]["entities"] == [{"name": "wooden-chest", "dx": 0, "dy": 0}]
+    assert steps[2] == {"do": "connect_entities", "args": connect}
+    await c.close()
+
+
+async def test_package_steps_with_layouts_take_the_same_road(cfg, fake, monkeypatch):
+    """orders.py sends every package step through Core._plan_to_blob."""
+    name = install_layout_forge(monkeypatch, "fake_forge_layout8")
+    c = Core(cfg, make_bridge(cfg), poll_interval=0.01, forge_module=name)
+    pkg = V.check_package({"name": "блок", "anchor": ANCHOR, "verify": [{"kind": "ghosts"}], "steps": [
+        {"do": "build_layout", "args": {"plan": "blk-1", "anchor": ANCHOR, "tag": "b1"}},
+        {"do": "connect_entities", "args": {"kind": "pipe", "from": {"layout": "b1", "port": "out0"},
+                                            "to": {"pos": {"x": 30, "y": 5}}}}]})
+    out = [dict(st, args=await c._plan_to_blob(st["do"], st["args"])) for st in pkg["steps"]]
+    assert out[0]["args"]["blob"].startswith("bp-") and "plan" not in out[0]["args"]
+    assert out[1]["args"] == pkg["steps"][1]["args"]
+    with pytest.raises(PartnerError) as ei:
+        V.check_package({"name": "блок", "anchor": ANCHOR, "verify": [{"kind": "ghosts"}], "steps": [
+            {"do": "build_layout", "args": {"plan": "blk-1", "anchor": ANCHOR, "keep_ghosts": True}}]})
+    assert ei.value.code == "bad_args" and "keep_ghosts" in ei.value.text
+    await c.close()
+
+
+async def test_connect_entities_goes_to_the_mod_as_is(core, fake):
+    args = {"kind": "power", "from": {"target": {"unit_number": 5}}, "to": {"pos": {"x": 8, "y": 9}},
+            "via": [{"x": 1, "y": 1}], "dry_run": True}
+    await core.op_act("h1", KEY, "connect_entities", args)
+    assert last_env(fake, "act")["args"]["args"] == args
+
+
+# ---------------------------------------------------------------- plan (forge), blocks
+
+BLOCK = {"kind": "smelter", "ore": "iron-ore", "rate": 0.5}
+BLOCK_ANSWER = {"plan": "blk-1", "size": {"w": 8, "h": 12}, "items": {"stone-furnace": 12},
+                "ports": FORGE_PORTS, "entities_n": 30, "summary": "ok", "entities": LAYOUT_ENTS}
+
+
+async def test_plan_block_goes_to_forge(cfg, fake, monkeypatch):
+    calls = {}
+
+    def plan(task, resource=None, patch=None, options=None, block=None, *, config):
+        calls.update(task=task, resource=resource, block=block, config=config)
+        return dict(BLOCK_ANSWER)
+    c = Core(cfg, make_bridge(cfg), poll_interval=0.01, forge_module=install_forge(monkeypatch, plan=plan))
+    r = await c.op_plan("h1", KEY, "block", block=BLOCK)
+    assert calls == {"task": "block", "resource": None, "block": BLOCK, "config": cfg}
+    assert r == {k: BLOCK_ANSWER[k] for k in ("plan", "size", "items", "ports", "entities_n", "summary")}
+    await c.close()
+
+
+async def test_plan_block_validation(core, cfg, monkeypatch):
+    assert (await code_of(core.op_plan("h1", KEY, "block"))).code == "bad_args"
+    assert (await code_of(core.op_plan("h1", KEY, "block", block={}))).code == "bad_args"
+    assert (await code_of(core.op_plan("h1", KEY, "block", block=BLOCK, resource={}))).code == "bad_args"
+    assert (await code_of(core.op_plan("h1", KEY, "block", block={"x": "y" * 5000}))).code == "limit"
+    assert (await code_of(core.op_plan("h1", KEY, "mining", resource={}, block=BLOCK))).code == "bad_args"
+    r = await core.op_plan("h1", KEY, "block", block=BLOCK)           # no forge installed
+    assert r["supported"] is False
+    c = Core(cfg, make_bridge(cfg), poll_interval=0.01, forge_module=install_forge(
+        monkeypatch, "fake_forge_badblock", plan=lambda *a, **k: {"plan": "blk-1", "size": 3}))
+    r = await c.op_plan("h1", KEY, "block", block=BLOCK)
+    assert r["supported"] is False and "unexpected shape" in r["reason"]
+    await c.close()
+
+
+async def test_plan_mining_still_calls_forge_without_block(cfg, monkeypatch):
+    def plan(task, resource=None, patch=None, options=None, *, config):      # an old forge: no `block`
+        return {"plan": "p1", "anchor": {"x": 1, "y": 2}, "direction": 0, "items": {},
+                "size": {"w": 10, "h": 10}, "summary": "ok"}
+    c = Core(cfg, make_bridge(cfg), poll_interval=0.01, forge_module=install_forge(
+        monkeypatch, "fake_forge_old", plan=plan))
+    assert (await c.op_plan("h1", KEY, "mining", resource={"name": "iron-ore"}))["plan"] == "p1"
+    await c.close()

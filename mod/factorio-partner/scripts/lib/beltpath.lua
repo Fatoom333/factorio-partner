@@ -27,6 +27,7 @@ M.TILE = 0        -- плитка без опоры (жидкость, пуст�
 M.ENTITY = -1     -- чужая или своя постройка, призрак, скала
 M.UNCHARTED = -2  -- неоткрытый чанк
 M.PLANNED = -3    -- занято лентой, которую эта же задача уже проложила
+M.FLUID = -4      -- труба: к клетке смотрит соединение чужой жидкостной коробки (смешение жидкостей)
 
 M.VEC = { [0] = { 0, -1 }, [4] = { 1, 0 }, [8] = { 0, 1 }, [12] = { -1, 0 } }
 M.DIR_NAMES = { north = 0, east = 4, south = 8, west = 12 }
@@ -43,6 +44,12 @@ local OFF, MUL = 1048576, 2097152
 
 local function key(x, y) return (x + OFF) * MUL + (y + OFF) end
 M.key = key
+
+--- Клетка по ключу key(x, y).
+function M.unkey(k)
+  local y = k % MUL
+  return (k - y) / MUL - OFF, y - OFF
+end
 
 local function overlaps(a, b)
   if not (a and b) then return false end
@@ -124,13 +131,52 @@ end
 
 -- ------------------------------------------------------------------ мир
 
---- Новая память о мире. belt — имя ленты; under — имя подземного конвейера или nil (подземных нет).
-function M.new_world(belt, under)
+local function pread(obj, field)
+  if obj == nil then return nil end
+  local ok, v = pcall(function() return obj[field] end)
+  if ok then return v end
+  return nil
+end
+M.pread = pread
+
+--- Дальность подземного участка трубы: max_underground_distance прототипа или подземного
+--- соединения его жидкостной коробки (pipe_connections, connection_type = "underground").
+function M.pipe_under_distance(proto)
+  local n = tonumber(pread(proto, "max_underground_distance"))
+  if n ~= nil and n > 0 then return n end
+  local boxes = pread(proto, "fluidbox_prototypes")
+  if type(boxes) ~= "table" then return 0 end
+  for _, fb in ipairs(boxes) do
+    local conns = pread(fb, "pipe_connections")
+    if type(conns) == "table" then
+      for _, c in ipairs(conns) do
+        local d = tonumber(pread(c, "max_underground_distance"))
+        if pread(c, "connection_type") == "underground" and d ~= nil and d > 0 then return d end
+      end
+    end
+  end
+  return 0
+end
+
+--- Новая память о мире. belt — имя ленты (у вида "pipe" — трубы, у "power" — опоры); under — имя
+--- подземного конвейера (подземной трубы) или nil (подземных нет). kind: nil (лента) │ "pipe" │
+--- "power"; size — сторона постройки в клетках (опоры 2×2), по умолчанию 1.
+function M.new_world(belt, under, kind, size)
   local up = under and prototypes.entity[under] or nil
+  local max_under = 0
+  if up ~= nil then
+    if kind == "pipe" then
+      max_under = M.pipe_under_distance(up)
+    else
+      max_under = tonumber(up.max_underground_distance) or 0
+    end
+  end
   return {
     belt = belt,
     under = under,
-    max_under = up and tonumber(up.max_underground_distance) or 0,
+    kind = kind,
+    size = (size ~= nil and size > 1) and size or nil,
+    max_under = max_under,
     cells = {},      -- [key] = код клетки
     ucells = {},     -- [key] = можно ли поставить конец подземного конвейера
     charted = {},    -- [ключ чанка] = bool
@@ -221,10 +267,20 @@ local function is_natural(e)
   return false
 end
 
---- Что стоит в клетке и мешает ленте: список помех, все ли они — деревья и камни.
+--- Площадь постройки размера n×n с левой верхней клеткой (x, y).
+local function foot_area(x, y, n)
+  return { left_top = { x = x + 0.05, y = y + 0.05 }, right_bottom = { x = x + n - 0.05, y = y + n - 0.05 } }
+end
+M.foot_area = foot_area
+M.is_natural = is_natural
+
+--- Что стоит в клетке (у опоры 2×2 — на её месте) и мешает ленте: список помех, все ли они —
+--- деревья и камни.
 local function blockers(env, x, y)
   local out, all_natural = {}, true
-  for _, e in ipairs(env.surface.find_entities_filtered{ area = cell_area(x, y) }) do
+  local n = env.W.size or 1
+  local area = n > 1 and foot_area(x, y, n) or cell_area(x, y)
+  for _, e in ipairs(env.surface.find_entities_filtered{ area = area }) do
     if e.valid and e.type ~= "character" then
       local blocks
       if e.type == "entity-ghost" then
@@ -245,10 +301,12 @@ local function blockers(env, x, y)
 end
 
 local function can_place(env, name, x, y, forced)
-  env.W.checks = env.W.checks + 1
+  local W = env.W
+  W.checks = W.checks + 1
+  local off = (W.size ~= nil and name == W.belt) and W.size / 2 or 0.5
   return env.surface.can_place_entity{
     name = name,
-    position = { x = x + 0.5, y = y + 0.5 },
+    position = { x = x + off, y = y + off },
     direction = defines.direction.north,
     force = env.force,
     build_check_type = env.check,
@@ -281,6 +339,7 @@ function M.cell(env, x, y)
       c = M.ENTITY
     end
   end
+  if c > 0 and W.kind == "pipe" and M.fluid_blocked(env, x, y) then c = M.FLUID end
   W.cells[k] = c
   return c
 end
@@ -295,6 +354,128 @@ local function ucell(env, x, y)
   v = c > 0 and can_place(env, W.under, x, y, c == M.NATURAL)
   W.ucells[k] = v
   return v
+end
+
+-- ------------------------------------------------------------------ трубы: жидкостные коробки соседей
+
+-- Труба соединяется со всеми соседями, к которым смотрит их соединение (pipe_connections). Клетка
+-- трубы запрещена, если к ней смотрит обычное соединение чужой жидкостной коробки: иначе жидкости
+-- смешаются. Исключение — концы пути: W.allow[unit_number] = номер коробки конца, соединения этой
+-- коробки разрешены. Призрак постройки с жидкостными коробками рядом с клеткой — тоже запрет
+-- (соединений у призрака не прочесть; осторожное правило).
+
+local function touches(box, x, y)
+  if type(box) ~= "table" then return false end
+  local lt, rb = box.left_top or box[1], box.right_bottom or box[2]
+  if lt == nil or rb == nil then return false end
+  local x1, y1 = lt.x or lt[1], lt.y or lt[2]
+  local x2, y2 = rb.x or rb[1], rb.y or rb[2]
+  local e = 0.01
+  local horiz = x1 < x + 2 - e and x2 > x - 1 + e and y1 < y + 1 - e and y2 > y + e
+  local vert = x1 < x + 1 - e and x2 > x + e and y1 < y + 2 - e and y2 > y - 1 + e
+  return horiz or vert
+end
+
+local function box_of(e)
+  local b = pread(e, "bounding_box")
+  if type(b) == "table" then return b end
+  local p = e.position
+  return { left_top = { x = p.x - 0.5, y = p.y - 0.5 }, right_bottom = { x = p.x + 0.5, y = p.y + 0.5 } }
+end
+
+--- Обычные соединения коробки i: {{x, y}} — клетки, к которым они смотрят │ nil (не прочесть).
+function M.box_targets(fb, i)
+  local ok, conns = pcall(function() return fb.get_pipe_connections(i) end)
+  if not ok or type(conns) ~= "table" then return nil end
+  local out = {}
+  for _, c in ipairs(conns) do
+    local t = c.connection_type
+    local tp = c.target_position
+    if (t == nil or t == "normal") and type(tp) == "table" then
+      out[#out + 1] = { x = floor(tp.x or tp[1]), y = floor(tp.y or tp[2]) }
+    end
+  end
+  return out
+end
+
+--- Число жидкостных коробок сущности (0 — нет) и сам LuaFluidBox.
+function M.boxes(e)
+  local fb = pread(e, "fluidbox")
+  if fb == nil then return 0, nil end
+  local ok, n = pcall(function() return #fb end)
+  if not ok or type(n) ~= "number" then return 0, nil end
+  return n, fb
+end
+
+--- Клетка трубы запрещена соединением чужой жидкостной коробки соседа? Ответ запоминается.
+function M.fluid_blocked(env, x, y)
+  local W = env.W
+  W.fluid = W.fluid or {}
+  local k = key(x, y)
+  local v = W.fluid[k]
+  if v ~= nil then return v end
+  v = false
+  local allow = W.allow or {}
+  local area = { left_top = { x = x - 1, y = y - 1 }, right_bottom = { x = x + 2, y = y + 2 } }
+  for _, e in ipairs(env.surface.find_entities_filtered{ area = area }) do
+    if e.valid and e.type ~= "character" then
+      if e.type == "entity-ghost" then
+        local boxes = pread(e.ghost_prototype, "fluidbox_prototypes")
+        if type(boxes) == "table" and #boxes > 0 and touches(box_of(e), x, y) then v = true end
+      else
+        local n, fb = M.boxes(e)
+        for i = 1, n do
+          local targets = M.box_targets(fb, i)
+          if targets == nil then
+            if touches(box_of(e), x, y) and allow[e.unit_number] ~= i then v = true end
+          else
+            for _, t in ipairs(targets) do
+              if t.x == x and t.y == y and allow[e.unit_number] ~= i then v = true end
+            end
+          end
+        end
+      end
+      if v then break end
+    end
+  end
+  W.fluid[k] = v
+  return v
+end
+
+--- Подземная труба (стоящая, призрак или поставленная этой задачей) в клетке: её направление │ nil.
+local function p2g_at(env, x, y)
+  local W = env.W
+  local k = key(x, y)
+  if W.pu ~= nil and W.pu[k] ~= nil then return W.pu[k] end
+  W.p2g = W.p2g or {}
+  local v = W.p2g[k]
+  if v == nil then
+    v = -1
+    for _, e in ipairs(env.surface.find_entities_filtered{ area = cell_area(x, y) }) do
+      if e.valid then
+        local t = e.type
+        if t == "entity-ghost" then t = e.ghost_type end
+        if t == "pipe-to-ground" then v = e.direction or 0 break end
+      end
+    end
+    W.p2g[k] = v
+  end
+  if v < 0 then return nil end
+  return v
+end
+
+--- Подземный участок трубы: на его линии (и на дальность подземной трубы за концами) нет другой
+--- подземной трубы той же оси — иначе пары спарятся не так.
+local function pipe_line_free(env, edge)
+  local W = env.W
+  local v = M.VEC[edge.direction]
+  local pad = W.max_under
+  for i = -pad, edge.length + pad do
+    local x, y = edge.from_x + v[1] * i, edge.from_y + v[2] * i
+    local d = p2g_at(env, x, y)
+    if d ~= nil and d % 8 == edge.direction % 8 then return false end
+  end
+  return true
 end
 
 -- ------------------------------------------------------------------ существующие подземные конвейеры
@@ -383,6 +564,7 @@ function M.underground_ok(env, job, edge)
   if not ucell(env, fx, fy) or not ucell(env, tx, ty) then return false end
   local ek = network.edge_key(W.under, edge)
   if ek == nil or W.rejected[ek] then return false end
+  if W.kind == "pipe" then return pipe_line_free(env, edge) end
   local pad = W.max_under + 1
   load_blocks(env, min(fx, tx) - pad, min(fy, ty) - pad, max(fx, tx) + pad, max(fy, ty) + pad)
   if network.conflicts(W.net, W.under, edge, W.max_under) then return false end
@@ -464,6 +646,28 @@ end
 --- поиск надо повторить.
 function M.reject_conflict(W, route)
   if W.under == nil then return false end
+  if W.kind == "pipe" then
+    -- подземные трубы маршрута на одной линии ближе дальности подземной трубы — спарятся не так
+    local runs = {}
+    for _, e in ipairs(route.edges) do
+      if e.kind == "underground" then
+        local run = network.from_edge(W.under, e)
+        if run ~= nil then
+          for _, r in ipairs(runs) do
+            if r.axis == run.axis and r.lane == run.lane and run.minimum <= r.maximum + W.max_under
+                and run.maximum >= r.minimum - W.max_under then
+              local ek = network.edge_key(W.under, e)
+              if ek == nil then return false end
+              W.rejected[ek] = true
+              return true
+            end
+          end
+          runs[#runs + 1] = run
+        end
+      end
+    end
+    return false
+  end
   local _, second = network.route_conflict(W.under, route.edges)
   if second == nil then return false end
   local ek = network.edge_key(W.under, second)
@@ -504,6 +708,17 @@ function M.route_steps(W, route, opts)
       steps[#steps + 1] = { x = node.x, y = node.y, dir = dir, name = name, utype = utype, edge = edge }
     end
   end
+  if W.kind == "pipe" then
+    -- труба направления не имеет; подземная труба смотрит наземным соединением: вход — назад,
+    -- откуда пришла труба, выход — вперёд по ходу
+    for _, s in ipairs(steps) do
+      if s.utype == "input" then
+        s.dir = (s.dir + 8) % 16
+      elseif s.utype == nil then
+        s.dir = 0
+      end
+    end
+  end
   return steps, { length = length, turns = turns, undergrounds = undergrounds, corners = corners }
 end
 
@@ -514,7 +729,13 @@ function M.commit(W, steps)
     if W.cells[k] == M.NATURAL then s.natural = true end
     W.cells[k] = M.PLANNED
     W.ucells[k] = false
-    if s.edge then
+    if W.kind == "pipe" then
+      if s.utype ~= nil then
+        W.pu = W.pu or {}
+        W.pu[k] = s.dir
+      end
+      s.edge = nil
+    elseif s.edge then
       local run = network.from_edge(W.under, s.edge)
       if run then
         local function endpoint(x, y, kind)
@@ -605,6 +826,12 @@ end
 
 -- ------------------------------------------------------------------ постановка
 
+--- Запомнить в шаге свою пометку к сносу (уборка снимает только свои, не пометки хозяина).
+function M.note_mark(step, e)
+  step.marks = step.marks or {}
+  step.marks[#step.marks + 1] = { name = e.name, x = e.position.x, y = e.position.y }
+end
+
 --- Поставить призрак шага (или только проверить при dry). → поставлен ли, сколько помечено к сносу.
 function M.place(env, step, dry)
   local surface, force = env.surface, env.force
@@ -612,7 +839,12 @@ function M.place(env, step, dry)
   if step.natural then
     for _, e in ipairs(surface.find_entities_filtered{ area = cell_area(step.x, step.y) }) do
       if e.valid and is_natural(e) and not e.to_be_deconstructed() then
-        if dry or e.order_deconstruction(force) then marked = marked + 1 end
+        if dry then
+          marked = marked + 1
+        elseif e.order_deconstruction(force) then
+          marked = marked + 1
+          M.note_mark(step, e)
+        end
       end
     end
   end
@@ -634,7 +866,7 @@ function M.place(env, step, dry)
     force = force,
     quality = "normal",
     raise_built = true,
-    type = step.utype, -- подземный конвейер: "input" │ "output"
+    type = env.W.kind == nil and step.utype or nil, -- подземный конвейер: "input" │ "output"
   }
   return ghost ~= nil, marked
 end

@@ -1,6 +1,6 @@
 -- Схема storage и миграции. PROTOCOL.md §7: ключи верхнего уровня
 -- proto, helpers, jobs, events, recent, blobs, reservations, vision, reflexes, reflex_state,
--- path_requests, mining_last.
+-- path_requests, mining_last, belt_last, layouts, connect_last, connect_fled.
 -- Ядро создаёт все ключи (пустыми таблицами), чтобы модули могли на них рассчитывать;
 -- содержимое `vision`, `reflex_state`, `path_requests` и `mining_last` (пишет разметка добычи,
 -- читает прокладка лент) заполняют их владельцы.
@@ -70,6 +70,12 @@ function M.ensure_shape()
   -- последней разметки: пишет plan_mining, читает plan_belt{from:"patch"}. Ядро только держит
   -- форму: запись не таблица — убрать, outputs не таблица — пустой список.
   ensure(s, "belt_last", {}) -- последний план plan_belt помощника: пишет и читает прокладка лент (PROTOCOL §7)
+  -- layouts[helper] = { [tag] = блок } — память блоков build_layout (scripts/lib/layout.lua);
+  -- connect_last[helper] = {sig, surface, area, cells} — последняя прокладка connect_entities.
+  -- Обе — простые таблицы по помощнику; содержимое держат их владельцы.
+  ensure(s, "layouts", {})
+  ensure(s, "connect_last", {})
+  ensure(s, "connect_fled", {}) -- connect_fled[helper] = {sig, tick, surface, force, flat} — оставленное отступлением
   local ml = ensure(s, "mining_last", {})
   for helper, last in pairs(ml) do
     if type(last) ~= "table" then

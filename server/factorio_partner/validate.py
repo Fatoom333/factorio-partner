@@ -14,6 +14,14 @@ from typing import Any, Callable
 from .errors import PartnerError
 
 MAX_ACT_ARGS = 4 * 1024            # MCP.md «Лимиты»
+MAX_LAYOUT_ARGS = 16 * 1024        # build_layout.args on the server; above 4 KB the mod gets a blob
+LAYOUT_ENTITIES_MAX = 100          # ACTIONS.md build_layout: entities 1..100
+LAYOUT_OFFSET_MAX = 64             # dx/dy/cx/cy from the anchor cell: -64..64
+LAYOUT_PORTS_MAX = 16
+LAYOUT_PORT_ITEMS_MAX = 2
+LAYOUT_INSERT_KINDS_MAX = 4
+CONNECT_VIA_MAX = 8
+CONNECT_LENGTH_MAX = 200
 MAX_SAY = 200
 MAX_REFLEXES = 16                  # MCP.md partner_reflex
 MAX_FILTER = 100
@@ -199,6 +207,166 @@ def blueprint_direction(field: str, v: Any):
     return v
 
 
+
+# ---- build_layout / connect_entities ----------------------------------------------
+
+PORT_ID_RE = re.compile(r"^[a-z0-9_-]{1,16}$")
+LAYOUT_TAG_RE = re.compile(r"^[a-z0-9-]{1,32}$")
+PORT_KINDS = ("belt", "pipe", "power")
+_ENTITY_FIELDS = ("name", "dx", "dy", "cx", "cy", "direction", "recipe", "type", "insert")
+_PORT_FIELDS = ("id", "dx", "dy", "kind", "io", "dir", "items", "fluid", "rate")
+
+
+def _port_id(field: str, v: Any):
+    if not isinstance(v, str) or not PORT_ID_RE.match(v):
+        raise bad(field, "must match ^[a-z0-9_-]{1,16}$")
+    return v
+
+
+def _layout_tag(field: str, v: Any):
+    if not isinstance(v, str) or not LAYOUT_TAG_RE.match(v):
+        raise bad(field, "must match ^[a-z0-9-]{1,32}$")
+    return v
+
+
+def layout_entity(field: str, v: Any) -> dict:
+    """One building of ``build_layout.entities``: ``dx, dy`` (whole cells, top-left cell from the
+    anchor) or ``cx, cy`` (the centre, as in a blueprint) - exactly one pair."""
+    if not isinstance(v, dict):
+        raise bad(field, "must be an object {name, dx, dy, ...}")
+    for k in v:
+        if k not in _ENTITY_FIELDS:
+            raise bad(f"{field}.{k}", "unknown field; allowed: " + ", ".join(_ENTITY_FIELDS))
+    if "name" not in v:
+        raise bad(f"{field}.name", "required")
+    out: dict = {"name": name(f"{field}.name", v["name"])}
+    cell = [k for k in ("dx", "dy") if k in v]
+    centre = [k for k in ("cx", "cy") if k in v]
+    if cell and centre:
+        raise bad(field, "use either dx, dy or cx, cy, not both")
+    if cell:
+        if len(cell) != 2:
+            raise bad(field, "dx and dy go together")
+        c = integer(-LAYOUT_OFFSET_MAX, LAYOUT_OFFSET_MAX)
+        for k in cell:
+            out[k] = c(f"{field}.{k}", v[k])
+    elif centre:
+        if len(centre) != 2:
+            raise bad(field, "cx and cy go together")
+        c = number(-LAYOUT_OFFSET_MAX, LAYOUT_OFFSET_MAX)
+        for k in centre:
+            out[k] = c(f"{field}.{k}", v[k])
+    else:
+        raise bad(field, "dx, dy or cx, cy is required")
+    if "direction" in v:
+        out["direction"] = DIRECTION(f"{field}.direction", v["direction"])
+    if "recipe" in v:
+        out["recipe"] = name(f"{field}.recipe", v["recipe"])
+    if "type" in v:
+        out["type"] = enum("input", "output")(f"{field}.type", v["type"])
+    if "insert" in v:
+        ins = items(f"{field}.insert", v["insert"])
+        if len(ins) > LAYOUT_INSERT_KINDS_MAX:
+            raise PartnerError("limit", f"{field}.insert: at most {LAYOUT_INSERT_KINDS_MAX} item kinds")
+        out["insert"] = ins
+    return out
+
+
+def layout_entities(field: str, v: Any) -> list:
+    if not isinstance(v, list) or not v:
+        raise bad(field, f"must be a non-empty list of 1..{LAYOUT_ENTITIES_MAX} buildings")
+    if len(v) > LAYOUT_ENTITIES_MAX:
+        raise PartnerError("limit", f"{field}: at most {LAYOUT_ENTITIES_MAX} buildings")
+    return [layout_entity(f"{field}[{i}]", e) for i, e in enumerate(v)]
+
+
+def layout_port(field: str, v: Any) -> dict:
+    """One port of a block: where a belt / pipe / power line enters or leaves it."""
+    if not isinstance(v, dict):
+        raise bad(field, "must be an object {id, dx, dy, kind, io, ...}")
+    for k in v:
+        if k not in _PORT_FIELDS:
+            raise bad(f"{field}.{k}", "unknown field; allowed: " + ", ".join(_PORT_FIELDS))
+    for k in ("id", "dx", "dy", "kind", "io"):
+        if k not in v:
+            raise bad(f"{field}.{k}", "required")
+    c = integer(-LAYOUT_OFFSET_MAX, LAYOUT_OFFSET_MAX)
+    out: dict = {"id": _port_id(f"{field}.id", v["id"]), "dx": c(f"{field}.dx", v["dx"]),
+                 "dy": c(f"{field}.dy", v["dy"]), "kind": enum(*PORT_KINDS)(f"{field}.kind", v["kind"]),
+                 "io": enum("in", "out")(f"{field}.io", v["io"])}
+    if "dir" in v:
+        d = integer()(f"{field}.dir", v["dir"])
+        if d not in (0, 4, 8, 12):
+            raise bad(f"{field}.dir", "must be 0, 4, 8 or 12")
+        out["dir"] = d
+    if "items" in v and "fluid" in v:
+        raise bad(field, "use either items or fluid")
+    if "items" in v:
+        its = v["items"]
+        if not isinstance(its, list) or not its:
+            raise bad(f"{field}.items", f"must be a non-empty list of up to {LAYOUT_PORT_ITEMS_MAX} names")
+        if len(its) > LAYOUT_PORT_ITEMS_MAX:
+            raise PartnerError("limit", f"{field}.items: at most {LAYOUT_PORT_ITEMS_MAX} names")
+        # "" is an empty lane (a forge port carries both lanes, one may be unused)
+        out["items"] = [x if x == "" else name(f"{field}.items[{i}]", x) for i, x in enumerate(its)]
+    if "fluid" in v:
+        out["fluid"] = name(f"{field}.fluid", v["fluid"])
+    if "rate" in v:
+        r = v["rate"]
+        if isinstance(r, bool) or not isinstance(r, (int, float)) or not math.isfinite(r) or r < 0 or r > 1e6:
+            raise bad(f"{field}.rate", "must be a number 0..1000000 (items or fluid per second)")
+        out["rate"] = r
+    return out
+
+
+def layout_ports(field: str, v: Any) -> list:
+    if not isinstance(v, list) or not v:
+        raise bad(field, f"must be a non-empty list of up to {LAYOUT_PORTS_MAX} ports")
+    if len(v) > LAYOUT_PORTS_MAX:
+        raise PartnerError("limit", f"{field}: at most {LAYOUT_PORTS_MAX} ports")
+    out = [layout_port(f"{field}[{i}]", p) for i, p in enumerate(v)]
+    seen: set = set()
+    for i, p in enumerate(out):
+        if p["id"] in seen:
+            raise bad(f"{field}[{i}].id", "duplicate port id")
+        seen.add(p["id"])
+    return out
+
+
+def endpoint(field: str, v: Any) -> dict:
+    """An end of ``connect_entities``: exactly one of ``{pos, dir?}``, ``{target}``, ``{layout, port}``,
+    ``{layout, i}`` (a building of a remembered block). ``dir`` (0/4/8/12) is the direction of the
+    end, as a port has it: a probe through ``{pos, dir}`` lays the same path as through the port."""
+    if not isinstance(v, dict):
+        raise bad(field, "must be {pos, dir?} | {target} | {layout, port} | {layout, i}")
+    keys = set(v)
+    if keys in ({"pos"}, {"pos", "dir"}):
+        out = {"pos": pos(f"{field}.pos", v["pos"])}
+        if "dir" in v:
+            d = integer()(f"{field}.dir", v["dir"])
+            if d not in (0, 4, 8, 12):
+                raise bad(f"{field}.dir", "must be 0, 4, 8 or 12")
+            out["dir"] = d
+        return out
+    if keys == {"target"}:
+        return {"target": target(f"{field}.target", v["target"])}
+    if keys == {"layout", "port"}:
+        return {"layout": _layout_tag(f"{field}.layout", v["layout"]),
+                "port": _port_id(f"{field}.port", v["port"])}
+    if keys == {"layout", "i"}:
+        return {"layout": _layout_tag(f"{field}.layout", v["layout"]),
+                "i": integer(1, LAYOUT_ENTITIES_MAX)(f"{field}.i", v["i"])}
+    raise bad(field, "must be exactly one of {pos, dir?} | {target} | {layout, port} | {layout, i}")
+
+
+def via_list(field: str, v: Any) -> list:
+    if not isinstance(v, list) or not v:
+        raise bad(field, f"must be a non-empty list of up to {CONNECT_VIA_MAX} positions")
+    if len(v) > CONNECT_VIA_MAX:
+        raise PartnerError("limit", f"{field}: at most {CONNECT_VIA_MAX} positions")
+    return [pos(f"{field}[{i}]", p) for i, p in enumerate(v)]
+
+
 # ---- act -----------------------------------------------------------------------
 
 MODE = enum("auto", "robots", "hand")
@@ -286,6 +454,20 @@ ACTIONS: dict[str, tuple[dict[str, Validator], tuple[str, ...], tuple[tuple[tupl
     "plan_belt": ({"from": pos_or_patch, "to": pos, "belt": name, "lanes": integer(1, BELT_LANES_MAX),
                    "underground": UNDERGROUND, "start_direction": SIDE, "dry_run": boolean},
                   ("from",), ()),   # `to` is required too, except with from="resume" (check_act)
+    # a block of buildings by offsets from an anchor cell (no blueprint). `blob` is closed to the
+    # agent: the server makes it from `plan` or from a large `entities`
+    "build_layout": ({"anchor": pos, "entities": layout_entities, "plan": ident,
+                      "direction": blueprint_direction, "search": integer(0, FIT_SEARCH_MAX),
+                      "rotate": boolean, "on_resource": name, "ports": layout_ports,
+                      "tag": _layout_tag, "mode": MODE, "auto_supply": boolean,
+                      "keep_ghosts": boolean, "dry_run": boolean},
+                     ("anchor",), ((("entities", "plan"), True),)),
+    # a belt, pipe or power line laid and built between two ends
+    "connect_entities": ({"kind": enum(*PORT_KINDS), "from": endpoint, "to": endpoint, "via": via_list,
+                          "max_length": integer(1, CONNECT_LENGTH_MAX), "belt": name, "pipe": name,
+                          "pole": name, "underground": UNDERGROUND, "fluid": name, "build": boolean,
+                          "mode": MODE, "auto_supply": boolean, "dry_run": boolean},
+                         ("kind", "from", "to"), ()),
     "wait": ({"seconds": integer(1, 600)}, ("seconds",), ()),
     # a long plan: up to 200 ordinary steps in one job; one plan_done at the end. `blob` — the
     # steps as a JSON list sent with blob_put; `after` — queue right behind that job (a successor)
@@ -302,8 +484,9 @@ def check_act(do: Any, args: Any) -> dict:
         args = {}
     if not isinstance(args, dict):
         raise bad("args", "must be an object")
-    if json_size(args) > MAX_ACT_ARGS:
-        raise PartnerError("limit", f"args larger than {MAX_ACT_ARGS} bytes")
+    cap = MAX_LAYOUT_ARGS if do == "build_layout" else MAX_ACT_ARGS
+    if json_size(args) > cap:
+        raise PartnerError("limit", f"args larger than {cap} bytes")
     fields, required, groups = ACTIONS[do]
     out = {}
     for k, v in args.items():
@@ -316,6 +499,12 @@ def check_act(do: Any, args: Any) -> dict:
     if do == "plan_belt" and out["from"] != "resume" and "to" not in out:
         # from="resume" takes the target from the remembered plan (docs/ACTIONS.md, «plan_belt»)
         raise bad("args.to", 'required (optional only with from="resume")')
+    if do == "connect_entities":
+        # a prototype of another kind of line would be ignored by the mod: say so here
+        want = {"belt": "belt", "pipe": "pipe", "power": "pole"}[out["kind"]]
+        for fld in ("belt", "pipe", "pole"):
+            if fld in out and fld != want:
+                raise bad(f"args.{fld}", f"is not for kind {out['kind']} (use {want})")
     for group, exactly_one in groups:
         n = sum(1 for k in group if k in out)
         if n > 1:
@@ -455,7 +644,7 @@ def _line(field: str, v: Any, limit: int) -> str:
 # breaks the owner's buildings (deconstruct, extract, collect, pickup, mine{target}, rotate,
 # set_recipe), no superforced or partial blueprint (only with the owner's word, given to the pilot)
 PACKAGE_DO = ("walk", "approach", "get_items", "craft", "mine", "insert", "place", "build_blueprint",
-              "build_ghosts", "plan_mining", "plan_belt", "wait")
+              "build_layout", "connect_entities", "build_ghosts", "plan_mining", "plan_belt", "wait")
 
 
 def package_steps(field: str, v: Any) -> list:
@@ -470,6 +659,12 @@ def package_steps(field: str, v: Any) -> list:
             raise bad(f"{f}.args.target", "a package mines only by resource or item")
         if do == "build_blueprint" and (args.get("force") == "superforced" or args.get("partial")):
             raise bad(f"{f}.args", "superforced and partial need the owner's word: not in a package")
+        if do == "build_layout" and args.get("keep_ghosts"):
+            raise bad(f"{f}.args.keep_ghosts", "a package must not leave ghosts behind (the owner's "
+                                               "drones would build them): drop keep_ghosts")
+        if do == "connect_entities" and args.get("build") is False:
+            raise bad(f"{f}.args.build", "a package must not leave ghosts behind (the owner's "
+                                         "drones would build them): drop build:false")
     return out
 
 

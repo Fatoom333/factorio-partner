@@ -8,9 +8,10 @@ local core = require("scripts.core.init")
 local ACTIONS = {
   "walk", "approach", "follow",
   "mine", "craft", "insert", "extract", "collect", "pickup",
-  "place", "rotate", "set_recipe", "build_blueprint", "build_ghosts", "deconstruct",
+  "place", "rotate", "set_recipe", "build_blueprint", "build_layout", "build_ghosts", "deconstruct",
   "plan_mining",
   "plan_belt",
+  "connect_entities",
   "get_items",
   "plan",
 }
@@ -19,7 +20,7 @@ for _, name in ipairs(ACTIONS) do
 end
 
 local MODULES = {
-  "lib.path",
+  "lib.path", "lib.layout",
   "perception.state", "perception.map", "perception.resources", "perception.stock", "perception.ghosts",
   "perception.recipes", "perception.vision", "perception.rates", "perception.find",
   "perception.access",

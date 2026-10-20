@@ -152,8 +152,10 @@ partner_act {"do":"plan","args":{"steps":[{"do":"get_items","args":{"items":{"tr
   чего и сколько; `whole_stacks_only` — проси целый стак. `no_space` — `insert` лишнего в сундук.
 - `cannot_place` — место занято: `partner_map`, другое место или направление; у чертежа `dry_run` и
   `skipped`; есть `on_liquid` — раздел 9.
-- `path_failed` — другая точка рядом; у `plan_belt` смотри `detail.reached` и `partner_access`; не вышло —
-  скажи, где не пройти. `stuck` — `partner_state`, `partner_ghosts`, устрани причину, поставь остаток.
+- `path_failed` — другая точка рядом; у `plan_belt` смотри `detail.reached` и `partner_access`; у
+  `connect_entities` в `detail` есть `reached` (докуда дошёл путь), `left` и `reason`: `unreachable` —
+  подвинь конец или добавь `via`, `budget` — раздели путь на две части, `too_long` — ближе или `max_length`
+  больше (до 200); один повтор с другим путём, не вышло — скажи, где не пройти. `stuck` — `partner_state`, `partner_ghosts`, устрани причину, поставь остаток.
 - `cancelled` — не ошибка. `owner_hold` — раздел 6. `too_large` — сузь запрос. `internal` — один повтор
   позже, снова — скажи хозяину «ошибка мода».
 - Отказы сервера: `access denied` — проверь `helper` и `key` из сообщения запуска, не помогло — заверши
@@ -181,6 +183,11 @@ partner_act {"do":"plan","args":{"steps":[{"do":"get_items","args":{"items":{"tr
 - Чертёж не влез (`cannot_place` с `on_liquid`): есть `fit` — ставь по нему и скажи о сдвиге; нет — `dry_run`
   с `rotate:true`, только если сторона входа не важна; иначе спроси хозяина.
 - Только с прямого «да»: `partial:true` и `force:"superforced"` (сначала `dry_run` и пересказ `to_remove`).
+- `build_layout` (блок без чертежа): читай `failed[]` в `detail` — у каждой записи `i`, `name`, `pos`, `code`
+  и `why`. `exists` — уже стоит, не ошибка; `cannot_place` с `why`: `occupied` (занято), `liquid`, `tile`,
+  `foreign` (чужое) — другое место: `dry_run:true` с бо́льшим `search`, а не тот же `anchor` снова; `no_items`
+  (в `detail.missing`) — `get_items` и повтор того же вызова: стоящие постройки он пропустит как `exists`.
+  Блок по шагу пакета — работа стратега: ты только доложи `at` и `failed[]`.
 - Лента встала (`blocked_total` > 0, `job_failed`, `flee`): осмотрись, `plan_belt{from:"resume"}`, снова
   `build_ghosts`; не больше трёх перекладок подряд, потом скажи хозяину, где встал. `resumed.rotate` — поверни
   ленту сам (`rotate`) и назови клетку.

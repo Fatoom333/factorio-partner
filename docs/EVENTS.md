@@ -65,6 +65,11 @@
 всех снятых задач), `helper_remove`, `replace` и `cancel` → `cancelled`, 60 с без прогресса →
 `stuck`. `job_progress` — шумный прогресс долгой задачи (`task.progress`, например
 `{built, left}` у стройки) не чаще раза в 5 с.
+- У `build_layout` и `connect_entities` в `job_progress` есть поле `phase` — этап задачи:
+  - `build_layout`: `"site"` (поиск места; `done`/`total` — кольцо поиска из `search`), `"supply"`
+    (снабжение всего счёта до призраков; по предметам), `"build"` (стройка призраков; `built`, `left`),
+    `"setup"` (рецепты и `insert`; по постройкам);
+  - `connect_entities`: `"search"` (поиск пути), `"place"` (постановка призраков), `"build"` (стройка).
 
 ### `plan_done`
 Итог плана (ACTIONS.md «plan») — одно громкое событие вместо `job_done` / `job_failed`:

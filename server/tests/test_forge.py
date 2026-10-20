@@ -464,10 +464,11 @@ def test_plan_uses_config_forge_home(tmp_path, fake):
 def test_plan_signature_is_the_contract():
     import inspect
     sig = inspect.signature(forge.plan)
-    assert list(sig.parameters) == ["task", "resource", "patch", "options", "config"]
+    assert list(sig.parameters) == ["task", "resource", "patch", "options", "block", "config"]
     assert sig.parameters["config"].kind is inspect.Parameter.KEYWORD_ONLY
     assert sig.parameters["config"].default is inspect.Parameter.empty
     assert list(inspect.signature(forge.load_plan).parameters) == ["plan_id", "config"]
+    assert list(inspect.signature(forge.load_layout).parameters) == ["plan_id", "config"]
     assert list(inspect.signature(forge.brief_notes).parameters) == ["config"]
     with pytest.raises(TypeError):
         forge.plan(mining())               # старый вид с args-словарём больше не принимается

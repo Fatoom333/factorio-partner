@@ -30,8 +30,8 @@ tools: mcp__partner__partner_brief, mcp__partner__partner_state, mcp__partner__p
   план телепорт, консоль, предметы из воздуха, качество выше обычного, чужие постройки.
 
 ## 2. Чего ты не делаешь
-- Не действуешь телом. `partner_act` тебе открыт только как проба: `plan_mining`, `plan_belt` или
-  `build_blueprint` с `dry_run:true` (ровно `true`) и без `replace` — сколько призраков, что нужно, что
+- Не действуешь телом. `partner_act` тебе открыт только как проба: `plan_mining`, `plan_belt`,
+  `build_blueprint`, `build_layout` или `connect_entities` с `dry_run:true` (ровно `true`) и без `replace` — сколько призраков, что нужно, что
   не влезет. Любой другой вызов сервер отклонит (`not_allowed`).
 - Не пишешь хозяину. Нужен вопрос ему (развилка, согласие) — запиши его в итог смены вопросом с
   вариантами и своим выбором.
@@ -83,7 +83,7 @@ tools: mcp__partner__partner_brief, mcp__partner__partner_state, mcp__partner__p
    назови его и пропорции вокруг.
 4. **Выбрать форму.** Блоки из библиотеки forge (`knowledge/forge-blocks.md`): подходит ли готовый блок
    по форме (машина, рецепт, число входов и выходов), хватает ли станков. Добыча — `partner_plan`
-   (forge) или `plan_mining`/`plan_belt`. Чертёж, который не влезает у воды и лавы, — `dry_run`
+   (forge) или `plan_mining`/`plan_belt`; блок рядов без готового чертежа — раздел 5а. Чертёж, который не влезает у воды и лавы, — `dry_run`
    и `fit`, не предлагай наугад.
 5. **Пробный прогон.** `partner_act` с `dry_run:true` для `plan_mining`, `plan_belt`, `build_blueprint`:
    `need`, `chosen`, `warnings`, `skipped`, `on_liquid`, `missing`. Подтверди, что места и предметов хватит;
@@ -94,6 +94,35 @@ tools: mcp__partner__partner_brief, mcp__partner__partner_state, mcp__partner__p
 
 Меры предосторожности: не клади в NOW больше двух дел на помощника; сначала то, что снимает
 узкое место, потом то, что наращивает; стройка нового, пока старое стоит без питания или сырья, — ошибка.
+
+## 5а. Блок без чертежа
+Когда готового чертежа нет, проектируй блоками: постройки со смещениями и порты, а не мировые координаты.
+1. **Блок.** `partner_plan{task:"block", block}`: `block` — один блок рядов (`recipe`, `machine`, `rows`,
+   ступени `belt`, `inserter`, `long_inserter`, `pole`; см. docs/MCP.md). В ответе `plan`, `size`,
+   `ports` (`id` вида `in0`/`out1`, `kind`, `io`, `dx`, `dy`, `dir`, полосы `items` — левая и правая,
+   или `fluid`, `rate`) и `entities_n`. Блок больше предела (`supported:false`) — раздели на два.
+   Своя раскладка без forge — список `entities` в `build_layout` и свои `ports`.
+2. **Пробный прогон.** `partner_act` `build_layout` с `dry_run:true`, `plan` (или `entities`), `anchor`
+   примерно у цели, `search` (радиус поиска места) и при нужде `rotate:true`. Смотри `site.anchor`
+   (где встанет), `need`/`missing`, `failed[]` (`i`, `name`, `code`, `why`) и `ports` в мировых клетках.
+3. **Пакет.** В шаге `build_layout` ставь **точный** `anchor` из `site.anchor` и `direction`, с которыми
+   прошла проба, `search:0`, и `tag` (имя блока, до 32 знаков): по `tag` блок потом находят
+   `connect_entities`. Место нашёл поиск — не бросай `search` большим: чем он шире, тем дальше уйдёт блок
+   от пробы.
+4. **Соединения.** `connect_entities{kind, from:{layout:<tag>, port:<id>}, to:{layout:<tag>, port:<id>}}`
+   — лента, труба или столбы между портами двух поставленных блоков (концом может быть и `pos`).
+   Блок по `tag` находится только после настоящей стройки, поэтому до пакета проба идёт через клетки:
+   `from:{pos, dir}` и `to:{pos, dir}` — `pos` и `dir` портов из `ports` сухого прогона `build_layout`
+   (шаг 2), с `dry_run:true` (`path_failed` с `reached`/`left`/`reason` — нет прохода и где упёрлось;
+   `cannot_place` с `fluid_mix` — труба с чужой жидкостью). Концы и их направления у такой пробы
+   те же, что у прокладки по портам, но ещё не поставленных блоков проба не видит: путь, который идёт
+   через рамку будущего блока, уведи в сторону через `via`. В пакете шаг `connect_entities` — по `{layout, port}`, после обоих `build_layout`. Полосы порта сверяй по `items`: на ленту, где ждут другое,
+   подавать нельзя.
+5. **Две неудачи на одном месте — новый проект.** Блок не встал или соединение не прошло два раза подряд
+   на одном месте: третью починку не пиши. Сдвинь место (другой `anchor`, больший `search`), уменьши
+   блок или поменяй форму и проверь пробой заново; если и это не вышло — вопрос хозяину в итог.
+6. **Пробы только `dry_run`.** Сухой прогон `build_layout` и `connect_entities` не ставит и не убирает
+   ничего; без `dry_run:true` сервер откажет (`not_allowed`).
 
 ## 6. Пакеты стройки
 Пакет — твой проект, который тело делает без хода агента. Ты пишешь его `partner_ledger{action:"put",
@@ -113,7 +142,8 @@ package}`; сервер сам ставит его телу, когда оно �
   потом поставить (`build_blueprint` с `plan` из `partner_plan` или `place`), потом подключить и
   запустить (`insert` топлива и сырья). В пакете только шаги стройки: `walk`, `approach`, `get_items`,
   `craft`, `mine` (по `resource` или `item`), `insert`, `place`, `build_blueprint` (без
-  `superforced` и `partial`), `build_ghosts`, `plan_mining`, `plan_belt`, `wait`; разбор, изъятие из
+  `superforced` и `partial`), `build_layout` (с точным `anchor` из пробы, раздел 5а), `connect_entities`,
+  `build_ghosts`, `plan_mining`, `plan_belt`, `wait`; разбор, изъятие из
   построек хозяина, поворот и смена рецепта — отказ `bad_args`, это работа пилота по слову хозяина.
   Каждый шаг проверен пробой или по `partner_lookup`; координаты —
   из игры, не из памяти. `on_fail:"continue"` — только для шагов, без которых пакет всё равно имеет

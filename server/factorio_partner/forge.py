@@ -3,11 +3,12 @@
 Модуль самодостаточен: только стандартная библиотека; из пакета `factorio_partner` берёт
 лишь `PartnerError` (если пакет есть), чтобы `PlanArgsError` сервер отдал как `bad_args`.
 Python-контракт (MCP.md, единственный; сервер зовёт только так, через `asyncio.to_thread`):
-`plan(task, resource=None, patch=None, options=None, *, config)`, `load_plan(plan_id, *, config)`,
-`brief_notes(config)`. `config` — `Config` сервера (`.home`, `.forge`, `.forge_profile`,
+`plan(task, resource=None, patch=None, options=None, block=None, *, config)`,
+`load_plan(plan_id, *, config)`, `load_layout(plan_id, *, config)`, `brief_notes(config)`. `config` — `Config` сервера (`.home`, `.forge`, `.forge_profile`,
 `.forge_home`); окружение процесса модуль не читает (в дочерний процесс forge уходит только
 минимум системных переменных и `FACTORIO_FORGE_HOME` из `config.forge_home`). Чертёж лежит
-в `FP_HOME/plans/<id>.txt`, метаданные — в `<id>.json`.
+в `FP_HOME/plans/<id>.txt`, метаданные — в `<id>.json`, раскладка блока (`task="block"`:
+постройки и порты со смещениями от угла рамки) — в `<id>.layout.json`.
 
 Что умеет forge и как мы его зовём
 ----------------------------------
@@ -50,6 +51,7 @@ __all__ = [
     "plan",
     "brief_notes",
     "load_plan",
+    "load_layout",
     "mining_layout",
     "DRILLS",
 ]
@@ -66,7 +68,17 @@ MAX_STDOUT_BYTES = 1_000_000
 MAX_KEPT_PLANS = 200
 STALE_WORK_S = 3600            # недописанные .tmp-* и старые work-* в plans — мусор после падения
 MAX_COORD = 1_000_000          # граница карты Factorio — ±1 000 000 тайлов
+MAX_BLOCK_JSON_BYTES = 4096    # описание блока рядов в partner_plan{task:"block"}
+MAX_BLOCK_ROWS = 32
+MAX_BLOCK_PER_ROW = 64
+MAX_BLOCK_MACHINES = 128
+MAX_LAYOUT_ENTITIES = 100      # столько построек принимает build_layout за раз
+MAX_LAYOUT_PORTS = 16
+MAX_LAYOUT_FRAME = 64          # рамка блока в build_layout — до 64×64 клеток
+MAX_SUMMARY = 2000
+MAX_BLUEPRINT_JSON_BYTES = 16_000_000   # распакованная строка чертежа (защита от «бомбы»)
 
+LAYOUT_SUFFIX = ".layout.json"
 PLAN_ID_RE = re.compile(r"^p-[0-9a-f]{16}$")   # подходит и под blob id `^[a-z0-9-]{1,32}$`
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 PROFILE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
@@ -561,7 +573,7 @@ def _prune(plans: Path, keep: int = MAX_KEPT_PLANS) -> None:
         return
     files.sort(key=lambda p: p.stat().st_mtime)
     for p in files[: len(files) - keep]:
-        for victim in (p, p.with_suffix(".json")):
+        for victim in (p, p.with_suffix(".json"), p.with_name(p.stem + LAYOUT_SUFFIX)):
             try:
                 victim.unlink()
             except OSError:
@@ -603,22 +615,85 @@ def _summary(req: MiningRequest, layout: Layout, items: Counter, report: dict) -
     return " ".join(parts)
 
 
-def plan(task, resource=None, patch=None, options=None, *, config) -> dict:
-    """`partner_plan`: спроектировать раскладку через forge и сохранить чертёж.
+def _forge_build(config, plan_id: str, forge_plan: dict, work: Path, hint: str):
+    """Профиль → `forge build` → (строка чертежа, отчёт, имя профиля) или `{supported:false}`.
 
-    Возвращает `{plan, anchor, direction, items, size:{w,h}, summary}` или
-    `{supported: false, reason}`; на сбоях forge не бросает. Неверная форма аргументов —
-    `PlanArgsError` (`.code == "bad_args"`). Путь к forge, профиль, FP_HOME и дом forge берутся
-    из `config` (`Config` сервера), окружение процесса не читается.
+    `hint` — что предложить агенту, если forge нашёл проблемы. Профиль не активируется.
     """
-    req = parse_args({"task": task, "resource": resource, "patch": patch, "options": options})
-    if isinstance(req, dict):
-        return req
-
     forge_path = getattr(config, "forge", None)
     forge_home = getattr(config, "forge_home", None)
     profile = _check_profile(getattr(config, "forge_profile", None))
     forge_path = str(forge_path) if forge_path else None
+    try:
+        active = active_profile(forge_path, cwd=work, forge_home=forge_home)
+    except ProfileNameUnreadable:
+        return _unsupported(
+            "активный профиль forge есть, но его имя не разобрал (допустимы латиница, цифры, "
+            "'.', '_', '-'); попроси хозяина переименовать профиль или поставить призраки (MPP)"
+        )
+    except ForgeTooOld:
+        return _unsupported(FORGE_TOO_OLD)
+    except ForgeUnavailable as exc:
+        return _unsupported(f"forge недоступен: {exc}; попроси хозяина поставить призраки (MPP)")
+    if active is None:
+        return _unsupported("в forge нет активного профиля сейва; попроси хозяина активировать профиль")
+    if profile and profile != active:
+        return _unsupported(
+            f"нужен профиль forge {profile!r}, а активен {active!r}; активировать профиль — решение хозяина"
+        )
+    label = f"partner-{plan_id}"
+    plan_file = work / "plan.json"
+    forge_plan = {**forge_plan, "label": label}
+    plan_file.write_text(json.dumps(forge_plan), encoding="utf-8")
+    out = work / "out"
+    try:
+        proc = _run_forge(forge_path, ["build", str(plan_file), "-o", str(out), "--no-render"],
+                          work, BUILD_TIMEOUT_S, forge_home=forge_home)
+    except ForgeUnavailable as exc:
+        return _unsupported(f"forge недоступен: {exc}")
+    if proc.returncode != 0:
+        if _too_old(proc):
+            return _unsupported(FORGE_TOO_OLD)
+        return _unsupported(f"forge build не собрал раскладку: {_stderr_reason(proc.stderr) or 'ошибка'}")
+    try:
+        blueprint = (out / f"{label}.txt").read_text(encoding="utf-8").strip()
+        report = json.loads((out / f"{label}.report.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        return _unsupported(f"forge build не оставил чертёж и отчёт: {exc.__class__.__name__}")
+    if not isinstance(report, dict):
+        return _unsupported("forge build: отчёт не объект")
+    problems = _problems(report)
+    if problems:
+        return _unsupported(
+            f"forge нашёл проблемы (профиль {active}): " + _short("; ".join(problems[:3])) + " — " + hint
+        )
+    if (not blueprint or len(blueprint.encode("utf-8")) > MAX_BLUEPRINT_BYTES
+            or not blueprint.isascii() or not blueprint.startswith("0")):
+        return _unsupported("forge вернул чертёж не того вида или больше 1 МБ")
+    return blueprint, report, active
+
+
+def plan(task, resource=None, patch=None, options=None, block=None, *, config) -> dict:
+    """`partner_plan`: спроектировать раскладку через forge и сохранить чертёж.
+
+    `task="mining"`: возвращает `{plan, anchor, direction, items, size:{w,h}, summary}`.
+    `task="block"` (`block` — один блок рядов в формате plan.json forge): возвращает
+    `{plan, size:{w,h}, items, ports, entities_n, summary}`, раскладку (постройки и порты со
+    смещениями от угла рамки) кладёт в `plans/<id>.layout.json` (читает `load_layout`).
+    Или `{supported: false, reason}`; на сбоях forge не бросает. Неверная форма аргументов —
+    `PlanArgsError` (`.code == "bad_args"`). Путь к forge, профиль, FP_HOME и дом forge берутся
+    из `config` (`Config` сервера), окружение процесса не читается.
+    """
+    if task == "block":
+        if resource is not None or patch is not None or options is not None:
+            raise PlanArgsError("task 'block' берёт только block (resource, patch, options — для 'mining')")
+        return _plan_block(block, config)
+    if block is not None:
+        raise PlanArgsError("block: только для task='block'")
+    req = parse_args({"task": task, "resource": resource, "patch": patch, "options": options})
+    if isinstance(req, dict):
+        return req
+
     layout = mining_layout(req)
     plans = _plans_dir(config)
 
@@ -626,52 +701,12 @@ def plan(task, resource=None, patch=None, options=None, *, config) -> dict:
     # рабочая папка — в системном TEMP: после жёсткого падения процесса она не копится в FP_HOME
     work = Path(tempfile.mkdtemp(prefix=f"fp-work-{plan_id}-"))
     try:
-        try:
-            active = active_profile(forge_path, cwd=work, forge_home=forge_home)
-        except ProfileNameUnreadable:
-            return _unsupported(
-                "активный профиль forge есть, но его имя не разобрал (допустимы латиница, цифры, "
-                "'.', '_', '-'); попроси хозяина переименовать профиль или поставить призраки (MPP)"
-            )
-        except ForgeTooOld:
-            return _unsupported(FORGE_TOO_OLD)
-        except ForgeUnavailable as exc:
-            return _unsupported(f"forge недоступен: {exc}; попроси хозяина поставить призраки (MPP)")
-        if active is None:
-            return _unsupported("в forge нет активного профиля сейва; попроси хозяина активировать профиль")
-        if profile and profile != active:
-            return _unsupported(
-                f"нужен профиль forge {profile!r}, а активен {active!r}; активировать профиль — решение хозяина"
-            )
-        label = f"partner-{plan_id}"
-        plan_file = work / "plan.json"
-        plan_file.write_text(json.dumps(layout_to_forge_plan(layout, label)), encoding="utf-8")
-        out = work / "out"
-        try:
-            proc = _run_forge(forge_path, ["build", str(plan_file), "-o", str(out), "--no-render"],
-                              work, BUILD_TIMEOUT_S, forge_home=forge_home)
-        except ForgeUnavailable as exc:
-            return _unsupported(f"forge недоступен: {exc}")
-        if proc.returncode != 0:
-            if _too_old(proc):
-                return _unsupported(FORGE_TOO_OLD)
-            return _unsupported(f"forge build не собрал раскладку: {_stderr_reason(proc.stderr) or 'ошибка'}")
-        try:
-            blueprint = (out / f"{label}.txt").read_text(encoding="utf-8").strip()
-            report = json.loads((out / f"{label}.report.json").read_text(encoding="utf-8"))
-        except (OSError, ValueError) as exc:
-            return _unsupported(f"forge build не оставил чертёж и отчёт: {exc.__class__.__name__}")
-        if not isinstance(report, dict):
-            return _unsupported("forge build: отчёт не объект")
-        problems = _problems(report)
-        if problems:
-            return _unsupported(
-                f"forge нашёл проблемы (профиль {active}): " + _short("; ".join(problems[:3]))
-                + " — проверь options.drill/belt/pole или попроси хозяина поставить призраки"
-            )
-        if (not blueprint or len(blueprint.encode("utf-8")) > MAX_BLUEPRINT_BYTES
-                or not blueprint.isascii() or not blueprint.startswith("0")):
-            return _unsupported("forge вернул чертёж не того вида или больше 1 МБ")
+        built = _forge_build(
+            config, plan_id, layout_to_forge_plan(layout, ""), work,
+            "проверь options.drill/belt/pole или попроси хозяина поставить призраки")
+        if isinstance(built, dict):
+            return built
+        blueprint, report, active = built
 
         items = Counter(e.name for e in layout.entities)
         result = {
@@ -701,6 +736,293 @@ def plan(task, resource=None, patch=None, options=None, *, config) -> dict:
         return result
     finally:
         shutil.rmtree(work, ignore_errors=True)
+
+
+# --- блок рядов без чертежа: раскладка и порты -----------------------------------------
+
+_BLOCK_NAME_FIELDS = ("recipe", "machine", "belt", "inserter", "long_inserter", "pole", "pipe",
+                      "pipe_to_ground")
+_BLOCK_FIELDS = set(_BLOCK_NAME_FIELDS) | {
+    "type", "rows", "per_row", "stack", "align", "input_belts", "speed_bonus", "stack_size",
+    "at", "rotate", "planned", "id",
+}
+
+
+def _int_in(value, what: str, low: int, high: int) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or not low <= value <= high:
+        raise PlanArgsError(f"{what}: целое от {low} до {high}")
+    return value
+
+
+def parse_block(block) -> dict:
+    """Проверить описание блока рядов и вернуть блок для plan.json forge (`at` = [0, 0]).
+
+    Формат — как у блока `type:"rows"` в plan.json forge: `recipe`, `machine`, `rows` (список числа
+    станков по рядам, либо число рядов вместе с `per_row`), ступени `belt`, `inserter`,
+    `long_inserter`, `pole` (`pipe`, `pipe_to_ground`), `stack` (mirror│repeat), `align`
+    (start│center), `input_belts`, `speed_bonus`, `stack_size`, `rotate` (0│90│180│270), `planned`.
+    Допускается обёртка `{"blocks": [один блок]}`. `at` и `id` отбрасываются: смещения всегда от угла.
+    """
+    if isinstance(block, dict) and set(block) <= {"label", "blocks"} and "blocks" in block:
+        inner = block["blocks"]
+        if not isinstance(inner, list) or len(inner) != 1:
+            raise PlanArgsError("block: в обёртке {blocks} ровно один блок рядов")
+        block = inner[0]
+    if not isinstance(block, dict):
+        raise PlanArgsError("block: объект — один блок рядов в формате plan.json forge")
+    try:
+        size = len(json.dumps(block, ensure_ascii=False).encode("utf-8"))
+    except (TypeError, ValueError):
+        raise PlanArgsError("block: должен быть JSON") from None
+    if size > MAX_BLOCK_JSON_BYTES:
+        raise PlanArgsError(f"block: {size} байт, больше {MAX_BLOCK_JSON_BYTES}")
+    if "library" in block:
+        raise PlanArgsError("block: блоки библиотеки сюда не годятся; нужен блок рядов (recipe, machine, rows)")
+    unknown = set(block) - _BLOCK_FIELDS
+    if unknown:
+        raise PlanArgsError(f"block: лишние поля {', '.join(sorted(map(str, unknown)))}")
+    if block.get("type", "rows") != "rows":
+        raise PlanArgsError("block.type: только 'rows'")
+
+    out: dict = {"type": "rows"}
+    for key in _BLOCK_NAME_FIELDS:
+        if block.get(key) is not None:
+            out[key] = _name(block[key], f"block.{key}")
+    for key in ("recipe", "machine"):
+        if key not in out:
+            raise PlanArgsError(f"block.{key}: обязательно")
+
+    rows = block.get("rows")
+    if isinstance(rows, list):
+        if not 1 <= len(rows) <= MAX_BLOCK_ROWS:
+            raise PlanArgsError(f"block.rows: от 1 до {MAX_BLOCK_ROWS} рядов")
+        counts = [_int_in(n, "block.rows[]", 1, MAX_BLOCK_PER_ROW) for n in rows]
+        if "per_row" in block:
+            raise PlanArgsError("block: per_row нужен только когда rows — число рядов")
+    elif isinstance(rows, int) and not isinstance(rows, bool):
+        n_rows = _int_in(rows, "block.rows", 1, MAX_BLOCK_ROWS)
+        if "per_row" not in block:
+            raise PlanArgsError("block: rows числом требует per_row")
+        counts = [_int_in(block["per_row"], "block.per_row", 1, MAX_BLOCK_PER_ROW)] * n_rows
+    else:
+        raise PlanArgsError("block.rows: список числа станков по рядам (или число рядов и per_row)")
+    if sum(counts) > MAX_BLOCK_MACHINES:
+        raise PlanArgsError(f"block: {sum(counts)} станков, больше {MAX_BLOCK_MACHINES}")
+    out["rows"] = counts
+
+    if block.get("stack") is not None:
+        if block["stack"] not in ("mirror", "repeat"):
+            raise PlanArgsError("block.stack: mirror или repeat")
+        out["stack"] = block["stack"]
+    if block.get("align") is not None:
+        if block["align"] not in ("start", "center"):
+            raise PlanArgsError("block.align: start или center")
+        out["align"] = block["align"]
+    if block.get("input_belts") is not None:
+        out["input_belts"] = _int_in(block["input_belts"], "block.input_belts", 1, 4)
+    if block.get("stack_size") is not None:
+        out["stack_size"] = _int_in(block["stack_size"], "block.stack_size", 1, 20)
+    if block.get("speed_bonus") is not None:
+        bonus = _num(block["speed_bonus"], "block.speed_bonus")
+        if not 0 <= bonus <= 20:
+            raise PlanArgsError("block.speed_bonus: от 0 до 20")
+        out["speed_bonus"] = bonus
+    if block.get("planned") is not None:
+        planned = _num(block["planned"], "block.planned")
+        if planned < 0:
+            raise PlanArgsError("block.planned: крафтов в секунду, не меньше 0")
+        out["planned"] = planned
+    rotate = block.get("rotate", 0)
+    if isinstance(rotate, bool) or rotate not in (0, 90, 180, 270):
+        raise PlanArgsError("block.rotate: 0, 90, 180 или 270")
+    out["rotate"] = int(rotate)
+    out["at"] = [0, 0]
+    return out
+
+
+def decode_blueprint_entities(blueprint: str) -> list[dict]:
+    """Сущности строки чертежа (`0` + base64(zlib(JSON))): `{name, position:{x,y}, direction?, ...}`.
+
+    Неверная строка — `ValueError`. Распаковка с потолком размера.
+    """
+    import base64
+    import zlib
+    try:
+        raw = base64.b64decode(blueprint[1:], validate=True)
+        dec = zlib.decompressobj()
+        data = dec.decompress(raw, MAX_BLUEPRINT_JSON_BYTES)
+        if dec.unconsumed_tail:
+            raise ValueError("чертёж слишком велик после распаковки")
+        doc = json.loads(data.decode("utf-8"))
+    except (ValueError, zlib.error) as exc:
+        raise ValueError(f"чертёж не разобрать: {exc.__class__.__name__}") from None
+    body = doc.get("blueprint") if isinstance(doc, dict) else None
+    entities = body.get("entities") if isinstance(body, dict) else None
+    if not isinstance(entities, list):
+        raise ValueError("в чертеже нет списка сущностей")
+    return entities
+
+
+def _layout_entity(raw) -> dict:
+    """Сущность чертежа → `{name, cx, cy, direction, recipe?, type?}` (центр от угла рамки)."""
+    pos = raw.get("position") if isinstance(raw, dict) else None
+    if not isinstance(pos, dict):
+        raise ValueError("сущность без position")
+    name = raw.get("name")
+    if not isinstance(name, str) or not NAME_RE.match(name):
+        raise ValueError("сущность без имени")
+    cx, cy = pos.get("x"), pos.get("y")
+    for v in (cx, cy):
+        if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) or abs(v) > 4096:
+            raise ValueError("координата сущности вне блока")
+    direction = raw.get("direction", 0)
+    if isinstance(direction, bool) or not isinstance(direction, int) or not 0 <= direction <= 15:
+        raise ValueError("направление сущности")
+    item = {"name": name, "cx": cx, "cy": cy, "direction": direction}
+    recipe = raw.get("recipe")
+    if isinstance(recipe, str) and NAME_RE.match(recipe):
+        item["recipe"] = recipe
+    if raw.get("type") in ("input", "output"):
+        item["type"] = raw["type"]
+    return item
+
+
+def _layout_port(raw: dict) -> dict:
+    """Порт из отчёта forge → порт блока: `{id, kind, io, dx, dy, dir, items:[левая, правая] │ fluid, rate}`."""
+    kind, io = raw.get("kind"), raw.get("io")
+    if kind not in ("belt", "pipe") or io not in ("in", "out"):
+        raise ValueError("порт: kind belt│pipe, io in│out")
+    x, y, d = raw.get("x"), raw.get("y"), raw.get("direction")
+    for v in (x, y):
+        if isinstance(v, bool) or not isinstance(v, int):
+            raise ValueError("порт: клетка не целая")
+    if isinstance(d, bool) or d not in (0, 4, 8, 12):
+        raise ValueError("порт: направление")
+    index = raw.get("index")
+    if isinstance(index, bool) or not isinstance(index, int) or index < 0:
+        raise ValueError("порт: нет индекса")
+    items = [i if isinstance(i, str) else "" for i in (raw.get("items") or [])]
+    port = {"id": f"{io}{index}", "kind": kind, "io": io, "dx": x, "dy": y, "dir": d}
+    if kind == "belt":
+        port["items"] = (items + ["", ""])[:2]
+    else:
+        fluid = next((i for i in items if i), None)
+        if fluid:
+            port["fluid"] = fluid
+    rate = raw.get("rate")
+    if isinstance(rate, (int, float)) and not isinstance(rate, bool) and math.isfinite(rate):
+        port["rate"] = round(float(rate), 4)
+    return port
+
+
+def _block_summary(spec: dict, report_block: dict, ports: list[dict], n_entities: int, report: dict) -> str:
+    head = (
+        f"Блок {spec['recipe']}: {sum(spec['rows'])}× {spec['machine']} в {len(spec['rows'])} ряд(ах), "
+        f"рамка {report_block.get('width')}×{report_block.get('height')}, построек {n_entities}. "
+        "Смещения dx,dy и cx,cy — от левой верхней клетки рамки (в build_layout это anchor)."
+    )
+    lines = [head]
+    for p in ports:
+        what = " | ".join(i or "-" for i in p["items"]) if p["kind"] == "belt" else p.get("fluid", "?")
+        lines.append(f"{p['id']}: {p['kind']} {p['io']} ({p['dx']},{p['dy']}) dir {p['dir']} {what}"
+                     + (f" {p['rate']}/s" if "rate" in p else ""))
+    suspects = [
+        str(f.get("summary")) for f in report.get("findings") or []
+        if isinstance(f, dict) and f.get("severity") == "suspect"
+    ]
+    if suspects:
+        lines.append("forge сомневается: " + "; ".join(suspects[:3]) + ".")
+    text = "\n".join(lines)
+    return text if len(text) <= MAX_SUMMARY else text[: MAX_SUMMARY - 1] + "…"
+
+
+def _plan_block(block, config) -> dict:
+    spec = parse_block(block)
+    plans = _plans_dir(config)
+    plan_id = "p-" + secrets.token_hex(8)
+    work = Path(tempfile.mkdtemp(prefix=f"fp-work-{plan_id}-"))
+    try:
+        built = _forge_build(
+            config, plan_id, {"blocks": [spec]}, work,
+            "поправь ступени (belt, inserter, pole) или число станков в ряду")
+        if isinstance(built, dict):
+            return built
+        blueprint, report, active = built
+
+        blocks = report.get("blocks")
+        rb = blocks[0] if isinstance(blocks, list) and len(blocks) == 1 and isinstance(blocks[0], dict) else None
+        if rb is None or not isinstance(rb.get("ports"), list):
+            return _unsupported("forge build: в отчёте нет одного блока с портами")
+        try:
+            entities = [_layout_entity(e) for e in decode_blueprint_entities(blueprint)]
+            ports = [_layout_port(p) for p in rb["ports"] if isinstance(p, dict)]
+            w, h = rb.get("width"), rb.get("height")
+            if any(isinstance(v, bool) or not isinstance(v, int) or v < 1 for v in (w, h)):
+                raise ValueError("размер блока")
+        except ValueError as exc:
+            return _unsupported(f"forge build: ответ не разобрать ({exc})")
+        if not entities:
+            return _unsupported("forge build: в блоке нет построек")
+        if len(entities) > MAX_LAYOUT_ENTITIES:
+            return _unsupported(
+                f"в блоке {len(entities)} построек, build_layout берёт до {MAX_LAYOUT_ENTITIES}: "
+                "спроектируй блок меньше (меньше станков в ряду или рядов) и соедини блоки")
+        if len(ports) > MAX_LAYOUT_PORTS:
+            return _unsupported(f"у блока {len(ports)} портов, больше {MAX_LAYOUT_PORTS}")
+        if w > MAX_LAYOUT_FRAME or h > MAX_LAYOUT_FRAME:
+            return _unsupported(
+                f"рамка блока {w}×{h}, build_layout берёт до {MAX_LAYOUT_FRAME}×{MAX_LAYOUT_FRAME}: "
+                "спроектируй блок меньше и соедини блоки")
+        # forge кладёт угол блока в (0, 0): центр любой постройки внутри рамки (сдвиг чертежа в любую
+        # сторону развёл бы постройки с портами)
+        if any(not (0 < e["cx"] < w and 0 < e["cy"] < h) for e in entities):
+            return _unsupported("forge build: чертёж сдвинут относительно угла блока")
+
+        items = Counter(e["name"] for e in entities)
+        result = {
+            "plan": plan_id,
+            "size": {"w": w, "h": h},
+            "items": dict(sorted(items.items())),
+            "ports": ports,
+            "entities_n": len(entities),
+            "summary": _block_summary(spec, rb, ports, len(entities), report),
+        }
+        meta = {
+            "plan": plan_id, "created": int(time.time()), "profile": active, "task": "block",
+            "block": spec, "size": result["size"], "items": result["items"], "entities_n": len(entities),
+        }
+        _atomic_write(plans / f"{plan_id}.txt", blueprint)
+        _atomic_write(plans / f"{plan_id}.json", json.dumps(meta, ensure_ascii=False))
+        _atomic_write(plans / f"{plan_id}{LAYOUT_SUFFIX}", json.dumps(
+            {"entities": entities, "ports": ports, "size": result["size"]}, ensure_ascii=False))
+        _prune(plans)
+        return result
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def load_layout(plan_id, *, config) -> dict:
+    """Раскладка блока по id из `partner_plan{task:"block"}`: `{"entities", "ports"}`.
+
+    `entities` — `[{name, cx, cy, direction, recipe?, type?}]`, `ports` — `[{id, kind, io, dx, dy, dir,
+    items:[левая, правая] │ fluid, rate}]`; смещения от левой верхней клетки рамки блока. Неверный или
+    неизвестный id, а также план без раскладки (добыча) — `PlanArgsError`.
+    """
+    if not isinstance(plan_id, str) or not PLAN_ID_RE.match(plan_id):
+        raise PlanArgsError("plan: id из partner_plan вида p-<16 hex>")
+    path = _config_home(config) / "plans" / f"{plan_id}{LAYOUT_SUFFIX}"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        raise PlanArgsError("plan: нет такой раскладки (устарела, не создавалась или это план добычи)") from None
+    except (OSError, ValueError):
+        raise PlanArgsError("plan: сохранённая раскладка не читается") from None
+    entities = data.get("entities") if isinstance(data, dict) else None
+    ports = data.get("ports") if isinstance(data, dict) else None
+    if (not isinstance(entities, list) or not entities or not isinstance(ports, list)
+            or not all(isinstance(e, dict) for e in entities) or not all(isinstance(p, dict) for p in ports)):
+        raise PlanArgsError("plan: сохранённая раскладка повреждена")
+    return {"entities": entities, "ports": ports}
 
 
 def load_plan(plan_id, *, config) -> str:

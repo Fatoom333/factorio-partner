@@ -32,10 +32,10 @@ Lua, Factorio 2.0. `control.lua` — точка входа: регистриру
 | Папка | Что внутри |
 |---|---|
 | `scripts/core/` | ядро: `dispatch` (команда `/partner`, конверт v1, идемпотентность через `recent`, лимиты), `init` (регистрация модулей, склейка событий, жизненный цикл), `jobs` (очередь задач и `ctx` действий), `registry` (помощники: `helper_spawn/remove/list`, смерть и исчезновение тела), `owner` (хозяин), `events` (кольцевой буфер событий), `reflexes` (операция `reflexes` и вызов проверок модулей), `ops` (`hello`, `say`), `wait`, `blobs` (`blob_put`: большие данные частями), `reserve` (резервы предметов и областей между помощниками), `schema` (проверка аргументов по схеме), `target` (поиск цели действия), `vis` (что считается видимым), `migrate` (схема `storage` и миграции), `attach` (тело — персонаж второго клиента), `nameplate` (подпись над телом и метка на карте), `bgcraft` (фоновый крафт и `craft_done`), `tidy` (автосортировка инвентаря) |
-| `scripts/actions/` | действия, которые ставятся в очередь (`act`): `walk`, `approach`, `follow`, `mine`, `craft`, `insert`, `extract`, `collect`, `pickup`, `place`, `rotate`, `set_recipe`, `build_blueprint`, `build_ghosts`, `deconstruct`, `plan_mining`, `plan_belt` |
+| `scripts/actions/` | действия, которые ставятся в очередь (`act`): `walk`, `approach`, `follow`, `mine`, `craft`, `insert`, `extract`, `collect`, `pickup`, `place`, `rotate`, `set_recipe`, `build_blueprint`, `build_layout`, `build_ghosts`, `deconstruct`, `plan_mining`, `plan_belt`, `connect_entities`, `get_items`, `plan` |
 | `scripts/perception/` | операции чтения (без очереди): `state`, `map`, `resources`, `stock`, `ghosts`, `recipes`, `vision`, `rates`, `find`, `access`, `supply`, `lookup`; `tiles` — свойства плиток из игры, общие для `map`, `access`, `plan_mining` |
 | `scripts/reflexes/` | рефлексы, которые срабатывают без участия агента: `flee` (атака, здоровье, отступление и возврат к делу), `death` (смерть и возрождение; включён всегда), `ammo` (заправщик турелей), `shoot` (стрельба в бою); `common` — состояние рефлексов и поиск врагов |
-| `scripts/lib/` | общие библиотеки: `path` (путь и подход к цели), `inventory` (перенос предметов), `build` (общая часть стройки), `beltpath` (слой игры для прокладки лент) |
+| `scripts/lib/` | общие библиотеки: `path` (путь и подход к цели), `inventory` (перенос предметов), `build` (общая часть стройки), `blueprint` (постановка блока призраками через чертёж движка: раскладка, оценка, поиск места, сверка, уборка своих пометок и призраков — общая для `build_blueprint` и `build_layout`), `layout` (память поставленных блоков и их портов, `storage.layouts`), `connect` (прокладка `connect_entities`: концы, лента, труба, опоры), `getitems` (снабжение `get_items` и `auto_supply`), `beltpath` (слой игры для прокладки лент) |
 | `scripts/vendor/` | чужой код с лицензиями: `mpp` (раскладки Mining Patch Planner и переходник `partner/adapter.lua`), `router` (решатель Wuastbude Belt & Pipe Router) |
 | `settings.lua`, `locale/` | настройки мода (хозяин `partner-owner`, имя помощника `partner-helper-name`, …) и тексты |
 
@@ -142,7 +142,7 @@ Python ≥ 3.11, FastMCP (stdio). Тонкий слой над `core.py`.
 ## Хранилище
 Всё состояние мода лежит в `storage` под ключами верхнего уровня (список — PROTOCOL §7: `proto`,
 `helpers`, `jobs`, `events`, `recent`, `blobs`, `reservations`, `vision`, `reflexes`, `reflex_state`,
-`path_requests`, `mining_last`, `belt_last`). Ядро создаёт все ключи при загрузке и мигрирует схему
+`path_requests`, `mining_last`, `belt_last`, `layouts`, `connect_last`, `connect_fled`). Ядро создаёт все ключи при загрузке и мигрирует схему
 (`migrate.lua`); модуль пишет только под своим ключом. На стороне сервера данные лежат в `FP_HOME`
 (вне репозитория): `helpers.json` с ключами, `logs/`, `launch/`; правила и память по сейвам — в
 `save-notes/` папки проекта.

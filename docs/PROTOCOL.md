@@ -305,7 +305,7 @@ MCP-сервер `factorio_partner` (Python) общаются **только** �
   areas={[helper]=area}, machines={[unit_number]=helper}}` (`machines` — печи, которые помощник занял
   для плавки в `get_items`, до конца шага). `collect`/`extract` не берут чужой резерв, `build_*` держат область на
   время задачи (пересечение → `reserved`). Область держат `build_ghosts`, `build_blueprint`,
-  `deconstruct{area}`; `place` и `deconstruct{target}` чужой резерв только проверяют.
+  `build_layout` (с места, найденного поиском), `deconstruct{area}`; `place` и `deconstruct{target}` чужой резерв только проверяют.
 - **Доступ модулей к ядру** (кроме `ctx`): чтение — `jobs.active`, `jobs.queue_len`,
   `jobs.queue_of(helper)`, `events.query`; постановка задачи рефлексом — `jobs.op_act` (только
   рефлексы). В `storage.jobs` никто, кроме ядра, не пишет. Метод `stop` действия может вернуть таблицу
@@ -327,6 +327,17 @@ MCP-сервер `factorio_partner` (Python) общаются **только** �
   - `belt_last[helper]` = `{surface_index, to, belt, underground, lanes, cells (позиции призраков плана
     по лентам, ≤ 4096), tick}` — последний план `plan_belt`; его читает `plan_belt{from:"resume"}`.
     План длиннее 4096 клеток не запоминается (`from:"resume"` ответит `bad_args`);
+  - `layouts[helper]` = `{[tag] = {surface, anchor:{x,y}, direction, tick, placed:[{i, name, pos}] (≤ 100),
+    ports:{[id] = {pos, dir, kind, io, items?, fluid?}}}}` — память поставленных блоков: пишет только
+    `build_layout` с `tag` (не в `dry_run`), читает `connect_entities` (концы `{layout, port}` и
+    `{layout, i}`) через `scripts/lib/layout.lua`. `placed` — и постройки, которые уже стояли
+    (`exists`). Не больше 16 тегов на помощника (старший по `tick` вытесняется); записи удалённого
+    помощника снимаются при следующей записи и раз в 10 с. Сущностей не хранит — только имя и место;
+  - `connect_last[helper]` = `{sig, surface, area, cells (≤ 400)}` — последняя прокладка
+    `connect_entities`: пишет и читает только она (возврат после отступления без нового поиска);
+  - `connect_fled[helper]` = `{sig, tick, surface, force, flat:[{x, y, name, w?, placed?, marks?}]}` —
+    свои призраки и пометки к сносу прокладки, снятой отступлением `flee`. Задача с той же подписью
+    подхватывает их по `connect_last`; другая прокладка помощника или 5 минут без возврата — убираются;
   - `nameplates` — подписи и метки карты тел без игрока (§4 «say»), `bg_crafts` — фоновые крафты
     `craft{wait:false}` (EVENTS.md `craft_done`) — заводятся модулями по требованию.
 

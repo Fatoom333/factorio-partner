@@ -723,7 +723,11 @@ class Core:
         return await self._tool("partner_act", helper, key, a, run)
 
     async def _plan_to_blob(self, do: str, clean: dict) -> dict:
-        """``build_blueprint{plan}`` -> the same args with ``blob``: the forge plan is uploaded."""
+        """Big payloads go to the mod as a ``blob``. ``build_blueprint{plan}``: the forge blueprint;
+        ``build_layout{plan}`` (the forge block) and ``build_layout{entities}`` over 4 KB: a JSON
+        ``{entities, ports}``. The args come back without ``plan`` / ``entities`` / ``ports``."""
+        if do == "build_layout":
+            return await self._layout_to_blob(clean)
         if do != "build_blueprint" or "plan" not in clean:
             return clean
         bp = await self._load_plan(clean["plan"])
@@ -731,6 +735,60 @@ class Core:
         out = {k: v for k, v in clean.items() if k != "plan"}
         out["blob"] = blob
         return out
+
+    async def _layout_to_blob(self, clean: dict) -> dict:
+        if "plan" in clean:
+            loaded = await self._load_layout(clean["plan"])
+            entities = loaded["entities"]
+            ports = {}
+            for i, p in enumerate(loaded["ports"]):
+                # the saved forge port goes through the same check as the agent's: the mod takes
+                # only {id, dx, dy, kind, io, dir, items | fluid, rate}
+                try:
+                    q = V.layout_port(f"plan.ports[{i}]", p)
+                except PartnerError:
+                    raise PartnerError("not_found", "saved plan is damaged; call partner_plan again") from None
+                ports[q["id"]] = q
+            for p in clean.get("ports", []):            # the agent's ports win by id
+                ports[p["id"]] = p
+        elif "entities" in clean and V.json_size(clean) > V.MAX_ACT_ARGS:
+            entities = clean["entities"]
+            ports = {p["id"]: p for p in clean.get("ports", [])}
+        else:
+            return clean
+        if len(ports) > V.LAYOUT_PORTS_MAX:
+            raise PartnerError("limit", f"ports: at most {V.LAYOUT_PORTS_MAX}")
+        text = json.dumps({"entities": entities, "ports": list(ports.values())},
+                          ensure_ascii=True, separators=(",", ":"))
+        if len(text) > BLOB_MAX:
+            raise PartnerError("limit", "layout larger than 1 MB")
+        blob = await self._upload_blob(text)
+        out = {k: v for k, v in clean.items() if k not in ("plan", "entities", "ports")}
+        out["blob"] = blob
+        return out
+
+    async def _load_layout(self, plan: str) -> dict:
+        """``forge.load_layout(id, config=)`` -> ``{"entities": [...], "ports": [...]}``."""
+        V.ident("args.plan", plan)
+        forge = self._forge()
+        fn = getattr(forge, "load_layout", None) if forge is not None else None
+        if not callable(fn):
+            raise PartnerError("not_found", "plans are not available: forge integration is not installed")
+        try:
+            res = await asyncio.to_thread(fn, plan, config=self.cfg)
+        except PartnerError:
+            raise       # forge.PlanArgsError: a bad or unknown id, as is
+        except Exception:  # noqa: BLE001
+            log.exception("forge load_layout failed")
+            raise PartnerError("not_found", "plan not found; call partner_plan again") from None
+        ents = res.get("entities") if isinstance(res, dict) else None
+        ports = res.get("ports", []) if isinstance(res, dict) else None
+        if (not isinstance(ents, list) or not ents or not all(isinstance(e, dict) for e in ents)
+                or not isinstance(ports, list) or not all(isinstance(p, dict) for p in ports)):
+            raise PartnerError("not_found", "plan not found; call partner_plan again")
+        if len(ents) > V.LAYOUT_ENTITIES_MAX:
+            raise PartnerError("limit", f"plan holds more than {V.LAYOUT_ENTITIES_MAX} buildings")
+        return {"entities": ents, "ports": ports}
 
     async def op_cancel(self, helper, key, job=None, all=False, at_boundary=False) -> dict:  # noqa: A002
         a = {"job": job, "all": all, "at_boundary": at_boundary}
@@ -1153,12 +1211,23 @@ class Core:
                     self._note_event(helper, ev)
         return out
 
-    async def op_plan(self, helper, key, task="mining", resource=None, patch=None, options=None) -> dict:
-        a = {"task": task, "resource": resource, "patch": patch, "options": options}
+    async def op_plan(self, helper, key, task="mining", resource=None, patch=None, options=None,
+                      block=None) -> dict:
+        a = {"task": task, "resource": resource, "patch": patch, "options": options, "block": block}
 
         async def run(h):
-            if task != "mining":
-                raise V.bad("task", "only 'mining' is supported")
+            if task not in ("mining", "block"):
+                raise V.bad("task", "only 'mining' and 'block' are supported")
+            if task == "block":
+                if not isinstance(block, dict) or not block:
+                    raise V.bad("block", "must be a non-empty object")
+                if resource is not None or patch is not None or options is not None:
+                    raise V.bad("args", "task block takes only block")
+                if V.json_size(block) > V.MAX_ACT_ARGS:
+                    raise PartnerError("limit", f"block larger than {V.MAX_ACT_ARGS} bytes")
+                return await self._forge_plan(h, task, None, None, None, block)
+            if block is not None:
+                raise V.bad("block", "only with task block")
             if (resource is None) == (patch is None):
                 raise V.bad("args", "pass exactly one of resource / patch")
             for nm, v in (("resource", resource), ("patch", patch), ("options", options)):
@@ -1176,7 +1245,7 @@ class Core:
         except ImportError:
             return None
 
-    async def _forge_plan(self, helper, task, resource, patch, options) -> dict:
+    async def _forge_plan(self, helper, task, resource, patch, options, block=None) -> dict:
         forge = self._forge()
         if forge is None:
             return {"supported": False, "reason": "forge integration is not installed on the server"}
@@ -1185,14 +1254,17 @@ class Core:
             return {"supported": False, "reason": "forge integration has no plan()"}
         try:
             # the Python contract of MCP.md, the only one: plan(task, resource, patch, options, *, config)
-            result = await asyncio.to_thread(fn, task, resource, patch, options, config=self.cfg)
+            if task == "block":
+                result = await asyncio.to_thread(fn, task, None, None, None, block=block, config=self.cfg)
+            else:
+                result = await asyncio.to_thread(fn, task, resource, patch, options, config=self.cfg)
         except PartnerError:
             raise       # PlanArgsError is a PartnerError with code bad_args
         except Exception as exc:  # noqa: BLE001
             # the message may hold file paths / profile names: details go to server.log only
             log.exception("forge plan failed")
             return {"supported": False, "reason": f"forge failed ({type(exc).__name__}); see server.log"}
-        return _plan_answer(result)
+        return _block_answer(result) if task == "block" else _plan_answer(result)
 
     async def _forge_notes(self) -> dict | None:
         """``forge.brief_notes(config)``: the only source of the profile notes for partner_brief."""
@@ -1354,6 +1426,44 @@ def _plan_answer(result: Any) -> dict:
     out["items"] = items
     out["summary"] = summary[:2000]
     return out
+
+
+def _block_answer(result: Any) -> dict:
+    """Forge's answer to ``task:"block"``: ``{plan, size, items, ports, entities_n, summary}``."""
+    if not isinstance(result, dict):
+        return {"supported": False, "reason": "forge returned no plan"}
+    if result.get("supported") is False:
+        reason = result.get("reason")
+        reason = reason[:300] if isinstance(reason, str) else "forge cannot plan this"
+        return {"supported": False, "reason": reason}
+    try:
+        V.ident("plan", result.get("plan"))
+        size = result.get("size")
+        if not (isinstance(size, dict) and set(size) == {"w", "h"}
+                and all(isinstance(size[k], (int, float)) and not isinstance(size[k], bool)
+                        and 0 < size[k] <= 10_000 for k in ("w", "h"))):
+            raise V.bad("size", "must be {w, h}")
+        items = result.get("items")
+        if isinstance(items, list) and not items:
+            items = {}
+        if not isinstance(items, dict) or not all(
+                isinstance(k, str) and V.NAME_RE.match(k) and _is_int(n) and n >= 0
+                for k, n in items.items()):
+            raise V.bad("items", "must be {item: count}")
+        ports = result.get("ports", [])
+        if not isinstance(ports, list) or not all(isinstance(p, dict) for p in ports):
+            raise V.bad("ports", "must be a list of ports")
+        n = result.get("entities_n")
+        if not _is_int(n) or n < 0:
+            raise V.bad("entities_n", "must be a count")
+        summary = result.get("summary")
+        if not isinstance(summary, str):
+            raise V.bad("summary", "must be a string")
+    except PartnerError as e:
+        log.warning("forge block plan has a bad shape: %s", e)
+        return {"supported": False, "reason": "forge returned a plan of unexpected shape"}
+    return {"plan": result["plan"], "size": size, "items": items, "ports": ports,
+            "entities_n": n, "summary": summary[:2000]}
 
 
 def _json_size(v: Any) -> int:

@@ -218,8 +218,8 @@ def build_server(core: Core, admin: bool = False, packages: bool = True) -> Fast
     async def partner_act(helper: Helper, key: Key, do: str,
                           args: dict[str, Any] | None = None, replace: bool = False) -> dict:
         """Поставить задачу в очередь: walk, approach, follow, mine, craft, insert, extract, collect,
-        get_items, pickup, place, rotate, set_recipe, build_blueprint, build_ghosts, deconstruct, plan_mining,
-        plan_belt, wait. Ответ — {job, queued_before}; итог придёт событием job_done / job_failed.
+        get_items, pickup, place, rotate, set_recipe, build_blueprint, build_layout, connect_entities,
+        build_ghosts, deconstruct, plan_mining, plan_belt, wait. Ответ — {job, queued_before}; итог придёт событием job_done / job_failed.
         get_items{items} — добрать предметы в карманы до этих чисел (склады -> крафт -> плавка -> добыча
         руками). auto_supply=true у insert, place, build_blueprint, build_ghosts — сначала добрать
         недостающее так же, вместо отказа no_items. Отказ owner_hold — хозяин сказал «стоп»: не
@@ -233,7 +233,14 @@ def build_server(core: Core, admin: bool = False, packages: bool = True) -> Fast
         ленты встала (заблокированные призраки, отказ, бегство) — недостроенные призраки последнего
         плана убираются, путь от построенной части до той же цели ищется заново (ответ
         resumed:{built, removed}); потом снова build_ghosts. replace=true отменяет текущую задачу и
-        очередь."""
+        очередь. build_layout{anchor, entities|plan, ...} — блок построек по смещениям от клетки-якоря
+        (entities [{name, dx, dy|cx, cy, direction?, recipe?, type?, insert?}] до 100, либо plan — id
+        блока из partner_plan{task:"block"}); search / rotate — поиск места, on_resource — руда под
+        бурами, ports и tag — запомнить блок для connect_entities, dry_run — только оценка и место;
+        при отказе свои непостроенные призраки убираются (keep_ghosts — оставить).
+        connect_entities{kind: belt|pipe|power, from, to, via?, ...} — проложить и построить ленту,
+        трубу или линию опор; конец — {pos}, {target}, {layout, port} или {layout, i}; dry_run —
+        только путь. У обоих действий есть auto_supply, mode и dry_run."""
         return await _run(core.op_act(helper, key, do, args, replace))
 
     @mcp.tool()
@@ -324,14 +331,19 @@ def build_server(core: Core, admin: bool = False, packages: bool = True) -> Fast
         return await _run(core.op_ledger(helper, key, action, package, id, rev))
 
     @mcp.tool()
-    async def partner_plan(helper: Helper, key: Key, task: Literal["mining"] = "mining",
+    async def partner_plan(helper: Helper, key: Key, task: Literal["mining", "block"] = "mining",
                            resource: dict[str, Any] | None = None,
                            patch: dict[str, Any] | None = None,
-                           options: dict[str, Any] | None = None) -> dict:
-        """Спроектировать добычу через forge: resource {name, area} или patch из partner_resources.
-        Ответ {plan, anchor, direction, items, size, summary} или {supported:false, reason}
-        (reason "forge_too_old" — forge у хозяина старый: размечай через plan_mining)."""
-        return await _run(core.op_plan(helper, key, task, resource, patch, options))
+                           options: dict[str, Any] | None = None,
+                           block: dict[str, Any] | None = None) -> dict:
+        """Спроектировать через forge. task "mining": добыча, resource {name, area} или patch из
+        partner_resources; ответ {plan, anchor, direction, items, size, summary}. task "block": блок
+        построек без чертежа, нужен block (объект ≤ 4 КБ, поля — раздел partner_plan в MCP.md);
+        ответ {plan, size, items, ports, entities_n, summary}: plan передай в
+        partner_act build_layout{plan, anchor}, ports — концы для connect_entities. Либо
+        {supported:false, reason} (reason "forge_too_old" — forge у хозяина старый: размечай через
+        plan_mining)."""
+        return await _run(core.op_plan(helper, key, task, resource, patch, options, block))
 
     if admin:
         @mcp.tool()

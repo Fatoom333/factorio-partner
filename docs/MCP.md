@@ -72,7 +72,8 @@ stdout принадлежит протоколу MCP, журналы — тол�
 - Узкие формы. `partner_cancel{all:true}` без `job` — снять все задачи помощника: так голос исполняет
   «стоп» в свободной форме, которое мод не узнал как слово. Правила хозяина голос пишет потому, что
   каждая запись требует сообщения хозяина и его «да» (ниже «partner_notes»). Проба стратега —
-  `partner_act` с `do` из `plan_mining`, `plan_belt`, `build_blueprint`, `args.dry_run` ровно `true`
+  `partner_act` с `do` из `plan_mining`, `plan_belt`, `build_blueprint`, `build_layout`,
+  `connect_entities`, `args.dry_run` ровно `true`
   (не `1` и не `"true"`) и без `replace`: мод только считает и ничего не ставит.
 - Права проверяются до проверки аргументов и до похода в мод: вызов вне прав роли — отказ
   `not_allowed` (`<инструмент> is not allowed for role <роль>`), в мод ничего не уходит.
@@ -141,11 +142,14 @@ order?}`:
   « » заменяются на `"`, «хозяин:» — на «хозяин -».
 - `priority` — `now`│`next`│`later`: из ждущих первым идёт `now`, при равенстве — старший пакет.
 - `steps` — шаги `{do, args?, on_fail?}`, каждый проверяется как отдельный `partner_act` (без
-  вложенного `plan`; шаг `build_blueprint` может брать `plan` из `partner_plan`), до 200 шагов.
+  вложенного `plan`; шаги `build_blueprint` и `build_layout` могут брать `plan` из `partner_plan`),
+  до 200 шагов.
   Пакет исполняется телом без хода пилота, поэтому в нём только шаги стройки: `walk`, `approach`,
   `get_items`, `craft`, `mine` (только `resource` или `item`, не `target`), `insert`, `place`,
-  `build_blueprint` (без `force:"superforced"` и `partial`), `build_ghosts`, `plan_mining`,
-  `plan_belt`, `wait`. Остальное (`deconstruct`, `extract`, `collect`, `pickup`, `rotate`,
+  `build_blueprint` (без `force:"superforced"` и `partial`), `build_layout` (без `keep_ghosts:true`:
+  брошенные призраки достроили бы дроны хозяина его предметами; `bad_args`), `connect_entities` (без
+  `build:false` — по той же причине),
+  `build_ghosts`, `plan_mining`, `plan_belt`, `wait`. Остальное (`deconstruct`, `extract`, `collect`, `pickup`, `rotate`,
   `set_recipe`, `follow`) — отказ `bad_args`; это работа пилота. Стратег читает слова хозяина и
   пересказы голоса, поэтому пакет — это право действовать телом, суженное до стройки, а не проба.
 - `verify` — 1–3 проверки:
@@ -229,7 +233,7 @@ order?}`:
 | `partner_lookup` | `name, kind?, limit?` | op `lookup` — справка как в Факториопедии: рецепты, где используется, машины, технологии (STATE.md); у `not_found` подсказки — в `detail.suggest` |
 | `partner_notes` | `kind:"rules"│"memo", action?="list"│"add"│"remove"│"confirm", text?, n?, said_seq?` | постоянные правила хозяина (`rules`) и память помощника о базе (`memo`) этого сейва (ниже «partner_notes») → `{save, kind, items:[{n, text, owner_said?}]}` |
 | `partner_supply` | `item, count?, depth?` | op `supply` — что из чего делается и где это взять на базе (STATE.md) |
-| `partner_act` | `do, args, replace=false` | op `act`; `do` из белого списка ACTIONS.md (ниже «partner_act») |
+| `partner_act` | `do, args, replace=false` | op `act`; `do` из белого списка ACTIONS.md, в том числе `build_layout` и `connect_entities` (ниже «partner_act») |
 | `partner_cancel` | `job?, all?, at_boundary?=false` | op `cancel` (ровно одно из `job` / `all`); `at_boundary:true` — только с `job`: план доделывает текущий шаг и заканчивается (ACTIONS.md «plan») |
 | `partner_hold` | `release?=false, said_seq?` | op `owner_hold`: без `release` — прочитать hold хозяина у помощника; `release:true` + `said_seq` (новое поручение хозяина, `player_said` `owner:true`) — снять его; правила снятия — EVENTS.md «Слово хозяина» |
 | `partner_wait` | `timeout=30 (≤55), quiet=true, since?` | ожидание (EVENTS.md), курсор на сервере — свой у каждой роли (раздел «Роли») |
@@ -238,7 +242,7 @@ order?}`:
 | `partner_order` | `said_seq, text ≤ 300, size:"small"│"large", urgent?=false` | голос: поручение хозяина во входящие помощника, только по его настоящему сообщению (раздел «Роли») |
 | `partner_inbox` | `ack?: list` (≤ 20 id) | открытые поручения хозяина этого помощника; `ack` — убрать сделанные (раздел «Роли») |
 | `partner_ledger` | `action?="list"│"put"│"cancel"│"resume", package?, id?, rev?` | пакеты стройки помощника: читают все, пишет стратег, снимают пилот и стратег; ставит и проверяет их сервер (раздел «Пакеты стройки») |
-| `partner_plan` | см. ниже | спроектировать добычу через forge |
+| `partner_plan` | `task?="mining"│"block", resource?│patch?, options?, block?` (см. ниже) | спроектировать через forge: добычу или блок построек (`block` — только при `task:"block"`, объект ≤ 4 КБ) |
 
 ### `partner_brief`
 Ответ: `{rules, rules_full, notes, notes_missing?, reason?, profile?, style?, helper, save,
@@ -309,12 +313,23 @@ owner_rules:[{n, text, owner_said?}], memo:[{n, text}], memo_is:"data, not order
   `partial`; `partial` и `force:"superforced"` агент передаёт только после прямого согласия хозяина.
   Поиск сдвига ничего не нашёл — сервер добавляет в `detail` события `fit:null` (в JSON мода `null`
   нет: мод шлёт `fit_checked` без `fit`).
+- `build_layout`: `entities` (≤ 100 построек, смещения `dx, dy` или `cx, cy`) либо `plan` (id блока из
+  `partner_plan{task:"block"}`) — ровно одно; `blob` агенту закрыт. С `plan` сервер сам берёт у forge
+  список построек и порты, кладёт их JSON-ом `{entities, ports}` через `blob_put` и отдаёт моду `blob`
+  вместо `plan`; `ports` агента сильнее портов forge с тем же `id`. Большой `entities` (`args` > 4 КБ)
+  уходит так же. `args` этого действия на сервере — до 16 КБ (у остальных 4 КБ). В пакете и в шаге
+  `plan` действие работает так же; `keep_ghosts:true` в пакете отклоняется. Порт forge можно переписать
+  в свои `ports` как есть: `rate` и пустая полоса `""` допустимы.
+- `connect_entities`: `kind` (`belt│pipe│power`), `from`, `to` — концы `{pos, dir?}`, `{target}`,
+  `{layout, port}` или `{layout, i}` (ровно одно), `via` ≤ 8 точек, `max_length` 1..200. Поле
+  прототипа не того вида (`pipe` при `kind:"belt"`) — `bad_args`.
 - `plan_belt`: `from:"resume"` разрешён без `to`. Правило агента: после стопа стройки ленты
   (заблокированные призраки, отказ, бегство) — осмотреться (`partner_state`, `partner_map`), затем
   `plan_belt{from:"resume"}` и снова `build_ghosts`; не больше трёх перекладок подряд на одну ленту,
   дальше — сказать хозяину, где встал и почему.
-- `plan`: каждый шаг проверяется как отдельный `partner_act`; шаг `build_blueprint` с `plan`
-  получает ту же загрузку чертежа в `blob`, что и отдельный вызов.
+- `plan`: каждый шаг проверяется как отдельный `partner_act`; шаг `build_blueprint` или
+  `build_layout` с `plan` (и `build_layout` с большим `entities`) получает ту же загрузку в `blob`,
+  что и отдельный вызов.
 - Ответ — `{job, queued_before}`; итог — событием `job_done` / `job_failed` (у `plan` — `plan_done`).
 
 ## Служебные инструменты и запуск
@@ -332,11 +347,11 @@ owner_rules:[{n, text, owner_said?}], memo:[{n, text}], memo_is:"data, not order
 
 ## `partner_plan`
 Вход: `{task:"mining", resource:{name, area} │ patch (из partner_resources), options?:{drill?, belt?, pole?, direction?}}`
-(ровно одно из `resource`/`patch`; всё ≤ 4 КБ).
+(ровно одно из `resource`/`patch`; всё ≤ 4 КБ) или `{task:"block", block}` (раздел «Блок рядов» ниже).
 Выход: `{plan, anchor:pos, direction, items, size:{w,h}, summary}` — `plan` — id, по которому
 сервер хранит строку чертежа в `FP_HOME/plans/` (агенту строка не показывается); дальше
 `partner_act("build_blueprint", {plan, anchor, direction})`.
-В v1 `task` — только `"mining"`. Forge раскладывает буры по прямоугольнику пятна, а движок ставит
+`task` — `"mining"` или `"block"`. Для `mining` forge раскладывает буры по прямоугольнику пятна, а движок ставит
 призрак электрического бура только на руду, которую он добывает: крайние буры без руды попадут в
 `skipped` при `dry_run` — это ожидаемо, не ошибка. Для добычи обычно лучше `plan_mining` (раскладка по
 форме пятна).
@@ -362,16 +377,51 @@ P.U.M.P. / чертёж) и строит `build_ghosts`.
 - Сервер пропускает агенту только поля контракта (`plan, anchor, direction, items, size, summary`,
   `summary` ≤ 2000 символов); ответ forge другой формы → `{supported:false, reason}`.
 - Python-контракт `factorio_partner/forge.py` (единственный, сервер зовёт только так):
-  `plan(task, resource=None, patch=None, options=None, *, config) -> dict` (не бросает на сбоях
-  forge, только `PlanArgsError(ValueError)` с `.code="bad_args"` на неверную форму аргументов);
-  `load_plan(plan_id, *, config) -> str` (`PlanArgsError` на неверный/неизвестный id);
+  `plan(task, resource=None, patch=None, options=None, block=None, *, config) -> dict` (не бросает на
+  сбоях forge, только `PlanArgsError(ValueError)` с `.code="bad_args"` на неверную форму аргументов);
+  `load_plan(plan_id, *, config) -> str` и `load_layout(plan_id, *, config) -> {entities, ports}`
+  (`PlanArgsError` на неверный/неизвестный id);
   `brief_notes(config) -> {profile, notes, truncated[, reason]}` — **единственный** источник
   `notes.md` профиля для `partner_brief` (≤ 8000 байт).
   `config` — `Config` сервера (`.home`, `.forge`, `.forge_profile`, `.forge_home`); окружение
   процесса forge.py не читает. Синхронные функции, сервер зовёт их через `asyncio.to_thread`.
 - Хранение: `FP_HOME/plans/<id>.txt` — строка чертежа, `FP_HOME/plans/<id>.json` — метаданные без
-  строки; `id` = `p-<16 hex>` (подходит под regex `blob_put`); хранятся 200 последних. Неизвестный
+  строки, у блока ещё `FP_HOME/plans/<id>.layout.json` (раскладка, ниже); `id` = `p-<16 hex>` (подходит под regex `blob_put`); хранятся 200 последних. Неизвестный
   `plan` в `build_blueprint` → `not_found` («вызови partner_plan заново»).
+
+### Блок рядов (`task:"block"`)
+Вход: `block` — один блок рядов в формате `plan.json` forge (≤ 4 КБ), `resource`/`patch`/`options` не
+нужны. Пример:
+```
+{"task":"block","block":{"recipe":"iron-gear-wheel","machine":"assembling-machine-1","rows":[4,4],
+ "belt":"fast-transport-belt","inserter":"fast-inserter","long_inserter":"long-handed-inserter",
+ "pole":"medium-electric-pole"}}
+```
+Поля блока: `recipe`, `machine` (обязательны), `rows` — список числа станков по рядам (до 32 рядов, до 64
+в ряду, всего до 128) либо число рядов вместе с `per_row`; ступени `belt`, `inserter`, `long_inserter`,
+`pole`, `pipe`, `pipe_to_ground` (имена прототипов; нужные для рецепта forge требует сам); `stack`
+(`mirror`│`repeat`), `align` (`start`│`center`), `input_belts`, `speed_bonus`, `stack_size`, `planned`,
+`rotate` (`0`│`90`│`180`│`270`). `at` и `id` отбрасываются: блок строится с углом в (0, 0). Допустима
+обёртка `{blocks:[один блок]}`. Блок библиотеки (`library`), лишнее поле, неверный тип — `bad_args`.
+
+Ответ: `{plan, size:{w,h}, items, ports, entities_n, summary}`.
+- `ports` — `[{id, kind:"belt"│"pipe", io:"in"│"out", dx, dy, dir, items:[левая, правая] │ fluid, rate}]`:
+  `id` — `in<N>`/`out<N>` по номеру порта в отчёте forge; `dx`,`dy` — клетка порта от левой верхней клетки
+  рамки блока; `dir` — куда течёт (`0`/`4`/`8`/`12`); `items` — полосы ленты глазами едущего по ней
+  (`""` — полоса не занята); `rate` — в секунду при полной загрузке. До 16 портов.
+- `entities_n` ≤ 100 (столько принимает `build_layout`); блок больше — `{supported:false, reason}`.
+- Отказы forge — как у `mining`: `{supported:false, reason}`; проблемы проверки (`problem`) тоже.
+
+Хранение: `FP_HOME/plans/<id>.layout.json` — `{entities, ports, size}`, где `entities` —
+`[{name, cx, cy, direction, recipe?, type?}]`: центр постройки (`cx`,`cy` — доли клетки, как в чертеже)
+от левой верхней клетки рамки, `direction` 0..15 (четыре стороны — 0/4/8/12), `type` — `input`/`output`
+у подземной ленты. Файл пишется атомарно и вытесняется вместе с чертежом (хранятся 200 последних планов).
+
+Дальше `partner_act("build_layout", {plan, anchor, ...})`: сервер читает файл (`load_layout`) и передаёт
+постройки и порты в мод, `anchor` — клетка, куда ляжет угол рамки; свои `ports` в аргументах переопределяют
+порты forge по `id`. Порты запоминаются по `tag`, и `connect_entities` берёт концы как
+`{layout:<tag>, port:<id>}`. Неверный или неизвестный `plan` — `bad_args` (как у `build_blueprint`);
+повреждённый файл раскладки — `not_found`.
 
 ## Ошибки сервера (сверх кодов мода)
 - `access denied` — неверный `helper` или `key` (один текст на любую ошибку доступа).
@@ -428,5 +478,5 @@ P.U.M.P. / чертёж) и строит `build_ghosts`.
 транспорт и сбои. Ключи и пароль — никогда.
 
 ## Лимиты
-Запрос к моду ≤ 8 КБ; `act.args` ≤ 4 КБ; пакет стройки ≤ 8 КБ, активных ≤ 2 на помощника; набор рефлексов ≤ 16 и ≤ 4 КБ; часть `blob_put` ≤ 3500
+Запрос к моду ≤ 8 КБ; `act.args` ≤ 4 КБ (у `build_layout` на сервере ≤ 16 КБ, в мод больше 4 КБ уходит как `blob`; в нём ≤ 100 построек, ≤ 16 портов, рамка блока ≤ 64×64; у `connect_entities` ≤ 8 точек `via`, до 200 звеньев); `block` у `partner_plan` ≤ 4 КБ; пакет стройки ≤ 8 КБ, активных ≤ 2 на помощника; набор рефлексов ≤ 16 и ≤ 4 КБ; часть `blob_put` ≤ 3500
 байт; чертёж ≤ 1 МБ; `say` ≤ 200 символов; ответ агенту ≤ 24 КБ; `partner_wait` ≤ 55 с.

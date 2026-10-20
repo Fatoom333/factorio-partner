@@ -22,10 +22,12 @@
 | `set_recipe` | `target, recipe?` | `{name, pos, recipe, was, returned: items, spilled?}` |
 | `place` | `item, pos, direction?:0..15, recipe?, auto_supply?=false` | `{unit_number, name, pos}` |
 | `build_blueprint` | `blob, anchor:pos, direction?:0│4│8│12, mode?="auto", force?="forced", search?=16, rotate?=false, mirror?=false, partial?=false, dry_run?:bool, auto_supply?=false` | `{ghosts:int, tiles:int, skipped:[...], skipped_total, tiles_skipped, on_liquid:int, liquids?, fit?, to_remove?, to_remove_total?, missing: items}` + поля `build_ghosts` |
+| `build_layout` | `anchor:pos, entities:[{name, dx, dy │ cx, cy, direction?, recipe?, type?, insert?}] (1..100) │ blob, direction?:0│4│8│12, search?=0, rotate?=false, on_resource?, ports?:[…] (≤ 16), tag?, mode?="auto", auto_supply?=false, keep_ghosts?=false, dry_run?:bool` | `{site, placed:[...], placed_total, failed:[{i, name, pos, code, why?}], failed_total, need, missing, to_remove, to_remove_total, ports?, dry_run?}` + поля `build_ghosts` |
 | `build_ghosts` | `area?│radius?=64, mode?="auto", auto_supply?=false` | `{built:int, tiles_built:int, left:int, removed:int, not_removed:int, blocked:[...], blocked_total, missing: items}` |
 | `deconstruct` | `target│area, filter?:[name]` | `{removed:int, got: items, skipped?}` |
 | `plan_mining` | `resource?:string, area│near:pos, layout?="simple", direction?, miner?, belt?, pole?, pipe?, options?:object, dry_run?:bool` | `{ghosts:int, drills:int, tiles:int, skipped:int, area, need: items, layout, chosen:{miner, belt│chest, pole, pipe?}, warnings:[...], dry_run?}` |
 | `plan_belt` | `from:pos│"patch"│"resume", to:pos, belt?, lanes?=1 (1..4), underground?="auto", start_direction?, dry_run?:bool` | `{ghosts:int, length:int, undergrounds:int, turns:int, need: items, area, path:[pos…] (углы, ≤ 40), warnings:[...], lanes, chosen}` |
+| `connect_entities` | `kind:"belt"│"pipe"│"power", from, to` (конец — ровно одно из `{pos, dir?}`, `{target}`, `{layout, port}`, `{layout, i}`), `via?:[pos] (≤ 8), max_length?=200, belt?│pipe?│pole?, underground?="auto", fluid?, build?=true, mode?="auto", auto_supply?=false, dry_run?:bool` | `{kind, length, undergrounds, poles?, turns?, ghosts, need, missing?, area, path:[pos…] (углы, ≤ 40), chosen, from_pos, to_pos, warnings:[...], resumed?, dry_run?}` + поля `build_ghosts` при стройке |
 | `wait` | `seconds:1..600` | `{}` — пауза в очереди, никогда не заменяет её |
 | `plan` | `steps:[{do, args?, on_fail?}]` (1..200) │ `blob`, `on_fail?="stop"`, `from_step?=1`, `after?:job` | итог — одно событие `plan_done` вместо `job_done` / `job_failed` |
 
@@ -61,7 +63,9 @@
 - Весь `args` — не больше 4 КБ JSON (иначе `limit`).
 - **Границы чисел:** `walk.radius` 0..64; `approach.distance` 0..64; `follow.distance` 1..32,
   `duration_s` 1..3600; `mine.count` 1..100000; `craft.count` 1..10000; `collect.radius` 1..128;
-  `build_ghosts.radius` 1..64; `build_blueprint.search` 0..32; `plan_belt.lanes` 1..4;
+  `build_ghosts.radius` 1..64; `build_blueprint.search` 0..32; `build_layout`: `entities` 1..100,
+  `dx`/`dy`/`cx`/`cy` −64..64, рамка ≤ 64×64, `search` 0..32, `ports` ≤ 16, `insert` ≤ 4 вида;
+  `connect_entities`: `max_length` 1..200, `via` ≤ 8; `plan_belt.lanes` 1..4;
   `wait.seconds` 1..600; `deconstruct.filter` — до 32 имён (сервер; мод допускает 50).
 
 ### Предметы с данными
@@ -275,7 +279,7 @@
   Отмена снимает дочерний шаг; сырьё, уже лежащее в печи, остаётся в ней.
 - Неизвестный предмет — `bad_args`; `radius` вне 1..128 — `limit`.
 
-### `auto_supply` у `place`, `insert`, `build_blueprint`, `build_ghosts`
+### `auto_supply` у `place`, `insert`, `build_blueprint`, `build_ghosts`, `build_layout`, `connect_entities`
 Флаг `auto_supply?=false`. Включён — нехватка предметов не ведёт сразу к `no_items`: помощник сначала
 достаёт недостающее, как `get_items` (склад → крафт → плавка → руками), и продолжает.
 - `place` и `insert`: нет предмета (или не хватает у `insert`) на старте — снабжение, потом обычный ход.
@@ -287,6 +291,9 @@
   повтора нет). Нет личных дронов при `mode:"robots"` — тоже `no_items`, но это не нехватка
   предметов: снабжение не запускается. Не вышло — прежний `failed{no_items}` стройки (`built`,
   `left`, `missing`) плюс `detail.supply`.
+- `build_layout`, `connect_entities`: весь счёт (`need` — постройки, их `insert`, подложка) достаётся
+  **один раз до постановки призраков**; не вышло или добыто не всё — `failed{no_items}` с `detail.supply`,
+  призраков нет. Дальше, если стройка всё же кончилась нехваткой, — как у `build_ghosts`.
 Без флага поведение прежнее: сбор остаётся решением агента.
 
 ### `pickup`
@@ -423,6 +430,100 @@ direction, build_mode=defines.build_mode[force], skip_fog_of_war=false, raise_bu
 `dry_run:true` — только проверки, без призраков и пометок: `done{ghosts, tiles, skipped,
 skipped_total, tiles_skipped, on_liquid, liquids?, to_remove, to_remove_total, missing}`.
 После постановки `done`/`failed` несут ещё поля `build_ghosts`.
+
+### `build_layout`
+Поставить блок построек по смещениям от клетки-якоря — без строки чертежа (раскладки forge, блоки,
+которые агент собрал сам). Призраки ставит движок через временный чертёж, дальше — тот же ход, что у
+`build_blueprint` (оценка, пометки, стройка как `build_ghosts`), плюс поиск места, рецепты, `insert` и
+память блока для `connect_entities`.
+
+Аргументы:
+- `anchor:pos` — клетка-якорь `(floor(x), floor(y))`, обязателен;
+- ровно одно из `entities` (1..100 построек) и `blob` (id из `blob_put` с JSON `{entities, ports?}`;
+  ставит сервер — из `plan` (`partner_plan{task:"block"}`, MCP.md) или из большого `entities`; порты
+  из `args.ports` сильнее портов blob по `id`);
+- `direction?=0` — 0, 4, 8, 12: поворот всего блока вокруг клетки якоря по часовой (как R);
+- `search?=0` (0..32) — радиус поиска места, 0 — только в `anchor`; `rotate?=false` — в поиске
+  перебирать ещё три поворота блока;
+- `on_resource?` — имя руды: место годно, только если в области добычи каждого бура блока
+  (`mining-drill`, `mining_drill_radius` прототипа) есть эта руда;
+- `ports?` (≤ 16) — `{id (≤ 16, [a-z0-9_-]), dx, dy, kind:"belt"│"pipe"│"power", io:"in"│"out",
+  dir?:0│4│8│12, items?:[≤ 2 имён] │ fluid?, rate?}`: клетки входов и выходов блока в тех же смещениях,
+  поворачиваются вместе с блоком; `items` — полосы ленты (`""` — полоса не занята), `rate` — сколько в
+  секунду (справочно, как в портах `partner_plan{task:"block"}`; мод его не использует);
+- `tag?` (`[a-z0-9-]`, ≤ 32) — запомнить поставленный блок под этим именем;
+- `mode?="auto"` (как у `build_ghosts`), `auto_supply?=false`, `keep_ghosts?=false`, `dry_run?=false`.
+
+Постройка: `{name, dx, dy │ cx, cy, direction?=0 (0..15), recipe?, type?:"input"│"output",
+insert?: items (≤ 4 вида)}`.
+- `name` — имя **постройки** (прототип сущности); предмет для неё — `items_to_place_this`.
+- `dx, dy` (целые, −64..64) — **левая верхняя клетка** постройки в её собственном направлении, от
+  клетки якоря. `cx, cy` (числа, −64..64) — центр постройки от левого верхнего угла клетки якоря, как
+  в чертеже (центр не на сетке привязывается к ней по размеру постройки). Ровно одна пара.
+- `direction` — направление постройки до поворота блока; итог `(direction + блок.direction) % 16`.
+- `recipe` — только у `assembling-machine` (рецепт своей силы, открытый, категория машины — как у
+  `place`); `type` — только у `underground-belt` (вход или выход).
+- `insert` — после постройки положить в неё из карманов (топливо в бур, руду в печь), только простые
+  предметы (с данными — `bad_args`); входит в общий счёт предметов.
+- Рамка блока ≤ 64×64 клетки (`limit`); две постройки блока на одной клетке — `bad_args`
+  `entities[j] overlaps entities[i]` (до похода в мир).
+
+**Ход.**
+1. Проверка аргументов (имена, рецепты, `type`, пересечения, рамка, порты) — сразу в ответе `act`.
+2. **Поиск места.** Кандидат — сдвиг якоря из колец вокруг `anchor` (сначала 0, потом кольца
+   `r = 1..search`, ближние клетки первыми) и поворот (заданный, с `rotate` — ещё три). Кандидат годен,
+   если у каждой постройки проверка `manual_ghost` (§6.5) проходит или постройка «уже стоит», нет клеток
+   без возможной подложки (PROTOCOL §6.12, как у `build_blueprint`), область в открытых чанках и не в
+   резерве другого помощника, выполнено `on_resource`. Первый годный — место. Поиск идёт по тикам с
+   бюджетом работы на тик и на весь поиск (у задачи «пульс», она не `stuck`).
+3. **Места нет:** `failed{cannot_place}` (область не открыта — `not_charted`, в чужом резерве —
+   `reserved`), `detail.reason:"site_not_found"`, `site_checked` (сколько мест проверено),
+   `site_limit:true` (поиск оборван бюджетом) и оценка **в исходном месте**: `failed[]` — почему не
+   встаёт каждая постройка. В `dry_run` — `done` с тем же.
+4. **`dry_run`** (место есть): `done{site, placed:[], failed, need, missing, to_remove, ports}` —
+   призраков, пометок и резерва нет.
+5. **Счёт предметов** — `need`: предметы построек, которые встанут, их `insert` и подложка. Чего нет в
+   карманах (`missing`): с `auto_supply` — добыть как `get_items` **один раз, весь счёт, до призраков**;
+   недобор — `failed{no_items}` с `detail.supply`, ничего не поставлено. Без `auto_supply` — сразу
+   `failed{no_items}` с `missing`: призраки не ставятся (всё из одного счёта).
+6. **Призраки.** Временный чертёж: `game.create_inventory(1)`, `set_stack{name="blueprint"}`,
+   `set_blueprint_entities` (с `recipe` и `type`), `build_blueprint{direction=0,
+   build_mode=forced, skip_fog_of_war=false, raise_built=true}`; поворот уже в самих сущностях, позиция
+   считается так, чтобы каждая постройка встала в расчётную клетку. Сверка с тем, что поставил движок:
+   все призраки встали с одним и тем же сдвигом — свои убираются и ставятся ещё раз с поправкой.
+   Заблокированный призрак (`ghost_revive`) сразу убирается (`blocked`). Ни одного своего призрака и
+   ничего «уже стоит» — `failed{cannot_place}`.
+7. **Стройка** — как `build_ghosts` по области блока: снос помеченного, плитки подложки, постройки
+   (повторное снабжение — как у `build_ghosts` с `auto_supply`; в норме не нужно).
+8. **Настройка:** рецепт (призрак его не донёс — `set_recipe`, как у `place`; не встал —
+   `recipe_set:false` у постройки), `insert` из карманов (подход на reach; не влезло — `left`).
+9. **Память:** с `tag` — `storage.layouts` (PROTOCOL §7), `done`.
+
+- **Режим постановки — только `forced`** (Shift): деревья и камни помечаются и разбираются самим
+  помощником; постройки хозяина и чужая сила — помеха, не сносятся никогда (`superforced` и `partial`
+  у `build_layout` нет).
+- **Отказ, отмена, `stuck`:** свои пометки к сносу снимаются (`unmarked`); без `keep_ghosts` свои
+  непостроенные призраки задачи убираются (`ghosts_removed`) — иначе дроны хозяина достроили бы блок его
+  предметами. Уже поставленные постройки остаются (`placed` в `detail`).
+- **Отступление `flee`:** возврат с теми же постройками, найденными `anchor` и `direction`,
+  `search:0`; уже стоящие постройки дают `exists` и не мешают.
+- Слово хозяина, «стоп», `cancel{at_boundary}` — как у любого шага `plan`.
+
+**Ответ** (`done.detail` / `failed.detail`):
+`{site: {anchor, direction, shift:{dx,dy}, checked, limit?}, placed: [{i, name, pos, unit_number,
+recipe_set?:false, inserted?, left?}], placed_total, failed: [{i, name, pos, code, why?}], failed_total,
+need, missing, supply?, to_remove, to_remove_total, unmarked?, ghosts_removed?, ports?: [{id, kind, io,
+pos, dir?, items?│fluid?}], dry_run?}` + поля `build_ghosts` после стройки. `i` — номер постройки в
+`entities`; `ports` — в мировых координатах (центр клетки порта). Списки — до 20 записей
+(«Списки в `detail`»); событие больше 4000 байт урезает их дальше, порты остаются.
+- Коды `failed[].code`: `exists` (уже стоит — не ошибка, считается поставленной), `cannot_place`
+  (`why`: `occupied` — другая своя постройка, `foreign` — чужая сила, `liquid` — клетка без возможной
+  подложки, `tile` — движок не поставил обещанную подложку, `engine` — движок не дал), `not_charted`,
+  `reserved`, `no_item` (у прототипа нет предмета), `quality`, `unknown`, `blocked` (призрак встал,
+  но построить его нельзя).
+- Итог: всё стоит — `done`; часть — `done` с `failed` (решает агент); ничего — `failed{cannot_place}`.
+  Ошибки: `bad_args`, `limit`, `not_charted`, `reserved`, `no_items`, `no_space`, ошибки пути.
+- Прогресс: `job_progress{done, total, phase:"site"│"supply"│"build"│"setup"}` (EVENTS.md).
 
 ### `build_ghosts`
 Построить призраки своей силы в области — поставленные игроком (через MPP, P.U.M.P., чертёж) или
@@ -617,6 +718,88 @@ skipped_total, tiles_skipped, on_liquid, liquids?, to_remove, to_remove_total, m
   убирает и не ставит. При любом отказе после старта старые призраки уже убраны (иначе дроны
   достроят ленту в тупик), в `detail.removed` — сколько (старые плюс поставленные этой задачей).
 - Память после перекладки — построенная часть + новый путь: перекладывать можно снова.
+
+### `connect_entities`
+Прокладка ленты, трубы или линии опор между двумя концами и стройка одной задачей (в отличие от
+`plan_belt`, который только размечает). Так стратег соединяет блоки `build_layout` по их портам, не
+пересчитывая координаты после поиска места и поворота.
+- `kind` — `"belt"`, `"pipe"` или `"power"`. `from`, `to` — концы, у каждого ровно одно из: `{pos, dir?}`
+  (клетка; `dir` 0/4/8/12 — направление конца, как у порта: лента начинается или входит с его стороны),
+  `{target}` (постройка, как `target` других действий), `{layout, port}` (порт блока,
+  поставленного `build_layout` с `tag`), `{layout, i}` (постройка блока по номеру в его `entities`;
+  ищется заново по имени и месту). Несколько видов сразу или ни одного — `bad_args`; тега, порта,
+  постройки нет (или блок на другой поверхности) — `not_found`; конец в неоткрытом чанке — `not_charted`.
+- `via` — до 8 клеток, через которые идти по порядку (больше — `limit`): путь ищется кусками
+  `from → via… → to`, у кусков общий `max_length`. `max_length` — 1..200 звеньев (по умолчанию 200;
+  больше — `limit`): звено — лента или конец подземной пары, труба или подземная труба, опора.
+- `belt` │ `pipe` │ `pole` — имя постройки только своего вида (не тот вид или поле не для этого
+  `kind` — `bad_args`); по умолчанию — то, что уже стоит на конце, иначе лучшее из открытого: лента —
+  самая быстрая, труба — первая по имени, опора — с самым длинным проводом среди занимающих одну
+  клетку. `underground` (`auto`│`never`│`prefer`, как у `plan_belt`) — для лент и труб; подземная
+  труба — прототип типа `pipe-to-ground`, длина участка — `max_underground_distance` его подземного
+  соединения. `fluid` — только для трубы.
+- `build` (по умолчанию `true`) — после постановки призраков построить их (`mode` — как у
+  `build_ghosts`); `false` — только призраки, как `plan_belt`. `auto_supply`, `dry_run` — как у
+  `build_layout`.
+- **Концы по видам.**
+  - Лента: `pos` — клетка; порт `kind:"belt"` с `dir` — первая лента стоит в клетке порта выхода лицом
+    в `dir`, последняя — в клетке порта входа лицом в его `dir` (в порт она входит с его стороны).
+    `target` и `{layout,i}` — `bad_args` (у машины нет ленточного входа: соединяют клетки портов или
+    манипуляторов). Занятая клетка-конец (стоит лента, сундук) ленты не получает — лента стыкуется с
+    ней, как у `plan_belt`.
+  - Труба: `target`/`{layout,i}` — машина с жидкостными коробками; конец — клетка свободного
+    соединения коробки, чья жидкость (фильтр, закреплённая или текущая) совпадает с `fluid` или не
+    задана, ближайшая к другому концу. Ни одна коробка не берёт `fluid` — `cannot_place`
+    `reason:"fluid_mix"`; все подходящие соединения заняты или закрыты — `no_free_port`; у постройки
+    нет жидкостных коробок — `bad_args`. Порт — клетка порта (его `fluid` сверяется с `fluid`); `pos` —
+    клетка. Концы с разными жидкостями — `fluid_mix`.
+  - Опоры: `pos` или порт `kind:"power"` — опора встаёт ровно в эту клетку; `target`/`{layout,i}` —
+    опора (конец — провод достаёт её: не длиннее провода обеих) или потребитель (конец — область
+    снабжения последней опоры задевает его рамку). Опора на конце `from` уже достаёт цель — ставить
+    нечего: `done` с `poles:0` и предупреждением `already_connected`.
+- **Поиск.** Лента и труба — тот же решатель, что у `plan_belt` (256 раскрытий за тик, бюджет задачи
+  4 × (20000 + 100 × дальность), рамка — охват точек + 48 + дальность/4). У трубы клетка запрещена,
+  если к ней смотрит обычное соединение чужой жидкостной коробки (стоящей трубы, машины, бака;
+  коробки концов — свои) или рядом призрак постройки с жидкостными коробками: жидкости не смешиваются.
+  Конец на такой клетке — `cannot_place` `reason:"fluid_mix"`. Подземная труба не ложится на линию,
+  где в пределах её дальности есть другая подземная труба той же оси. Опоры — A* по клеткам, где
+  опору можно поставить (`can_place_entity{manual_ghost}`): ребро не длиннее провода обоих концов,
+  цена — одна опора; за тик проверяется не больше 4096 клеток-кандидатов, бюджет раскрытий — тот же.
+  Опоры 2×2 стоят на углу клеток (`pos` — их левая верхняя клетка).
+- Ни один призрак не ставится, пока не найден весь путь. Деревья и камни на пути помечаются к сносу;
+  свои и чужие постройки не сносятся и не помечаются никогда. Звено, которое к моменту постановки
+  перестало ставиться (мир изменился), запрещается, и путь ищется заново (до 2 раз). Расчёт держит
+  «пульс»; поиск, проверка и постановка дольше 2 минут — `path_failed` `reason:"budget"`.
+- **Снабжение и стройка.** Счёт `need` — все звенья пути. С `build:true` и нехваткой без
+  `auto_supply` — `no_items` с `missing`, призраки не ставятся. С `auto_supply` недостающее добывается
+  как `get_items` один раз до призраков; недобор — `no_items` с `detail.supply`. Стройка — как у
+  `build_ghosts`, кусками вдоль пути (поля `build_ghosts` в итоге — суммы по кускам); область пути,
+  которую держит другой помощник, — `reserved`.
+- **Отказ, отмена, `stuck`:** свои непостроенные призраки задачи убираются, пометки к сносу снимаются
+  (`detail.removed`, `detail.unmarked`); построенное остаётся.
+- **Возобновление.** Удачная прокладка запоминается за помощником (подпись аргументов без `build`,
+  `mode`, `auto_supply`, `dry_run`; клетки — не больше 400, длиннее — не запоминается). Задача с той же
+  подписью на той же поверхности, когда на клетках прокладки стоят её призраки или уже построенное
+  (и хотя бы один призрак), путь не ищет: сразу стройка (или итог при `build:false`), `resumed:true`.
+  Путь порван (призрака и постройки на клетке нет) — свои призраки прошлой прокладки убираются, поиск
+  заново. Отступление `flee` прокладку не разбирает: возврат той же задачей достраивает её. Если
+  возврата нет 5 минут или помощник начал другую прокладку, оставленные свои призраки и пометки той
+  задачи убираются.
+- `done{kind, length, undergrounds?, turns?, poles?, ghosts, need, missing?, area, areas?, path,
+  path_total?, chosen:{belt│pipe│pole, underground?}, from_pos, to_pos, warnings, resumed?,
+  dry_run?}` + поля `build_ghosts` при стройке (`built`, `left`, `blocked`, …). `length` — звеньев
+  (у опор равно `poles`); `path` — углы пути (у опор — центры опор), ≤ 40, `path_total` — если больше;
+  `areas` — куски ≤ 128×128, если `area` больше; `missing` — чего нет в карманах (при `build:false` —
+  для сведения).
+- `failed`: `path_failed{reached, left, expanded, reason:"unreachable"│"budget"│"too_long"}`
+  (заведомо больше `max_length` звеньев — `too_long` сразу, до поиска), `cannot_place{reason:
+  "fluid_mix"│"end_blocked"│"no_free_port", pos?}` (`end_blocked` — конец или точка `via` на постройке
+  или плитке без опоры), `not_found`, `bad_args`, `limit`, `not_charted`, `no_items`, `reserved`,
+  ошибки пути при стройке.
+- `warnings` — как у `plan_belt` (`long_detour`, `narrow`, `near_enemy`, `unseen:N`,
+  `marked_for_deconstruction:N`, `not_researched:<имя>`) плюс `over_extent` (труба длиннее, чем
+  `max_pipeline_extent` её коробки, если прототип его даёт) и `already_connected`.
+- Прогресс: `job_progress{done, total, phase:"search"│"place"│"build"}`.
 
 ## `wait`
 Пауза в очереди на `seconds` (1..600) секунд; держит «пульс», `stuck` не получает. Никогда не
