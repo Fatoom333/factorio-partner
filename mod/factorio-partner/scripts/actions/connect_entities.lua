@@ -351,13 +351,30 @@ local function start_pipe(cn, a, rf, rt, vias, surface, force)
 end
 
 --- Концы опор.
-local function start_power(cn, a, rf, rt, vias, surface, force)
+local function carried_poles(h)
+  local out = {}
+  local inv = h and h.valid and h.get_main_inventory and h.get_main_inventory()
+  if inv == nil then return out end
+  local ok, contents = pcall(function() return inv.get_contents() end)
+  if not ok or type(contents) ~= "table" then return out end
+  for k, v in pairs(contents) do
+    -- 2.0: список {name, count, quality}; старый вид — name -> count
+    local name, n = k, v
+    if type(v) == "table" then name, n = v.name, v.count end
+    if type(name) == "string" and type(n) == "number" then out[name] = (out[name] or 0) + n end
+  end
+  return out
+end
+
+local function start_power(cn, a, rf, rt, vias, surface, force, h)
   local function pole_in(r)
     if r.entity ~= nil then return r.entity.type == "electric-pole" and r.entity or nil end
     return C.entity_of_type(surface, r.cell.x, r.cell.y, "electric-pole")
   end
   local fp, tp = pole_in(rf), pole_in(rt)
-  local pole = C.pick("power", force, a.pole, { fp and fp.name, tp and tp.name })
+  local pole = C.pick("power", force, a.pole, { fp and fp.name, tp and tp.name }, carried_poles(h))
+  -- линия уже стоит: цель под током сети опоры from (повтор поручения не строит вторую линию)
+  cn.powered = #vias == 0 and fp ~= nil and C.powered(surface, fp, rt)
   local P = C.pole_info(pole)
   if P.reach <= 0 then err.raise("bad_args", "args.pole: " .. pole .. " has no wire reach") end
   cn.P = P
@@ -514,7 +531,7 @@ function M.start(task, ctx)
     points, fail = start_pipe(cn, a, rf, rt, vias, surface, force)
     if points == nil then return fail end
   else
-    points = start_power(cn, a, rf, rt, vias, surface, force)
+    points = start_power(cn, a, rf, rt, vias, surface, force, h)
   end
   cn.points = points
   cn.from_pos, cn.to_pos = point_pos(cn, points[1]), point_pos(cn, points[#points])
@@ -550,7 +567,7 @@ function M.start(task, ctx)
       d = d + math.sqrt((p.x - q.x) ^ 2 + (p.y - q.y) ^ 2)
     end
     lower = ceil(d / cn.P.reach) - 1
-    if #points == 2 and C.already(cn.P, points[1], points[2]) then
+    if #points == 2 and (cn.powered or C.already(cn.P, points[1], points[2])) then
       cn.warnings[#cn.warnings + 1] = "already_connected"
       cn.box, cn.parts = {}, {}
       return done(cn)

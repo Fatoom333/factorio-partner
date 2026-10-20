@@ -127,6 +127,29 @@ S.suite("connect_power", {
       S.eq(d.detail.poles, 0)
       S.ok(#d.detail.warnings == 1 and d.detail.warnings[1] == "already_connected", S.dump(d.detail.warnings))
   end },
+  { "цель уже под током той же сети: повтор поручения не строит вторую линию", function()
+      J.setup()
+      local a, b = J.pole(0, 0, "medium-electric-pole"), J.pole(18, 0, "medium-electric-pole")
+      a.electric_network_id, b.electric_network_id = 7, 7
+      local d, kind = J.connect{ kind = "power", from = { target = { unit_number = a.unit_number } },
+        to = { pos = P(20, 1) } }
+      S.eq(kind, "job_done", S.dump(d))
+      S.eq(d.detail.poles, 0)
+      S.eq(#J.pole_ghosts(), 0)
+      S.ok(d.detail.warnings[1] == "already_connected", S.dump(d.detail.warnings))
+      -- опора рядом, но из другой сети: линию строить надо
+      b.electric_network_id = 8
+      local d2_, kind2 = J.connect{ kind = "power", from = { target = { unit_number = a.unit_number } },
+        to = { pos = P(20, 1) }, build = false }
+      S.eq(kind2, "job_done", S.dump(d2_))
+      S.ok(d2_.detail.poles > 0, "другая сеть — опоры нужны")
+  end },
+  { "без pole: опора, которая у тела в карманах, а не лучшая открытая", function()
+      J.setup({ items = { ["small-electric-pole"] = 10 } })
+      local d, kind = J.connect{ kind = "power", from = { pos = P(0, 0) }, to = { pos = P(20, 0) }, build = false }
+      S.eq(kind, "job_done", S.dump(d))
+      S.eq(d.detail.chosen, { pole = "small-electric-pole" })
+  end },
   { "via: опора встаёт в точке via", function()
       J.setup()
       local d, kind = J.connect{ kind = "power", from = { pos = P(0, 0) }, to = { pos = P(20, 0) }, via = { P(10, 10) },

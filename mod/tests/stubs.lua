@@ -160,6 +160,7 @@ local EVENT_NAMES = {
   "on_player_toggled_map_editor", "on_gui_click", "on_string_translated", "on_tick_paused",
   "on_entity_cloned", "on_space_platform_built_entity", "on_space_platform_mined_entity",
   "on_lua_shortcut", "on_gui_checked_state_changed", "on_gui_text_changed", "on_gui_confirmed",
+  "on_gui_location_changed",
 }
 
 local function table_size_impl(t)

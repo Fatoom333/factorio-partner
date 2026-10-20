@@ -83,9 +83,11 @@ function M.supply_of(proto)
   return tonumber(pread(proto, "supply_area_distance")) or 0
 end
 
---- Имя постройки нужного вида: названное (проверка вида), стоящее на конце, лучшее открытое.
---- at — имена построек этого вида на концах (по порядку). → имя │ raise bad_args.
-function M.pick(kind, force, named, at)
+--- Имя постройки нужного вида: названное (проверка вида); для опор — та, что у тела в карманах
+--- (больше всего штук); стоящее на конце; лучшее открытое.
+--- at — имена построек этого вида на концах (по порядку); carried — name -> штук в карманах тела.
+--- → имя │ raise bad_args.
+function M.pick(kind, force, named, at, carried)
   local etype = KIND_TYPE[kind]
   if named ~= nil then
     local proto = prototypes.entity[named]
@@ -93,6 +95,17 @@ function M.pick(kind, force, named, at)
       err.raise("bad_args", "args." .. (kind == "power" and "pole" or kind) .. ": " .. named .. " is not " .. etype)
     end
     return named
+  end
+  if kind == "power" and type(carried) == "table" then
+    local best, most
+    for name, n in pairs(carried) do
+      local proto = prototypes.entity[name]
+      if proto ~= nil and proto.type == "electric-pole" and n > 0 and M.reach_of(proto) > 0
+          and (most == nil or n > most or (n == most and name < best)) then
+        best, most = name, n
+      end
+    end
+    if best ~= nil then return best end
   end
   for _, name in ipairs(at or {}) do
     if name ~= nil then return name end
@@ -311,6 +324,29 @@ local function at_goal(P, goal, x, y)
   return covers(P, cx, cy, goal.box)
 end
 M.at_goal = at_goal
+
+--- Цель уже под током той же сети, что опора from: стоит опора этой сети, чья зона покрывает клетку
+--- цели, или потребитель цели уже в этой сети. Повторная прокладка тогда построила бы вторую линию.
+function M.powered(surface, from_pole, goal_r)
+  local id = from_pole and pread(from_pole, "electric_network_id")
+  if id == nil then return false end
+  local e = goal_r.entity
+  if e ~= nil then
+    return e.valid and pread(e, "electric_network_id") == id
+  end
+  local c = goal_r.cell
+  if c == nil then return false end
+  local cx, cy = c.x + 0.5, c.y + 0.5
+  local near = surface.find_entities_filtered{ type = "electric-pole", position = { x = cx, y = cy }, radius = 20 }
+  for _, p in ipairs(near) do
+    if p.valid and pread(p, "electric_network_id") == id then
+      local s = M.supply_of(p.prototype)
+      local pp = p.position
+      if math.abs(pp.x - cx) <= s + 0.5 and math.abs(pp.y - cy) <= s + 0.5 then return true end
+    end
+  end
+  return false
+end
 
 --- Опора на конце from уже достаёт цель (ставить нечего)?
 function M.already(P, from, goal)

@@ -70,6 +70,27 @@ S.suite("panel", {
       S.eq(P.window(p), nil)
   end },
 
+  { "окно: впервые по центру, потом там, куда его перетащили; место за краем экрана — снова по центру", function()
+      local p = setup()
+      p.display_resolution = { width = 1920, height = 1080 }
+      P.shortcut(p)
+      local w = P.window(p)
+      S.eq(w.auto_center, true)
+      S.ok(el(p, "partner_panel_hold") ~= nil, "кнопки окна собраны")
+      w.location = { x = 700, y = 300 }
+      S.fire(defines.events.on_gui_location_changed, { player_index = p.index, element = w })
+      P.shortcut(p)
+      P.shortcut(p)
+      w = P.window(p)
+      S.eq(w.location.x, 700)
+      S.eq(w.location.y, 300)
+      S.eq(w.auto_center, nil)
+      p.display_resolution = { width = 640, height = 480 }
+      P.shortcut(p)
+      P.shortcut(p)
+      S.eq(P.window(p).auto_center, true)
+  end },
+
   { "не хозяин видит только «панель для хозяина»; его нажатия событий не дают", function()
       local owner = setup()
       local guest = P.attach(S.add_player{ name = "Guest", position = { x = 5, y = 5 } })

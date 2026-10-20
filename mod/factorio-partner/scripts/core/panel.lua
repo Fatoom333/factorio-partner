@@ -214,19 +214,34 @@ local function title_bar(w)
     sprite = "utility/close", tooltip = { "gui.close-instruction" } }
 end
 
-local function build_foreign(p)
+--- Окно встаёт туда, куда хозяин его перетащил в прошлый раз; впервые (или если место ушло за
+--- край экрана после смены разрешения) — по центру.
+local function place(p, w, st)
+  local loc = st and st.location
+  local res = p.display_resolution
+  local x, y = type(loc) == "table" and tonumber(loc.x), type(loc) == "table" and tonumber(loc.y)
+  if x and y and x >= 0 and y >= 0 and (type(res) ~= "table" or (x < res.width - 40 and y < res.height - 40)) then
+    w.location = { x = x, y = y }
+  else
+    w.auto_center = true
+  end
+end
+
+local function build_foreign(p, st)
   local w = screen_of(p).add{ type = "frame", name = M.WINDOW, direction = "vertical" }
   title_bar(w)
   w.add{ type = "label", caption = { "partner-panel.owner-only" } }
-  w.auto_center = true
+  place(p, w, st)
   return w
 end
 
 local function build_owner(p, st)
   local w = screen_of(p).add{ type = "frame", name = M.WINDOW, direction = "vertical" }
   title_bar(w)
-  local body = w.add{ type = "frame", name = "body", direction = "vertical",
+  local inset = w.add{ type = "frame", name = "inset", direction = "vertical",
     style = "inside_shallow_frame_with_padding" }
+  -- промежутки между строками задаются у flow: у рамки такого свойства нет
+  local body = inset.add{ type = "flow", name = "body", direction = "vertical" }
   body.style.vertical_spacing = 8
 
   body.add{ type = "label", caption = { "partner-panel.helpers" }, style = "caption_label" }
@@ -278,7 +293,7 @@ local function build_owner(p, st)
   local note = body.add{ type = "label", name = M.WINDOW .. "_note", caption = "" }
   note.style.single_line = false
   note.style.maximal_width = M.STATUS_WIDTH + 80
-  w.auto_center = true
+  place(p, w, st)
   return w
 end
 
@@ -293,7 +308,7 @@ local function open(p)
     default_n(st)
     build_owner(p, st)
   else
-    build_foreign(p)
+    build_foreign(p, st)
   end
   st.open = true
   set_toggled(p, true)
@@ -434,6 +449,18 @@ local function on_confirmed(e)
   if w ~= nil then emit_auto(w, st) end
 end
 
+--- Хозяин перетащил окно: запомнить место для следующего открытия.
+local function on_moved(e)
+  local el = e.element
+  if el == nil or not el.valid or el.name ~= M.WINDOW then return end
+  local p = player_of(e)
+  if p == nil then return end
+  local loc = el.location
+  if type(loc) == "table" and tonumber(loc.x) and tonumber(loc.y) then
+    state_of(p.index).location = { x = tonumber(loc.x), y = tonumber(loc.y) }
+  end
+end
+
 local function on_removed(e)
   if e.player_index ~= nil then all_state()[e.player_index] = nil end
 end
@@ -445,6 +472,7 @@ M.events = {
   [defines.events.on_gui_checked_state_changed] = on_checked,
   [defines.events.on_gui_text_changed] = on_text,
   [defines.events.on_gui_confirmed] = on_confirmed,
+  [defines.events.on_gui_location_changed] = on_moved,
   [defines.events.on_player_removed] = on_removed,
 }
 

@@ -13,9 +13,23 @@ local P = {}
 
 local Element = {}
 
+-- Стиль как в игре: промежутки между детьми (`*_spacing`) есть только у flow и table — у рамки и
+-- остальных игра бросает «Expected Table or Flow … style type but was Frame».
+local SPACING = { vertical_spacing = true, horizontal_spacing = true }
+local SPACED = { flow = true, table = true }
+
+local function new_style(etype)
+  return setmetatable({}, { __newindex = function(t, k, v)
+    if SPACING[k] and not SPACED[etype] then
+      error("Expected Table or Flow or VerticalFlow or TabbedPane style type but was " .. tostring(etype), 2)
+    end
+    rawset(t, k, v)
+  end })
+end
+
 local function new_element(parent, spec)
   local el = {
-    valid = true, parent = parent, children = {}, style = {}, tags = spec.tags or {},
+    valid = true, parent = parent, children = {}, style = new_style(spec.type), tags = spec.tags or {},
     name = spec.name, type = spec.type, caption = spec.caption, state = spec.state,
     text = spec.text, tooltip = spec.tooltip, direction = spec.direction, spec_style = spec.style,
   }
