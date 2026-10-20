@@ -1029,19 +1029,40 @@ class Core:
         return led
 
     async def op_ledger(self, helper, key, action="list", package=None, id=None, rev=None,  # noqa: A002
-                        text=None) -> dict:
+                        text=None, on=None, said_seq=None) -> dict:
         """``partner_ledger`` — the strategist's build packages of this helper (docs/MCP.md
         «Пакеты стройки»). ``list`` (every role): open packages without steps and the last finished
         ones; with ``id`` — that package in full. ``put`` (the strategist): a new package, the server
         starts it itself. ``resume`` (the strategist): a paused package goes back to the queue.
         ``cancel`` (the pilot and the strategist): the package leaves, its running plan is cancelled.
         ``note`` (the strategist): his one last note on the work, read by the voice in partner_brief.
-        ``ask`` (the strategist): a question to the owner; the voice gets ``strategist_question``."""
-        a = {"action": action, "package": package, "id": id, "rev": rev, "text": text}
+        ``ask`` (the strategist): a question to the owner; the voice gets ``strategist_question``.
+        ``thoughts`` (the voice): the owner's switch «show the strategist's thoughts» (``on``), with
+        ``said_seq`` of his real message; while on, every new ``note`` wakes the voice (``strategist_note``)."""
+        a = {"action": action, "package": package, "id": id, "rev": rev, "text": text, "on": on,
+             "said_seq": said_seq}
 
         async def run(h):
-            act = V.enum("list", "put", "cancel", "resume", "note", "ask")("action", action)
+            act = V.enum("list", "put", "cancel", "resume", "note", "ask", "thoughts")("action", action)
             led = self.ledger()
+            if act == "thoughts":
+                for f, v in (("package", package), ("id", id), ("rev", rev), ("text", text)):
+                    if v is not None:
+                        raise V.bad(f, "not with action=thoughts")
+                flag = V.boolean("on", on) if on is not None else None
+                if flag is None:
+                    raise V.bad("on", "required for action=thoughts")
+                seq = V.integer(1, 2**53)("said_seq", said_seq) if said_seq is not None else None
+                if seq is None:
+                    raise V.bad("said_seq", "seq of the owner's message (player_said, owner:true) is required")
+                await self._order_said(h, seq)
+                led.mutate(lambda d: L.set_thoughts(d, h, flag))
+                if not flag:
+                    self.packages.drop_pending_note(h)
+                return self._stamp({"thoughts": flag})
+            for f, v in (("on", on), ("said_seq", said_seq)):
+                if v is not None:
+                    raise V.bad(f, "only with action=thoughts")
             if act in ("note", "ask"):
                 for f, v in (("package", package), ("id", id), ("rev", rev)):
                     if v is not None:
@@ -1050,6 +1071,8 @@ class Core:
                 if act == "note":
                     t = V.check_line("text", text, L.NOTE_MAX)
                     n = led.mutate(lambda d: L.set_note(d, h, t, tick))
+                    if L.thoughts_on(led.data(), h):
+                        self.packages.note_event(h, t)
                     return self._stamp({"note": n})
                 t = V.check_line("text", text, L.QUESTION_MAX)
                 q = led.mutate(lambda d: L.ask(d, h, t, tick))

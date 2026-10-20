@@ -219,3 +219,112 @@ async def test_unanswered_question_is_reminded_once(core, fake, body, clock):
     evs = (await core.op_wait("h1", VKEY, timeout=0))["events"]
     assert len(evs) == 1 and evs[0]["kind"] == "strategist_question" and evs[0]["data"]["remind"] is True
     assert (await work(core))["questions"][0]["reminded"] is True
+
+
+# ---------------------------------------------------------------- the strategist's thoughts
+
+async def wake(core, key=VKEY):
+    return [e for e in (await core.op_wait("h1", key, timeout=0))["events"] if e["kind"] == "strategist_note"]
+
+
+async def calls(core):
+    for k in (VKEY, SKEY, KEY):
+        await core.op_brief("h1", k)
+
+
+async def test_voice_switches_thoughts_with_a_real_message(core, fake, body, clock):
+    await calls(core)
+    assert (await work(core))["thoughts"] == "off"
+    seq = await said(core, fake, "покажи, что думает стратег")
+    assert (await core.op_ledger("h1", VKEY, "thoughts", on=True, said_seq=seq))["thoughts"] is True
+    assert (await work(core))["thoughts"] == "on"
+    seq2 = await said(core, fake, "хватит думать вслух")
+    assert (await core.op_ledger("h1", VKEY, "thoughts", on=False, said_seq=seq2))["thoughts"] is False
+    assert (await work(core))["thoughts"] == "off"
+
+
+async def test_thoughts_need_the_owners_message(core, fake, body, clock):
+    await calls(core)
+    assert (await refused(core.op_ledger("h1", VKEY, "thoughts", on=True))).code == "bad_args"
+    assert (await refused(core.op_ledger("h1", VKEY, "thoughts", said_seq=1))).code == "bad_args"
+    assert (await refused(core.op_ledger("h1", VKEY, "thoughts", on=True, said_seq=999))).code == "bad_args"
+    guest = fake.mod.emit("player_said", {"player": "Guest", "owner": False, "text": "покажи мысли"},
+                          helper=None)["seq"]
+    assert (await refused(core.op_ledger("h1", VKEY, "thoughts", on=True, said_seq=guest))).code == "bad_args"
+    assert (await refused(core.op_ledger("h1", VKEY, "thoughts", on=True, said_seq=True))).code == "bad_args"
+    assert (await work(core))["thoughts"] == "off"
+
+
+async def test_only_the_voice_switches_thoughts(core, fake, body, clock):
+    await calls(core)
+    seq = await said(core, fake, "покажи мысли")
+    for key in (SKEY, KEY):
+        assert (await refused(core.op_ledger("h1", key, "thoughts", on=True, said_seq=seq))).code == "not_allowed"
+    assert (await work(core))["thoughts"] == "off"
+
+
+async def test_note_wakes_the_voice_only_while_thoughts_are_on(core, fake, body, clock):
+    await calls(core)
+    await core.op_ledger("h1", SKEY, "note", text="план на 10 литейных")
+    assert await wake(core) == []
+    seq = await said(core, fake, "пиши, что планируешь")
+    await core.op_ledger("h1", VKEY, "thoughts", on=True, said_seq=seq)
+    clock.t += 100
+    await core.op_ledger("h1", SKEY, "note", text="сначала вольфрам")
+    evs = await wake(core)
+    assert len(evs) == 1 and evs[0]["data"] == {"text": "сначала вольфрам", "helper": "h1"} and evs[0]["loud"]
+    assert (await wake(core, SKEY)) == [] and (await wake(core, KEY)) == []
+    seq2 = await said(core, fake, "больше не показывай мысли")
+    await core.op_ledger("h1", VKEY, "thoughts", on=False, said_seq=seq2)
+    clock.t += 100
+    await core.op_ledger("h1", SKEY, "note", text="потом карбид")
+    assert await wake(core) == []
+    assert (await work(core))["note"]["text"] == "потом карбид"
+
+
+async def test_note_events_are_limited_to_one_per_30_seconds(core, fake, body, clock):
+    await calls(core)
+    seq = await said(core, fake, "покажи мысли стратега")
+    await core.op_ledger("h1", VKEY, "thoughts", on=True, said_seq=seq)
+    await core.op_ledger("h1", SKEY, "note", text="первая")
+    assert [e["data"]["text"] for e in await wake(core)] == ["первая"]
+    clock.t += 10
+    await core.op_ledger("h1", SKEY, "note", text="вторая")
+    clock.t += 10
+    await core.op_ledger("h1", SKEY, "note", text="третья")
+    core.packages.flush_notes()
+    assert await wake(core) == []                       # still inside the 30 s
+    clock.t += 15                                       # 35 s after the first event
+    core.packages.flush_notes()
+    core.packages.flush_notes()
+    assert [e["data"]["text"] for e in await wake(core)] == ["третья"]
+    clock.t += 31
+    await core.op_ledger("h1", SKEY, "note", text="четвёртая")
+    assert [e["data"]["text"] for e in await wake(core)] == ["четвёртая"]
+    # switched off while a note is held back: it is dropped
+    clock.t += 5
+    await core.op_ledger("h1", SKEY, "note", text="пятая")
+    seq2 = await said(core, fake, "хватит думать вслух")
+    await core.op_ledger("h1", VKEY, "thoughts", on=False, said_seq=seq2)
+    clock.t += 60
+    core.packages.flush_notes()
+    assert await wake(core) == []
+
+
+async def test_thoughts_flag_outlives_a_restart(core, fake, body, clock, cfg):
+    await calls(core)
+    seq = await said(core, fake, "покажи мысли стратега")
+    await core.op_ledger("h1", VKEY, "thoughts", on=True, said_seq=seq)
+    other = Core(cfg, make_bridge(cfg), forge_module="tests_no_such_forge_module")
+    try:
+        assert (await work(other))["thoughts"] == "on"
+    finally:
+        await other.close()
+
+
+async def test_thoughts_args_only_with_thoughts(core, fake, body, clock):
+    await calls(core)
+    assert (await refused(core.op_ledger("h1", SKEY, "note", text="x", on=True))).code == "bad_args"
+    seq = await said(core, fake, "покажи мысли")
+    assert (await refused(core.op_ledger("h1", VKEY, "list", said_seq=seq))).code == "bad_args"
+    assert (await refused(core.op_ledger("h1", VKEY, "thoughts", on=True, said_seq=seq, text="x"))).code == "bad_args"

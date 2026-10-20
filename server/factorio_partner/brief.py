@@ -186,6 +186,7 @@ def build_work(helper: str, open_orders: list[dict], taken: list[dict], ledger: 
     n = L.note_of(ledger, helper)
     out["note"] = ({"text": n["text"], "ago_s": max(0, int(now - n["at"]))}
                    if n and isinstance(n.get("at"), (int, float)) else None)
+    out["thoughts"] = "on" if L.thoughts_on(ledger, helper) else "off"
     out["questions"] = [{"id": q["id"], "text": q.get("text", ""),
                          "waiting_s": max(0, int(now - q["at"])) if isinstance(q.get("at"), (int, float)) else None,
                          "reminded": bool(q.get("reminded"))}

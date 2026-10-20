@@ -50,7 +50,7 @@ QUESTION_MAX = 200          # characters of a question to the owner
 QUESTIONS_OPEN_MAX = 5      # open questions per helper
 QUESTIONS_KEEP = 5          # answered questions kept per helper
 REMIND_AFTER = 10 * 60.0    # s: an open question unanswered this long is reminded once
-_SIDE = ("notes", "questions", "qnext")      # parts of the file that do not move rev
+_SIDE = ("notes", "questions", "qnext", "thoughts")      # parts of the file that do not move rev
 
 now = time.time             # wall clock of notes and questions: it outlives a restart (tests patch it)
 
@@ -261,6 +261,21 @@ def set_note(data: dict, helper: str, text: str, tick: int | None) -> dict:
     n = {"text": text, "at": now(), "tick": tick}
     _side(data, "notes")[helper] = n
     return dict(n)
+
+
+def thoughts_on(data: dict, helper: str) -> bool:
+    v = data.get("thoughts")
+    return isinstance(v, dict) and v.get(helper) is True
+
+
+def set_thoughts(data: dict, helper: str, on: bool) -> bool:
+    """The owner's switch «show the strategist's thoughts» of a helper (off by default)."""
+    t = _side(data, "thoughts")
+    if on:
+        t[helper] = True
+    else:
+        t.pop(helper, None)
+    return on
 
 
 def questions_of(data: dict, helper: str) -> list[dict]:

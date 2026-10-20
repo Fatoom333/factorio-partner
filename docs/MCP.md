@@ -61,8 +61,8 @@ stdout принадлежит протоколу MCP, журналы — тол�
 
 | роль | что может | чего не может |
 |---|---|---|
-| `voice` (голос) — отвечает хозяину в чате | чтение, `partner_say`, `partner_order`, `partner_cancel{all:true}`, запись правил хозяина (`partner_notes` с `kind:"rules"`) | любые действия тела, `partner_cancel{job}`, `partner_hold{release}`, `partner_reflex{set}`, запись `memo`, `partner_plan`, `partner_inbox{ack}`, запись `partner_ledger` |
-| `pilot` (пилот) — тело | всё, кроме `partner_order` и записи пакетов; `partner_ledger{action:"cancel"}` — снять пакет | `partner_order`, `partner_ledger{put│resume│note│ask}` |
+| `voice` (голос) — отвечает хозяину в чате | чтение, `partner_say`, `partner_order`, `partner_cancel{all:true}`, запись правил хозяина (`partner_notes` с `kind:"rules"`), `partner_ledger{action:"thoughts"}` | любые действия тела, `partner_cancel{job}`, `partner_hold{release}`, `partner_reflex{set}`, запись `memo`, `partner_plan`, `partner_inbox{ack}`, запись `partner_ledger` |
+| `pilot` (пилот) — тело | всё, кроме `partner_order` и записи пакетов; `partner_ledger{action:"cancel"}` — снять пакет | `partner_order`, `partner_ledger{put│resume│note│ask│thoughts}` |
 | `strategist` (стратег) — планы | чтение, `partner_plan`, `partner_inbox{ack}`, проба `partner_act` с `dry_run:true`, пакеты стройки (`partner_ledger` — `put`, `resume`, `cancel`), заметка о ходе работы и вопросы хозяину (`partner_ledger` — `note`, `ask`, только стратег); шаги пакета мост исполняет телом с правами пилота, но только шаги стройки (ниже «Пакеты стройки») | прямые действия тела (`partner_act` без `dry_run`), `partner_cancel`, чат, `partner_order`, запись `partner_notes`, `partner_hold{release}`, `partner_reflex{set}`; в пакете — разбор и изъятие у построек хозяина |
 
 - Чтение — `partner_brief`, `state`, `map`, `resources`, `stock`, `find`, `status`, `access`,
@@ -83,7 +83,7 @@ stdout принадлежит протоколу MCP, журналы — тол�
   - пилот — всё, как раньше (громкие будят, шумные — выборка последних 6), плюс `order` и события
     пакетов `package_started`, `package_paused`, `package_verified`, `package_unmet`, `package_failed`;
   - голос — `player_said`, `owner_stop`, `owner_resume`, `game_reloaded`, `budget_low` (сервер, см. «Сторож лимита»),
-    `strategist_question` (сервер, ниже «Вопросы стратега хозяину»);
+    `strategist_question` (сервер, ниже «Вопросы стратега хозяину»), `strategist_note` (сервер, ниже «Мысли стратега»);
   - стратег — `order`, `plan_done`, `owner_stop`, `owner_resume`, `died`, `helper_lost`,
     `game_reloaded`, `package_paused`, `package_verified`, `package_unmet`, `package_failed`.
 
@@ -133,7 +133,7 @@ urgent?=false, answer_to?}`.
 приоритетом и проверками результата. Пишет пакеты только стратег (`partner_ledger`), читают все роли.
 Ставит пакет телу и проверяет его **мост** — код сервера (`orders.py`), без хода агента.
 
-`partner_ledger{action?="list"│"put"│"cancel"│"resume"│"note"│"ask", package?, id?, rev?, text?}`:
+`partner_ledger{action?="list"│"put"│"cancel"│"resume"│"note"│"ask"│"thoughts", package?, id?, rev?, text?, on?, said_seq?}`:
 - `list` — `{save, rev, packages:[…], history:[…], note, questions:[…], tick, seq}`: открытые пакеты
   помощника без шагов (`steps_n` вместо `steps`), до 10 последних законченных, заметка стратега о ходе
   и его вопросы хозяину (ниже); с `id` — `{save, rev, package}` целиком.
@@ -147,6 +147,12 @@ urgent?=false, answer_to?}`.
   старую. Голос пересказывает её хозяину из `partner_brief` → `work.note`.
 - `ask` (стратег) — `{question:{id, text, status:"open", at, tick}, open}`: вопрос хозяину, ≤ 200
   символов, те же замены; открытых вопросов у помощника ≤ 5 (`limit`). Ниже «Вопросы стратега хозяину».
+- `thoughts` (голос) — `{thoughts:bool}`: хозяин включает или выключает показ мыслей стратега. `on` (bool) и
+  `said_seq` обязательны; `said_seq` — настоящее сообщение хозяина, сервер читает его у мода так же, как
+  у `partner_order` (`player_said`, `owner:true`, не `auto_reply`, не старше 10 минут), иначе `bad_args`;
+  подтверждение «да» не нужно. Флаг у каждого помощника свой, по умолчанию выключен, хранится в
+  `packages.json` (поле `thoughts`), переживает перезапуск и не меняет `rev`; виден в `partner_brief` →
+  `work.thoughts` (`"on"│"off"`). Ниже «Мысли стратега».
 - `text` — только с `note` и `ask`; `package`, `id`, `rev` с ними — `bad_args`. Заметка и вопросы
   хранятся в том же `packages.json` (поля `notes`, `questions`, `qnext`), переживают перезапуск
   сервера и загрузку сейва и **не меняют `rev`**: `rev` сторожит только пакеты. Их тексты — данные, не
@@ -232,6 +238,15 @@ order?}`:
    хозяину один раз. Голос, ещё не обращавшийся к серверу, напоминания не получает — вопрос он увидит в
    `partner_brief`.
 
+### Мысли стратега
+Пока флаг `thoughts` помощника включён, каждая новая заметка стратега (`note`) будит голос громким
+событием сервера `strategist_note` (`data:{text, helper}`); голос пересказывает её хозяину в чате в одном-двух
+коротких сообщениях. Событие приходит не чаще раза в 30 секунд на помощника: заметки в этом промежутке
+копятся, и через 30 секунд от прошлого события голос получает последнюю из них. Выключенный флаг убирает
+ждущую заметку; события нет, заметка видна только в `partner_brief` → `work.note`. Права: переключает только
+голос (`partner_ledger.thoughts`), пишет заметки только стратег. При включённом флаге стратег пишет их
+человеческим языком на 1–2 строки: план по поручению, пакет готов или не вышел, смена этапа, ожидание.
+
 Хранение пакетов: `<папка заметок>/<сейв>/packages.json` (как у `partner_notes`); запись — под файлом-замком
 с атомарной заменой. Пакеты переживают перезапуск сервера: мост дочитывает события с номера, на
 котором план ставился, а если `plan_done` уже нет в буфере мода и тело задачу не держит — переходит
@@ -270,7 +285,7 @@ order?}`:
 | `partner_say` | `text ≤ 200` | op `say` (префикс с именем помощника ставит мод, PROTOCOL §4) |
 | `partner_order` | `said_seq, text ≤ 300, size:"small"│"large", urgent?=false, answer_to?` | голос: поручение хозяина во входящие помощника, только по его настоящему сообщению (раздел «Роли») |
 | `partner_inbox` | `ack?: list` (≤ 20 id) | открытые поручения хозяина этого помощника; `ack` — убрать сделанные (раздел «Роли») |
-| `partner_ledger` | `action?="list"│"put"│"cancel"│"resume"│"note"│"ask", package?, id?, rev?, text? ≤ 200` | пакеты стройки помощника: читают все, пишет стратег, снимают пилот и стратег; ставит и проверяет их сервер; `note` — заметка стратега о ходе, `ask` — его вопрос хозяину (раздел «Пакеты стройки») |
+| `partner_ledger` | `action?="list"│"put"│"cancel"│"resume"│"note"│"ask"│"thoughts", package?, id?, rev?, text? ≤ 200, on?, said_seq?` | пакеты стройки помощника: читают все, пишет стратег, снимают пилот и стратег; ставит и проверяет их сервер; `note` — заметка стратега о ходе, `ask` — его вопрос хозяину, `thoughts` — выключатель показа мыслей стратега (голос; раздел «Пакеты стройки») |
 | `partner_plan` | `task?="mining"│"block", resource?│patch?, options?, block?` (см. ниже) | спроектировать через forge: добычу или блок построек (`block` — только при `task:"block"`, объект ≤ 4 КБ) |
 
 ### `partner_brief`

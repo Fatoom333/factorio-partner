@@ -52,6 +52,7 @@ STOP_WINDOW_TICKS = 120     # plan_done{cancelled} this close after owner_stop i
 STOP_TEXT = "stopped by owner"  # the mod's text of a job cut by the owner's word (owner_words.do_stop)
 POSTING_STALE_S = 60.0      # s: a package left in ``posting`` this long by a dead process is checked
 FLEE_RETURN_TICKS = 150 * 60  # a plan cancelled by a flight comes back within this (EVENTS.md «flee»)
+NOTE_EVERY = 30.0           # s: strategist_note wakes the voice of a helper at most this often
 STATE_CHECK_S = 15.0        # s: a running package is checked against the body's state this often
 HELLO_EVERY_S = 5.0         # s: a fresh tick for verifying packages
 POST_TRIES = 5              # transient failures to start a package before it fails
@@ -115,6 +116,8 @@ class PackageBridge:
         self.reconcile = False
         self._state_at: dict[str, float] = {}
         self._hello_at = -1e9
+        self._note_sent: dict[str, float] = {}       # helper -> time of the last strategist_note event
+        self._note_pending: dict[str, str] = {}      # helper -> the latest note held back by the 30 s limit
         self._posted: dict[str, dict] = {}   # package id -> fields of a started plan not yet written
         self._lock = asyncio.Lock()
 
@@ -166,6 +169,30 @@ class PackageBridge:
         self._state_at.clear()
         self.reconcile = True
 
+    def note_event(self, helper: str, text: str) -> None:
+        """A new note of the strategist while the owner wants to see his thoughts: the voice is woken
+        (``strategist_note``), at most once per NOTE_EVERY seconds per helper; notes in between wait and
+        only the latest is sent (``flush_notes``)."""
+        t = L.now()
+        if t - self._note_sent.get(helper, -1e12) >= NOTE_EVERY:
+            self._note_pending.pop(helper, None)
+            self._note_sent[helper] = t
+            self.notify(helper, "strategist_note", {"text": text, "helper": helper}, roles=(R.VOICE,))
+        else:
+            self._note_pending[helper] = text
+
+    def drop_pending_note(self, helper: str) -> None:
+        self._note_pending.pop(helper, None)
+
+    def flush_notes(self) -> None:
+        """Held-back notes whose 30 seconds have passed go out (only if the switch is still on)."""
+        for h in list(self._note_pending):
+            if L.now() - self._note_sent.get(h, -1e12) < NOTE_EVERY:
+                continue
+            text = self._note_pending.pop(h)
+            if L.thoughts_on(self.ledger().data(), h):
+                self.note_event(h, text)
+
     def remind_questions(self) -> None:
         """A question of the strategist unanswered for 10 minutes: the voice is woken once more (only a
         voice that has called the server: until then it sees the question in partner_brief)."""
@@ -188,6 +215,7 @@ class PackageBridge:
             led = self.ledger()
             try:
                 self.remind_questions()
+                self.flush_notes()
             except PartnerError as e:
                 log.info("question reminders: %s", e.code)
             helpers = sorted(led.helpers())
