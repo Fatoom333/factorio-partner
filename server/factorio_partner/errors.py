@@ -23,3 +23,6 @@ TRANSPORT_TIMEOUT = "transport_timeout"
 GAME_PAUSED = "game_paused"
 RESPONSE_TOO_LARGE = "response too large"
 REPEATED_FAILURE = "repeated_failure"
+# the owner's settings of the mod (perm-* in the map settings): «нельзя» and «спросить» without his «да»
+OWNER_FORBIDS = "owner_forbids"
+NEEDS_OWNER_OK = "needs_owner_ok"

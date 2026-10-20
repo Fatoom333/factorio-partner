@@ -152,6 +152,48 @@ S.suite("hands_get_items", {
       S.eq(f.smelted, 6)
       S.ok(f.res.is_empty() and f.src.is_empty(), "печь освобождена")
   end },
+  { "плавка по настройке perm-smelt: нельзя — печь хозяина не трогает; спросить — только с owner_ok", function()
+      local W = prepare{ items = { ["iron-ore"] = 10, coal = 2 } }
+      local f = furnace({ x = 8.5, y = 0.5 })
+      rawset(f.e, "last_user", { name = "Tartaluga" }) -- печь поставил хозяин
+      settings.global["partner-perm-smelt"] = { value = "deny" }
+      local d, kind = C.wait(get{ items = { ["iron-plate"] = 6 } })
+      S.eq({ kind, d.code }, { "job_failed", "no_items" }, S.dump(d))
+      S.eq(f.smelted, 0)
+      S.eq(C.counts(W.main)["iron-ore"], 10)
+      settings.global["partner-perm-smelt"] = { value = "ask" }
+      S.owner_ok = nil
+      local d2, kind2 = C.wait(get{ items = { ["iron-plate"] = 6 } })
+      S.eq({ kind2, f.smelted }, { "job_failed", 0 }, S.dump(d2))
+      S.owner_ok = { "chop" }
+      local d4, kind4 = C.wait(get{ items = { ["iron-plate"] = 6 } })
+      S.eq({ kind4, f.smelted }, { "job_failed", 0 }, "разрешение на другое плавить не даёт: " .. S.dump(d4))
+      S.owner_ok = { "smelt" }
+      local d3, kind3 = C.wait(get{ items = { ["iron-plate"] = 6 } })
+      S.eq(kind3, "job_done", S.dump(d3))
+      S.eq(f.smelted, 6)
+  end },
+  { "плавка: своя печь помощника — без разрешения хозяина, даже при «нельзя»", function()
+      local W = prepare{ items = { ["iron-ore"] = 10, coal = 2 } }
+      local f = furnace({ x = 8.5, y = 0.5 })
+      settings.global["partner-perm-smelt"] = { value = "deny" }
+      S.owner_ok = nil
+      local d, kind = C.wait(get{ items = { ["iron-plate"] = 6 } })
+      S.eq(kind, "job_done", S.dump(d))
+      S.eq(f.smelted, 6)
+      S.ok(C.counts(W.main)["iron-plate"] >= 6)
+  end },
+  { "плавка при «нельзя»: печь хозяина рядом не берётся, своя дальше — берётся", function()
+      prepare{ items = { ["iron-ore"] = 10, coal = 2 } }
+      local theirs = furnace({ x = 4.5, y = 0.5 })
+      rawset(theirs.e, "last_user", { name = "Tartaluga" })
+      local own = furnace({ x = 10.5, y = 0.5 })
+      settings.global["partner-perm-smelt"] = { value = "deny" }
+      S.owner_ok = nil
+      local d, kind = C.wait(get{ items = { ["iron-plate"] = 6 } })
+      S.eq(kind, "job_done", S.dump(d))
+      S.eq({ theirs.smelted, own.smelted }, { 0, 6 })
+  end },
   { "плавка: печь с топливом хозяина (в слоте или горит) и занятая не берутся; пустая берётся", function()
       local W = prepare{ items = { ["iron-ore"] = 4, coal = 5 } }
       local busy = furnace({ x = 5.5, y = 0.5 })

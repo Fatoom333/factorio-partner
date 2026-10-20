@@ -27,6 +27,11 @@ from .errors import ConfigError, PartnerError
 # same text ``access denied`` (MCP.md); a pydantic error would leak which part was wrong.
 Helper = Annotated[str, Field(description="id помощника, например h1")]
 Key = Annotated[str, Field(description="ключ помощника")]
+Approved = Annotated[str | None, Field(
+    description="id вопроса хозяину (q<N>), на который он ответил «да», — для действия, которое настройки "
+                "мода ставят на «спросить»; только вместе с order")]
+OrderId = Annotated[str | None, Field(
+    description="id поручения (o<N>), о котором был вопрос approved")]
 Pos = dict[str, float]
 Area = dict[str, dict[str, float]]
 
@@ -217,7 +222,8 @@ def build_server(core: Core, admin: bool = False, packages: bool = True) -> Fast
 
     @mcp.tool()
     async def partner_act(helper: Helper, key: Key, do: str,
-                          args: dict[str, Any] | None = None, replace: bool = False) -> dict:
+                          args: dict[str, Any] | None = None, replace: bool = False,
+                          approved: Approved = None, order: OrderId = None) -> dict:
         """Поставить задачу в очередь: walk, approach, follow, mine, craft, insert, extract, collect,
         get_items, pickup, place, rotate, set_recipe, build_blueprint, build_layout, connect_entities,
         build_ghosts, deconstruct, plan_mining, plan_belt, wait. Ответ — {job, queued_before}; итог придёт событием job_done / job_failed.
@@ -241,8 +247,12 @@ def build_server(core: Core, admin: bool = False, packages: bool = True) -> Fast
         при отказе свои непостроенные призраки убираются (keep_ghosts — оставить).
         connect_entities{kind: belt|pipe|power, from, to, via?, ...} — проложить и построить ленту,
         трубу или линию опор; конец — {pos}, {target}, {layout, port} или {layout, i}; dry_run —
-        только путь. У обоих действий есть auto_supply, mode и dry_run."""
-        return await _run(core.op_act(helper, key, do, args, replace))
+        только путь. У обоих действий есть auto_supply, mode и dry_run.
+        Настройки мода (partner_brief.perms): отказ needs_owner_ok — действие на «спросить»: спроси
+        хозяина (partner_ledger ask с order и perm — ключ из data.perm отказа), после его «да» повтори
+        вызов с approved и order: «да» снимает только эти ключи, на 3 вызова за 30 минут;
+        owner_forbids — «нельзя»: не повторяй, скажи хозяину, какая настройка запрещает."""
+        return await _run(core.op_act(helper, key, do, args, replace, approved, order))
 
     @mcp.tool()
     async def partner_hold(helper: Helper, key: Key,
@@ -275,10 +285,12 @@ def build_server(core: Core, admin: bool = False, packages: bool = True) -> Fast
 
     @mcp.tool()
     async def partner_reflex(helper: Helper, key: Key,
-                             set: list[dict[str, Any]] | None = None) -> dict:  # noqa: A002
+                             set: list[dict[str, Any]] | None = None,  # noqa: A002
+                             approved: Approved = None, order: OrderId = None) -> dict:
         """Рефлексы тела: полный список заменяет прежний, [] снимает все; без set — только
-        прочитать текущий набор. Ответ — {set}."""
-        return await _run(core.op_reflex(helper, key, set))
+        прочитать текущий набор. Ответ — {set}. Рефлекс на «спросить» в настройках мода (shoot,
+        upkeep) — с approved и order после «да» хозяина, как у partner_act."""
+        return await _run(core.op_reflex(helper, key, set, approved, order))
 
     @mcp.tool()
     async def partner_say(helper: Helper, key: Key,
@@ -321,12 +333,14 @@ def build_server(core: Core, admin: bool = False, packages: bool = True) -> Fast
 
     @mcp.tool()
     async def partner_ledger(helper: Helper, key: Key,
-                             action: Annotated[Literal["list", "put", "cancel", "resume", "note", "ask", "thoughts"], Field(
+                             action: Annotated[Literal["list", "put", "cancel", "resume", "note", "ask", "thoughts", "scale"], Field(
                                  description="list — пакеты помощника (с id — один целиком); put — новый пакет "
                                              "(стратег); resume — вернуть приостановленный в очередь (стратег); "
                                              "cancel — снять пакет (пилот и стратег); note — заметка о ходе работы "
-                                             "(стратег, одна последняя); ask — вопрос хозяину (стратег); thoughts — "
-                                             "включить или выключить показ мыслей стратега (голос, on + said_seq)")] = "list",
+                                             "(стратег, одна последняя); ask — вопрос хозяину (стратег; пилот — о своём "
+                                             "теле); thoughts — включить или выключить показ мыслей стратега (голос, "
+                                             "on + said_seq); scale — «запусти / добавь / убери N помощников» "
+                                             "(голос, n + tasks)")] = "list",
                              package: Annotated[dict[str, Any] | None, Field(
                                  description="для put: {name, anchor, priority?, steps, on_fail?, verify, note?, order?}")] = None,
                              id: Annotated[str | None, Field(  # noqa: A002
@@ -340,7 +354,15 @@ def build_server(core: Core, admin: bool = False, packages: bool = True) -> Fast
                              said_seq: Annotated[int | None, Field(
                                  description="для thoughts: seq настоящего сообщения хозяина (player_said, owner:true)")] = None,
                              order: Annotated[str | None, Field(
-                                 description="для ask: id поручения (o<N>), о котором вопрос — ответ хозяина станет разрешением пакету этого поручения (package.approved)")] = None) -> dict:
+                                 description="для ask: id поручения (o<N>), о котором вопрос — ответ хозяина станет разрешением пакету этого поручения (package.approved) или вызову пилота (approved + order)")] = None,
+                             n: Annotated[int | None, Field(
+                                 description="для scale: сколько помощников хочет хозяин в итоге, 1..5 (добавь — текущие + N, убери — текущие − N)")] = None,
+                             tasks: Annotated[list[dict[str, Any]] | None, Field(
+                                 description="для scale: задания телам после перезапуска [{to?, text}], ≤ 5")] = None,
+                             perm: Annotated[str | list[str] | None, Field(
+                                 description="для ask: ключи разрешений, о которых вопрос (из partner_brief.perms.ask, "
+                                             "например [\"take_lines\"], ≤ 4); «да» хозяина снимает только их, голос "
+                                             "читает их хозяину вместе с вопросом")] = None) -> dict:
         """Пакеты стройки: именованный план из шагов act (как действие plan) с якорем, приоритетом
         (now/next/later) и 1–3 проверками (stock, rate, ghosts). Пишет только стратег; сервер сам ставит
         пакет телу, когда оно свободно и хозяин не держит, и через 2 минуты игры после plan_done
@@ -353,8 +375,12 @@ def build_server(core: Core, admin: bool = False, packages: bool = True) -> Fast
         Забрать у хозяина (collect, extract, from_lines:true) пакет может только с его разрешения:
         ask с order, его ответ, затем put с package.order и package.approved:"q<N>". Отказ put
         называет шаг и поле: «steps[3] (insert): unknown field "item" — ожидается items:{name:count};
-        пример: …» — исправь это поле, не перебирай варианты."""
-        return await _run(core.op_ledger(helper, key, action, package, id, rev, text, on, said_seq, order))
+        пример: …» — исправь это поле, не перебирай варианты. Шаг, который настройки мода запрещают
+        (owner_forbids), пакет не примет. scale (голос) — только на сообщение хозяина за последние
+        2 минуты: запрос перезапуска виден всем ролям в partner_brief.rescale, пока его не снимет
+        диспетчер."""
+        return await _run(core.op_ledger(helper, key, action, package, id, rev, text, on, said_seq, order,
+                                         n, tasks, perm))
 
     @mcp.tool()
     async def partner_relay(helper: Helper, key: Key,
@@ -367,6 +393,15 @@ def build_server(core: Core, admin: bool = False, packages: bool = True) -> Fast
         voice — громкое событие host_message голосу; pilot и strategist — поручение from:"host" во
         входящие (голос тоже получает host_message и говорит хозяину в чат). Без to — отказ."""
         return await _run(core.op_relay(helper, key, to, text))
+
+    @mcp.tool()
+    async def partner_rescale(helper: Helper, key: Key,
+                              action: Annotated[Literal["get", "done"], Field(
+                                  description="get — прочитать запрос хозяина; done — перезапуск сделан, снять запрос")] = "get") -> dict:
+        """(диспетчер, ключ host) Запрос хозяина перезапустить роли на n помощников (из чата игры через
+        голос или кнопкой в его окне): {rescale:{n, tasks, from, tick} | null, helpers_now}. После
+        перезапуска и заданий телам — action "done"."""
+        return await _run(core.op_rescale(helper, key, action))
 
     @mcp.tool()
     async def partner_plan(helper: Helper, key: Key, task: Literal["mining", "block"] = "mining",
@@ -388,6 +423,11 @@ def build_server(core: Core, admin: bool = False, packages: bool = True) -> Fast
         async def admin_hello() -> dict:
             """(оркестр) hello: версия мода, тик, игроки, помощники."""
             return await _run(core.admin_hello())
+
+        @mcp.tool()
+        async def admin_settings() -> dict:
+            """(оркестр) настройки мода хозяина: perms, limits, agents, combat, chat."""
+            return await _run(core.admin_settings())
 
         @mcp.tool()
         async def admin_spawn(helper: Helper) -> dict:

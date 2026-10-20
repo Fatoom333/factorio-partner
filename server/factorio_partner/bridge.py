@@ -76,13 +76,21 @@ class Bridge:
         self._reload_cbs.append(cb)
 
     # ---- envelope ----------------------------------------------------------
-    def build(self, op: str, args: dict | None, helper: str | None, req_id: str) -> str:
+    def build(self, op: str, args: dict | None, helper: str | None, req_id: str,
+              owner_ok: list[str] | None = None) -> str:
         env: dict[str, Any] = {"v": PROTOCOL_VERSION, "id": req_id, "op": op}
         if helper is not None:
             if not HELPER_RE.match(helper):
                 raise PartnerError("bad_args", "helper")
             env["helper"] = helper
         env["args"] = args if args is not None else {}
+        if owner_ok:
+            # the owner's leave for «спросить» (PROTOCOL «owner_ok»): the permission keys his «да» was
+            # about, a field of the envelope, set only by core after it checked his answer; never taken
+            # from an agent's args
+            if not isinstance(owner_ok, (list, tuple)) or not all(isinstance(k, str) for k in owner_ok):
+                raise PartnerError("internal", "owner_ok must be a list of permission keys")
+            env["owner_ok"] = list(owner_ok)
         # ensure_ascii: the RCON line stays pure ASCII, no encoding surprises over the wire
         text = json.dumps(env, ensure_ascii=True, separators=(",", ":"), allow_nan=False)
         if len(text.encode("ascii")) > MAX_REQUEST:
@@ -109,14 +117,15 @@ class Bridge:
         return resp
 
     async def request(self, op: str, args: dict | None = None, helper: str | None = None,
-                      channel: str = "cmd", *, budget: float | None = None) -> dict:
+                      channel: str = "cmd", *, budget: float | None = None,
+                      owner_ok: list[str] | None = None) -> dict:
         """Send one operation, return the mod's envelope (``ok`` may be false).
 
         ``budget`` (seconds) caps the whole call including retries: each attempt gets at most
         what is left (but at least ``MIN_ATTEMPT``), and no new attempt starts once it is spent.
         """
         req_id = self.new_id()
-        command = self.build(op, args, helper, req_id)
+        command = self.build(op, args, helper, req_id, owner_ok=owner_ok)
         conn = self.conns[channel]
         timeout = self.timeouts[channel]
         end = None if budget is None else time.monotonic() + max(budget, 0.0)

@@ -159,6 +159,7 @@ local EVENT_NAMES = {
   "on_post_entity_died", "on_worker_robot_expired", "on_player_driving_changed_state",
   "on_player_toggled_map_editor", "on_gui_click", "on_string_translated", "on_tick_paused",
   "on_entity_cloned", "on_space_platform_built_entity", "on_space_platform_mined_entity",
+  "on_lua_shortcut", "on_gui_checked_state_changed", "on_gui_text_changed", "on_gui_confirmed",
 }
 
 local function table_size_impl(t)
@@ -1035,7 +1036,7 @@ end
 --- Короткая форма: S.req("act", {do="wait", args={seconds=1}}, "h1") — id генерируется сам.
 function S.req(op, args, helper, id)
   S._next_req = S._next_req + 1
-  local t = S.call{ v = 1, id = id or ("t-" .. S._next_req), op = op, helper = helper, args = args or {} }
+  local t = S.call{ v = 1, id = id or ("t-" .. S._next_req), op = op, helper = helper, args = args or {}, owner_ok = S.owner_ok }
   return t
 end
 
@@ -1059,8 +1060,38 @@ end
 
 -- ===================================================================== сброс и загрузка мода
 
+--- Настройки мода по умолчанию (settings.lua): все runtime-global, как их отдаёт игра.
+function S.default_settings()
+  local g = { ["partner-owner"] = { value = "" } }
+  local perm = {
+    ["take-chests"] = "auto", ["take-lines"] = "ask", ["take-inputs"] = "deny", build = "auto",
+    superforced = "ask", ["deconstruct-own"] = "auto", ["deconstruct-owner"] = "ask", ["set-recipe"] = "ask",
+    chop = "auto", smelt = "auto", spend = "ask", shoot = "ask", turrets = "auto", upkeep = "ask",
+    ["attack-nests"] = "deny", ["walk-far"] = "auto", ["leave-planet"] = "deny", auto = "ask",
+  }
+  for k, v in pairs(perm) do g["partner-perm-" .. k] = { value = v } end
+  local other = {
+    ["spend-limit"] = 200, ["far-distance"] = 300, helpers = 1, ["pilot-model"] = "sonnet",
+    ["strategist-model"] = "sonnet", thoughts = false, ["voice-pause"] = 2.5, ["budget-strategist"] = 70,
+    ["budget-voice-only"] = 85, ["budget-weekly"] = 90, ["flee-health"] = 40, ["auto-armor"] = true,
+    ["turret-standoff"] = true, ["turret-gap"] = 3, ["answer-every"] = true, ["reply-lines"] = 2,
+  }
+  for k, v in pairs(other) do g["partner-" .. k] = { value = v } end
+  return g
+end
+
+--- owner_ok со всеми ключами разрешений (хозяин разрешил всё «спросить»).
+function S.all_leave()
+  return { "take_chests", "take_lines", "take_inputs", "build", "superforced", "deconstruct_own",
+    "deconstruct_owner", "set_recipe", "chop", "smelt", "spend", "shoot", "turrets", "upkeep", "attack_nests",
+    "walk_far", "leave_planet", "auto" }
+end
+
 --- Свежий «мир»: глобалы game/storage/defines/... и поверхность nauvis, силы player/enemy/neutral.
 function S.reset()
+  -- по умолчанию в тестах хозяин разрешил всё «спросить» (owner_ok — все ключи в каждом запросе,
+  -- scripts/core/perms.lua); проверки самих разрешений (tests/perms.lua) снимают его: S.owner_ok = nil
+  S.owner_ok = S.all_leave()
   S.handlers = {}
   S.nth = {}
   S.lifecycle = {}
@@ -1112,7 +1143,7 @@ function S.reset()
   _G.localised_print = function(s) S.logs[#S.logs + 1] = tostring(s) end
   _G.table_size = table_size_impl
   _G.settings = {
-    global = { ["partner-owner"] = { value = "" } },
+    global = S.default_settings(),
     startup = {},
     player = {},
   }

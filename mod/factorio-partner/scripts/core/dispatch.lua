@@ -10,6 +10,7 @@ local util = require("scripts.core.util")
 local events = require("scripts.core.events")
 local recent = require("scripts.core.recent")
 local registry = require("scripts.core.registry")
+local perms = require("scripts.core.perms")
 
 local M = {}
 
@@ -22,7 +23,7 @@ M.MAX_RESPONSE = 200000
 -- указан — должен быть жив; "spawn"/"remove" — обязателен, проверку делает сама операция;
 -- false — не нужен (если указан, игнорируется).
 M.HELPER_REQ = {
-  hello = false, helper_list = false, events = false, blob_put = false, helper_limit = false,
+  hello = false, helper_list = false, events = false, blob_put = false, helper_limit = false, settings = false,
   helper_spawn = "spawn", helper_remove = "remove",
   helper_attach = "spawn", -- операция тела-игрока (scripts/core/attach.lua): id обязателен, тело проверяет сама
   act = "h", cancel = "h", jobs = "h", reflexes = "h", say = "h", vision = "h", state = "h", recipes = "h",
@@ -32,7 +33,7 @@ M.DEFAULT_MODULE_REQ = "h?"
 
 -- Только чтение: большой ответ таких операций не храним в recent (повтор безопасен).
 M.READ_ONLY = {
-  hello = true, helper_list = true, jobs = true, events = true, state = true, map = true,
+  hello = true, helper_list = true, jobs = true, events = true, state = true, map = true, settings = true,
   resources = true, stock = true, ghosts = true, recipes = true, rates = true, find = true, access = true, status = true,
   supply = true, lookup = true,
 }
@@ -45,7 +46,7 @@ function M.register_op(op, fn)
   M.ops[op] = fn
 end
 
-local ENVELOPE_KEYS = { v = true, id = true, op = true, helper = true, args = true }
+local ENVELOPE_KEYS = { v = true, id = true, op = true, helper = true, args = true, owner_ok = true }
 
 local function encode(resp)
   local ok, line = pcall(helpers.table_to_json, resp)
@@ -56,10 +57,10 @@ local function encode(resp)
   return line
 end
 
-local function error_line(id, code, text)
+local function error_line(id, code, text, data)
   local line = encode{
     v = M.PROTO, id = id, ok = false, tick = game.tick, seq = events.last_seq(),
-    error = { code = code, text = err.clean_text(text or code) },
+    error = { code = code, text = err.clean_text(text or code), data = data },
   }
   return line
 end
@@ -95,13 +96,17 @@ local function execute(id, req)
   local args = req.args
   if args == nil then args = {} end
   if not is_object(args) then return error_line(id, "bad_request", "args must be an object") end
+  -- owner_ok — разрешение хозяина на «спросить» (scripts/core/perms.lua): список ключей, о которых
+  -- был вопрос; ставит только сервер
+  local leave, leave_err = perms.leave_set(req.owner_ok)
+  if leave_err ~= nil then return error_line(id, "bad_request", leave_err) end
 
   local fn = M.ops[op]
   if fn == nil then return error_line(id, "unknown_op", "unknown op " .. op) end
 
   local need = M.HELPER_REQ[op]
   if need == nil then need = M.DEFAULT_MODULE_REQ end
-  local ctx = { tick = game.tick, request_id = id }
+  local ctx = { tick = game.tick, request_id = id, perm_gate = true, owner_ok = leave }
   local ok, res = pcall(function()
     if need == "h" or need == "spawn" or need == "remove" then
       if helper == nil then err.raise("bad_request", "helper is required for " .. op) end
@@ -118,12 +123,12 @@ local function execute(id, req)
     return fn(args, ctx)
   end)
   if not ok then
-    local code, text = err.normalize(res)
+    local code, text, data = err.normalize(res)
     if code == "internal" then
       err.count_module_error()
       log("[factorio-partner] op " .. op .. " failed: " .. text)
     end
-    return error_line(id, code, text)
+    return error_line(id, code, text, data)
   end
   local data = res
   if data == nil then data = {} end

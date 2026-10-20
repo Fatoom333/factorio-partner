@@ -33,6 +33,13 @@ local jobs = require("scripts.core.jobs")
 local inv = require("scripts.lib.inventory")
 local C = require("scripts.reflexes.common")
 local SO = require("scripts.reflexes.standoff")
+local perms = require("scripts.core.perms")
+
+--- Проверка «не перед линией турелей» (SO.judge_here); partner-turret-standoff выключен — всегда годится.
+local function judge_here(...)
+  if not perms.combat().turret_standoff then return true end
+  return SO.judge_here(...)
+end
 
 local M = {}
 M.name = "reflexes.ammo"
@@ -204,7 +211,7 @@ local function pick_spot(entity, st, tick, far, foes, o)
           local p = { x = c.x + math.cos(a) * r, y = c.y + math.sin(a) * r }
           local cov = coverage(p, far, cover)
           if cov > 0 and SO.clear_of(p, o.boxes, o.gap) and not near_bad(st, p, tick) then
-            local ok, foe, why = SO.judge_here(p, foes, o.keep_away, o.behind, o.boxes, o.near)
+            local ok, foe, why = judge_here(p, foes, o.keep_away, o.behind, o.boxes, o.near)
             if ok then
               cands[#cands + 1] = { p = p, cov = cov, enemy = SO.nearest(p, foes), walk = util.dist(p, body) }
             elseif refusal == nil or cov > refusal.cov then
@@ -224,7 +231,7 @@ local function pick_spot(entity, st, tick, far, foes, o)
     cands[bi] = false
     local spot = SO.free_spot(entity.surface, best.p)
     if spot ~= nil and coverage(spot, far, cover) > 0
-      and SO.judge_here(spot, foes, o.keep_away, o.behind, o.boxes, o.near) then
+      and judge_here(spot, foes, o.keep_away, o.behind, o.boxes, o.near) then
       local last = st.ammo_spot
       if last ~= nil and util.dist(last, spot) <= 1.5 and util.dist(body, spot) <= 1.5 then
         -- уже стоим здесь, а достать не вышло — эта точка не годится
@@ -270,7 +277,7 @@ function M.check(id, entity, params, tick)
   local body = util.xy(entity.position)
   local reach = inv.reach(entity, "reach") or 10
   local o = {
-    reach = reach, gap = params.turret_gap or 3, keep_away = params.keep_away, behind = params.behind,
+    reach = reach, gap = params.turret_gap or perms.combat().turret_gap, keep_away = params.keep_away, behind = params.behind,
   }
   o.near = reach + o.gap
   local scan = params.radius + reach + math.max(M.ENEMY_SCAN, o.keep_away or 0)
@@ -356,7 +363,7 @@ function M.check(id, entity, params, tick)
     local foes = SO.enemies(id, entity, body, scan)
     if foes[1] ~= nil then
       o.boxes = o.boxes or boxes_around(entity, body, params.radius + reach + o.gap)
-      if not SO.judge_here(body, foes, o.keep_away, o.behind, o.boxes, o.near) then
+      if not judge_here(body, foes, o.keep_away, o.behind, o.boxes, o.near) then
         st.ammo_retreat_tick = tick
         local p = SO.retreat_point(entity, foes, o.keep_away, o.behind, o.boxes, o.gap, o.near)
         if p ~= nil and walk_to(id, entity, tick, p) then
@@ -377,7 +384,7 @@ M.reflexes = {
       fill = { type = "int", min = 1, max = 400, default = 50 },
       item = { type = "string", max = 100 },
       chests = { type = "bool", default = true },
-      turret_gap = { type = "number", min = 0, max = 16, default = 3 },
+      turret_gap = { type = "number", min = 0, max = 16 },
       behind = { type = "number", min = 0, max = 12 },
       keep_away = { type = "number", min = 0, max = 96 },
     },

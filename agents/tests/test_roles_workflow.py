@@ -323,3 +323,65 @@ def test_host_key_never_reaches_an_agent():
     assert out["calls"]
     for c in out["calls"]:
         assert host not in c["prompt"] and host not in c["label"]
+
+
+# ---- другое число помощников (brief.rescale) ----------------------------------------------
+
+RESCALE_END = "СМЕНА: масштаб\nПричина: хозяин просит другое число помощников\nМасштаб: 3\n" \
+              'Задания: [{"to":"h2","text":"копай уголь"},{"text":"построй печи"}]'
+
+
+@needs_node
+def test_rescale_ends_every_loop_and_returns_the_request():
+    replies = {"partner-voice": [RESCALE_END], "partner-pilot": [RESCALE_END.split("\nМасштаб")[0]] * 3,
+               "partner-strategist": [RESCALE_END.split("\nМасштаб")[0]]}
+    out = run(session(), replies)
+    assert len(out["calls"]) == 5                          # смены не перезапускались
+    res = out["result"]
+    assert res["rescale"] == {"n": 3, "tasks": [{"to": "h2", "text": "копай уголь"}, {"text": "построй печи"}]}
+    assert {r["status"] for r in res["roles"]} == {"масштаб"}
+    assert "helpers" not in res
+
+
+@needs_node
+def test_rescale_without_numbers_still_ends_the_shifts_and_clamps_the_rest():
+    bad = "СМЕНА: масштаб\nПричина: x\nМасштаб: 40\nЗадания: " + json.dumps(
+        [{"to": "../x", "text": "а" * 900}] + [{"text": f"t{i}"} for i in range(9)] + [{"text": 5}, 7])
+    out = run(session(ids=("h1",)), {"partner-voice": [bad], "partner-pilot": ["СМЕНА: масштаб\nПричина: x"],
+                                      "partner-strategist": ["СМЕНА: масштаб\nПричина: x"]})
+    r = out["result"]["rescale"]
+    assert r["n"] == 5 and len(r["tasks"]) == 5
+    assert r["tasks"][0] == {"text": "а" * 300}            # чужой to отброшен, текст обрезан
+    out = run(session(ids=("h1",)), {r: ["СМЕНА: масштаб\nПричина: x"] for r in
+                                      ("partner-voice", "partner-pilot", "partner-strategist")})
+    assert out["result"]["rescale"] == {"n": None, "tasks": []}
+
+
+@needs_node
+def test_rescale_does_not_stop_the_game_and_link_restart_still_works():
+    # два пилота кончили смену по запросу — это не «пилотов не осталось»: остальные тоже закрывают смену
+    end = "СМЕНА: масштаб\nПричина: x\nМасштаб: 2"
+    replies = {"partner-pilot": [end, end, end], "partner-voice": ["СМЕНА: дальше\nПричина: связь пропала", end],
+               "partner-strategist": [end]}
+    out = run(session(), replies)
+    assert out["result"]["rescale"]["n"] == 2
+    assert len(by_label(out, "голос")) == 2                # смена голоса перезапущена по потере связи
+
+
+@needs_node
+def test_voice_stop_beats_rescale():
+    end = "СМЕНА: масштаб\nПричина: x\nМасштаб: 2"
+    replies = {"partner-voice": ["СМЕНА: стоп\nПричина: хозяин отпустил"], "partner-pilot": [end] * 3,
+               "partner-strategist": [end]}
+    assert "rescale" not in run(session(), replies)["result"]
+
+
+@needs_node
+def test_rescaling_flag_and_strategist_model():
+    out = run(dict(session(ids=("h1",)), rescaling=True, strategist_model="opus"))
+    assert all("Перезапуск на новое число" in c["prompt"] for c in out["calls"])
+    assert {c["type"]: c["model"] for c in out["calls"]}["partner-strategist"] == "opus"
+    out = run(session(ids=("h1",)))
+    assert all("Перезапуск на новое число" not in c["prompt"] for c in out["calls"])
+    assert {c["type"]: c["model"] for c in out["calls"]}["partner-strategist"] == "sonnet"
+    assert "error" in run(dict(session(ids=("h1",)), strategist_model="haiku"))

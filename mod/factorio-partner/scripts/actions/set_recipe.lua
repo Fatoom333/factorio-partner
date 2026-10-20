@@ -11,8 +11,24 @@ local util = require("scripts.core.util")
 local B = require("scripts.lib.build")
 local place = require("scripts.actions.place")
 
+local perms = require("scripts.core.perms")
+
 local M = {}
 M.name = "set_recipe"
+
+--- Разрешения хозяина (scripts/core/perms.lua): какие ключи задевают эти аргументы.
+--- Машина, которую поставил игрок, — хозяйская; машина помощника — как разбор своих построек.
+function M.entity_keys(e)
+  if e == nil then return {} end
+  if perms.owner_built(e) then return { "perm-set-recipe" } end
+  return { "perm-deconstruct-own" }
+end
+
+--- Ключи по аргументам — ранний отказ при постановке; окончательно — в start по машине, которая
+--- найдена, когда задача началась.
+function M.perms(a, ctx)
+  return M.entity_keys(perms.find(ctx, a.target))
+end
 M.schema = {
   target = { type = "target", required = true },
   recipe = { type = "string", max = 100 },
@@ -40,6 +56,8 @@ function M.start(task, ctx)
     local why = place.why_bad_recipe(ctx.entity, t.prototype, task.args.recipe)
     if why then return inv.failed("bad_args", "args.recipe: " .. why) end
   end
+  local pcode, ptext, pdata = perms.refusal(M.entity_keys(t), task)
+  if pcode ~= nil then return inv.failed(pcode, ptext, pdata) end
   task.target = t
   return nil
 end

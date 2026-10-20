@@ -18,6 +18,8 @@ function H.setup(opts)
   S.add_prototype("entity", { name = "biter-spawner", type = "unit-spawner", max_health = 350 })
   S.add_prototype("entity", { name = "small-worm-turret", type = "turret", max_health = 200 })
   S.add_prototype("entity", { name = "small-strafer-pentapod", type = "spider-unit", max_health = 1200 })
+  -- порог отступления из настроек мода тут не предмет проверки: отступать при любом здоровье, как в схеме до настроек
+  settings.global["partner-flee-health"] = { value = 100 }
   return p, h
 end
 

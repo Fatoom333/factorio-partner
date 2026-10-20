@@ -21,8 +21,26 @@
 local util = require("scripts.core.util")
 local inv = require("scripts.lib.inventory")
 
+local perms = require("scripts.core.perms")
+
 local M = {}
 M.name = "mine"
+
+--- Разрешения хозяина (scripts/core/perms.lua): какие ключи задевают эти аргументы.
+--- Руда — всегда можно; цель-постройка — как её разбор (perms.dig_keys). Режим item сам выбирает
+--- источник: деревья и камни в нём отсекает start. Цель проверяется ещё раз в start — по той
+--- сущности, что найдена, когда задача началась.
+function M.perms(a, ctx)
+  local non_ore = false
+  if a.target ~= nil then
+    return perms.dig_keys(perms.find(ctx, a.target))
+  elseif a.resource ~= nil then
+    local proto = prototypes.entity[a.resource]
+    non_ore = proto ~= nil and proto.type ~= "resource"
+  end
+  if non_ore then return { "perm-chop" } end
+  return {}
+end
 M.schema = {
   target = { type = "target" },
   resource = { type = "string", max = 100 },
@@ -133,12 +151,12 @@ local function expected(proto, item)
 end
 
 --- Режим item: имена прототипов, которые рукой дают предмет, и их выход {per, ticks, resource}.
-local function item_sources(h, item)
+local function item_sources(h, item, ore_only)
   local names, info = {}, {}
   local speed = mining_speed(h)
   for name, proto in pairs(prototypes.entity) do
     local t = proto.type
-    if (t == "resource" or M.ITEM_SOURCES[t]) and why_not_minable(h, proto) == nil then
+    if (t == "resource" or (M.ITEM_SOURCES[t] and not ore_only)) and why_not_minable(h, proto) == nil then
       local per = expected(proto, item)
       if per > 0 then
         names[#names + 1] = name
@@ -196,7 +214,12 @@ function M.start(task, ctx)
     if prototypes.item[a.item] == nil then
       return inv.failed("bad_args", "args.item: unknown item " .. a.item)
     end
-    local names, info = item_sources(h, a.item)
+    -- деревья и камни при запрете или «спросить» без разрешения (perm-chop) не берутся
+    local chop_code, chop_text = perms.refusal({ "perm-chop" }, task)
+    local names, info = item_sources(h, a.item, chop_code ~= nil)
+    if #names == 0 and chop_code ~= nil and #item_sources(h, a.item, false) > 0 then
+      return inv.failed(chop_code, chop_text)
+    end
     if #names == 0 then
       return inv.failed("bad_args", "nothing gives " .. a.item .. " when mined by hand")
     end
@@ -221,6 +244,8 @@ function M.start(task, ctx)
   local e, proto
   if a.target then
     e = inv.resolve_target(ctx, a.target)
+    local pcode, ptext, pdata = perms.refusal(perms.dig_keys(e), task)
+    if pcode ~= nil then return inv.failed(pcode, ptext, pdata) end
     proto = e.prototype
   else
     proto = prototypes.entity[a.resource]

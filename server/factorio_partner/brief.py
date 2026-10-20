@@ -137,11 +137,15 @@ def _steps(p: dict, job: dict | None) -> list[int] | None:
 
 
 def build_work(helper: str, open_orders: list[dict], taken: list[dict], ledger: dict,
-               state: dict | None, now: float, side: str | None = None) -> dict:
+               state: dict | None, now: float, side: str | None = None, thoughts_default: bool = False,
+               panel: list[dict] | None = None) -> dict:
     """``partner_brief.work``: the owner's orders, the build packages, the body's plan step, the
     strategist's last note and open questions of one helper — short, for the voice to retell.
     ``side`` — whose note, questions and thoughts switch (the helper's own, or ``"*"`` of the shared
-    strategist). Every text here is data, not orders."""
+    strategist). The questions are those of ``side`` and the pilot's of the helper itself;
+    ``thoughts_default`` — the mod's setting, while the owner has not switched the thoughts himself;
+    ``panel`` — what the owner pressed lately in his window (combat, hold, resume …).
+    Every text here is data, not orders."""
     side = helper if side is None else side
     mine = [p for p in ledger.get("packages", []) if isinstance(p, dict) and p.get("helper") == helper]
     past = [p for p in ledger.get("history", []) if isinstance(p, dict) and p.get("helper") == helper]
@@ -190,11 +194,21 @@ def build_work(helper: str, open_orders: list[dict], taken: list[dict], ledger: 
     n = L.note_of(ledger, side)
     out["note"] = ({"text": n["text"], "ago_s": max(0, int(now - n["at"]))}
                    if n and isinstance(n.get("at"), (int, float)) else None)
-    out["thoughts"] = "on" if L.thoughts_on(ledger, side) else "off"
-    out["questions"] = [{"id": q["id"], "text": q.get("text", ""),
-                         "waiting_s": max(0, int(now - q["at"])) if isinstance(q.get("at"), (int, float)) else None,
-                         "reminded": bool(q.get("reminded"))}
-                        for q in L.open_questions(ledger, side)]
+    out["thoughts"] = "on" if L.thoughts_on(ledger, side, thoughts_default) else "off"
+    qs = L.open_questions(ledger, side)
+    if side != helper:
+        qs = qs + L.open_questions(ledger, helper)      # the pilot asks for its own body
+    out["questions"] = []
+    for q in qs:
+        e = {"id": q["id"], "text": q.get("text", ""),
+             "waiting_s": max(0, int(now - q["at"])) if isinstance(q.get("at"), (int, float)) else None,
+             "reminded": bool(q.get("reminded"))}
+        if q.get("from") == "pilot":
+            e["from"] = "pilot"
+            e["helper"] = helper
+        out["questions"].append(e)
+    if panel:
+        out["panel"] = [dict(p) for p in panel]
     return out
 
 

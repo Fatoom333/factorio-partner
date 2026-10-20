@@ -863,4 +863,28 @@ S.suite("build_blueprint", {
       S.eq(d.detail.skipped[1], { name = "iron-chest", pos = { x = 20.5, y = 0.5 }, reason = "blocked" })
       S.eq(#F.ghosts(), 1)
   end },
+  { "трата больше partner-spend-limit — needs_owner_ok до первого призрака; с разрешением на spend — строит", function()
+      F.setup{ items = { ["iron-chest"] = 2 } }
+      settings.global["partner-spend-limit"] = { value = 1 }
+      put(two_chests())
+      S.owner_ok = nil
+      local d, kind = F.wait(bp{ mode = "hand" })
+      S.eq({ kind, d.code, d.detail.perm }, { "job_failed", "needs_owner_ok", "spend" }, S.dump(d))
+      S.eq(#F.ghosts(), 0)
+      S.eq(#F.bp_calls, 0)
+      S.eq(F.bp_created, F.bp_destroyed, "временный инвентарь уничтожен")
+      local d2, kind2 = F.wait(bp{ dry_run = true })
+      S.eq(kind2, "job_done", "dry_run ничего не тратит: " .. S.dump(d2))
+      S.owner_ok = { "build", "spend" }
+      local d3, kind3 = F.wait(bp{ mode = "hand" })
+      S.eq(kind3, "job_done", S.dump(d3))
+      S.eq(d3.detail.built, 2)
+  end },
+  { "трата чертежа: постройки, плитки и запросы предметов (модули)", function()
+      local bpmod = require("scripts.actions.build_blueprint")
+      S.eq(bpmod.spend_of({ { name = "a" }, { name = "b", items = { { id = { name = "speed-module" },
+        items = { in_inventory = { { inventory = 4, stack = 0, count = 2 }, { inventory = 4, stack = 1 } } } } } } },
+        { { name = "stone-path" } }), 2 + 3 + 1)
+      S.eq(bpmod.spend_of({}, {}), 0)
+  end },
 })

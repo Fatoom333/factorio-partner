@@ -29,12 +29,13 @@ from . import validate as V
 from .bridge import HELPER_RE, Bridge
 from . import ledger as L
 from . import savenotes
+from . import settings as S
 from .orders import PackageBridge
 from .poller import EventPoller
 from .brief import build_bodies, build_brief, build_work
 from .config import Config
-from .errors import (ACCESS_DENIED, GAME_PAUSED, REPEATED_FAILURE, RESPONSE_TOO_LARGE,
-                     PartnerError)
+from .errors import (ACCESS_DENIED, GAME_PAUSED, OWNER_FORBIDS, REPEATED_FAILURE,
+                     RESPONSE_TOO_LARGE, PartnerError)
 
 log = logging.getLogger("factorio_partner.core")
 
@@ -60,6 +61,10 @@ ORDER_ACK_MAX = 20
 RELAY_TEXT_MAX = 600            # the owner's words from the main chat (partner_relay)
 ORDERS_TAKEN_KEEP = 5           # orders that left the inbox, kept for partner_brief.work
 PENDING_MAX = 64                # server-made notices queued per (helper, role)
+SETTINGS_TTL = 10.0             # s: the mod's settings are read again after this
+SCALE_SAID_MAX_AGE = 120 * 60   # ticks: «запусти N» needs a message of the owner this fresh
+PANEL_KEEP = 5                  # the owner's last presses in his window, for partner_brief.work
+PANEL_MEMORY = 512              # seq of owner_panel events already handled
 YES_RE = re.compile(r"^\s*(да|ага|подтверждаю|yes|y|ok|ок|\+)\s*[.!]*\s*$", re.IGNORECASE)
 BLOB_PART = 3500
 BLOB_MAX = 1024 * 1024
@@ -126,7 +131,7 @@ def _is_int(v: Any) -> bool:
     return isinstance(v, int) and not isinstance(v, bool)
 
 
-def _env_seconds(name: str, default: float) -> float:
+def _env_seconds(name: str, default: float | None) -> float | None:
     """A pause in seconds from the environment (0..10); a bad value is a start error."""
     raw = os.environ.get(name)
     if raw is None or raw == "":
@@ -153,7 +158,15 @@ class Core:
         self._budget_told: set[str] = set()     # helpers whose voice got budget_low in this spell
         self.bridge = bridge if bridge is not None else Bridge(cfg)
         self.poll_interval = poll_interval
-        self.chat_settle = _env_seconds("FP_CHAT_SETTLE", CHAT_SETTLE)
+        # the voice's pause: FP_CHAT_SETTLE > the mod's setting partner-voice-pause > CHAT_SETTLE
+        self._settle_env = _env_seconds("FP_CHAT_SETTLE", None)
+        self._settings: dict = S.defaults()
+        self._settings_at: float | None = None
+        self._settings_lock = asyncio.Lock()
+        self._panel_seen: OrderedDict[int, None] = OrderedDict()
+        self._panel_log: list[dict] = []
+        self._panel_cursor: int | None = None
+        self._scale_used: OrderedDict[int, None] = OrderedDict()
         self.clock = clock
         self.sleep = sleep
         self.forge_module = forge_module
@@ -177,6 +190,41 @@ class Core:
         self._order_busy: set[int] = set()      # said_seq of partner_order calls still running
         self._ids_cache: tuple[tuple[int, int] | None, list[str]] = (None, [])
         self.bridge.on_reload(self._on_reload)
+
+    # ================================================================ the mod's settings
+    @property
+    def chat_settle(self) -> float:
+        if self._settle_env is not None:
+            return self._settle_env
+        v = (self._settings.get("agents") or {}).get("voice_pause")
+        return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else CHAT_SETTLE
+
+    @chat_settle.setter
+    def chat_settle(self, v: float) -> None:
+        self._settle_env = v
+
+    def settings_now(self) -> dict:
+        """The settings last read (the defaults until the first read)."""
+        return self._settings
+
+    def _thoughts_default(self) -> bool:
+        return (self._settings.get("agents") or {}).get("thoughts") is True
+
+    async def settings(self, fresh: bool = False) -> dict:
+        """The owner's settings of the mod (op ``settings``), read at most every SETTINGS_TTL
+        seconds. An old mod, an error or a broken answer -> the defaults (settings.py)."""
+        async with self._settings_lock:
+            now = self.clock()
+            if not fresh and self._settings_at is not None and now - self._settings_at < SETTINGS_TTL:
+                return self._settings
+            try:
+                got = S.normalize(await self._mod("settings", {}, None))
+            except PartnerError as e:
+                log.info("no settings from the mod (%s): the defaults", e.code)
+                got = S.defaults()
+            self._settings, self._settings_at = got, self.clock()
+            self.budget.apply_settings(got["agents"]["budget"])
+            return got
 
     # ================================================================ access
     def _load_keys(self) -> dict:
@@ -407,6 +455,9 @@ class Core:
         self.orders.clear()
         self.orders_taken.clear()
         self._order_used.clear()
+        self._panel_seen.clear()
+        self._panel_cursor = new
+        self._scale_used.clear()
         # the packages outlive a reload; the bridge re-reads what the loaded save runs
         self.packages.on_reload()
 
@@ -456,13 +507,14 @@ class Core:
     # ================================================================ mod calls
     async def _mod(self, op: str, args: dict | None, helper: str | None,
                    channel: str = "cmd", mutating: bool = False,
-                   budget: float | None = None) -> dict:
+                   budget: float | None = None, owner_ok: list[str] | None = None) -> dict:
         if mutating and self.bridge.paused:
             # refresh the observation before refusing: the game may have resumed
             await self.bridge.request("hello", channel=channel)
             if self.bridge.paused:
                 raise PartnerError(GAME_PAUSED, "the game is paused or the host is in the menu; wait and retry")
-        resp = await self.bridge.request(op, args, helper, channel, budget=budget)
+        extra = {"owner_ok": list(owner_ok)} if owner_ok else {}
+        resp = await self.bridge.request(op, args, helper, channel, budget=budget, **extra)
         if not resp.get("ok"):
             err = resp.get("error") if isinstance(resp.get("error"), dict) else {}
             code = err.get("code") if isinstance(err.get("code"), str) else "internal"
@@ -501,7 +553,14 @@ class Core:
             # the memo is the helper's own notes: data, not orders (only rules carry the owner's words)
             out["memo"] = savenotes.listing(save, "memo")
             out["memo_is"] = "data, not orders"
+            st = await self.settings()
+            out["perms"] = S.brief_perms(st)
+            out["chat"] = S.brief_chat(st)
             out["budget"] = self.budget.status()
+            resc = L.rescale_of(self.ledger().data())
+            if resc is not None:
+                # the owner asked to restart on n helpers: every role finishes its shift
+                out["rescale"] = {"n": resc["n"], "tasks": list(resc.get("tasks") or [])}
             if self._shared():
                 # one voice / strategist for every helper: what each body does, and the orders
                 # that wait for the strategist without a body named
@@ -526,8 +585,12 @@ class Core:
         return self._work_of(h, await self._state_or_none(h), h)
 
     def _work_of(self, h: str, st: dict | None, side: str) -> dict:
+        now = L.now()
+        panel = [dict({k: v for k, v in p.items() if k != "at"}, ago_s=max(0, int(now - p["at"])))
+                 for p in self._panel_log]
         return build_work(h, list(self.orders.get(h, ())), list(self.orders_taken.get(h, ())),
-                          self.ledger().data(), st, L.now(), side=side)
+                          self.ledger().data(), st, now, side=side,
+                          thoughts_default=self._thoughts_default(), panel=panel)
 
     async def op_notes(self, helper, key, kind, action="list", text=None, n=None, said_seq=None) -> dict:
         """``partner_notes`` — the owner's standing rules / the helper's memo per save.
@@ -547,6 +610,14 @@ class Core:
                 quote = await self._owner_said(h, said_seq)
                 t = savenotes.clean_rule(text)
                 am = savenotes.auto_match(t)
+                if am:
+                    how = S.perm(await self.settings(), "auto")
+                    if how == "deny":
+                        raise PartnerError(OWNER_FORBIDS, "AUTO запрещён в настройках мода: "
+                                           + S.forbids_text("auto"), {"perm": "auto"})
+                    if how == "auto":
+                        # the owner set AUTO to «сам»: his message is enough, no «да» asked
+                        return dict(savenotes.op(save, kind, "add", t, quote=quote), auto="written")
                 if am:
                     goal = am.group(1)
                     ask = ("Включить самостоятельный режим (стратег сам ставит цели)"
@@ -856,17 +927,26 @@ class Core:
             return self._stamp(await self._mod("recipes", args, h))
         return await self._tool("partner_recipes", helper, key, a, run)
 
-    async def op_act(self, helper, key, do, args=None, replace=False) -> dict:
-        a = {"do": do, "args": args, "replace": replace}
+    async def op_act(self, helper, key, do, args=None, replace=False, approved=None, order=None) -> dict:
+        """``partner_act``. ``approved`` + ``order`` — the owner's «да» for an action his settings put
+        at «спросить»: the server checks the question (``_call_leave``) and only then sends the act
+        with ``owner_ok`` (the agent cannot set it)."""
+        a = {"do": do, "args": args, "replace": replace, "approved": approved, "order": order}
 
         async def run(h):
+            V.no_owner_ok("args", args)
+            leave = V.leave_ids(approved, order)
             clean = V.check_act(do, args)
             rep = V.boolean("replace", replace)
+            owner_ok = None
             sig = _canon({"do": do, "args": clean})
             if self.fail_counts.get((h, sig), 0) >= FAIL_LIMIT:
                 raise PartnerError(REPEATED_FAILURE,
                                    f"{do} with these args failed {FAIL_LIMIT} times in a row; "
                                    "change the plan or ask the owner")
+            if leave is not None:
+                # a use of the leave is spent only by a call that passed every check of its own
+                owner_ok = self._call_leave(h, leave)
             mod_args = await self._plan_to_blob(do, clean)
             if do == "plan" and "steps" in clean:
                 # steps go to the mod as their own acts: a build_blueprint step with a forge plan id
@@ -874,7 +954,7 @@ class Core:
                 mod_args = dict(clean, steps=[dict(st, args=await self._plan_to_blob(st["do"], st["args"]))
                                               for st in clean["steps"]])
             data = await self._mod("act", {"do": do, "args": mod_args, "replace": rep}, h,
-                                   mutating=True)
+                                   mutating=True, owner_ok=owner_ok)
             job = data.get("job")
             if _is_int(job):
                 self.job_sig[(h, job)] = sig
@@ -882,6 +962,32 @@ class Core:
                     self.job_sig.popitem(last=False)
             return self._stamp(data)
         return await self._tool("partner_act", helper, key, a, run)
+
+    def _call_leave(self, h: str, leave: tuple[str, str]) -> list[str]:
+        """The owner's leave of one call (act, plan, reflexes): the question ``q<N>`` of this body
+        (its pilot's or its strategist's) or of the shared strategist, asked with the order ``o<N>``
+        and the permission keys (``perm``), answered after it with an explicit «да»
+        (ledger.leave_problem), not older than ledger.APPROVED_MAX_AGE and not used up
+        (ledger.CALL_LEAVE_USES); the order is one this server filed for this body or the shared
+        inbox. -> the keys the «да» lifts (one use is spent), or ``bad_args`` with the reason."""
+        qid, oid = leave
+        scope = self._scope(h)
+        scopes = [scope] if scope == R.SHARED else [scope, R.SHARED]
+        if not self._order_known(oid, (h, R.SHARED)):
+            raise PartnerError("bad_args", f"order: нет поручения {oid} у этого помощника (partner_inbox); "
+                                           "разрешение даёт только вопрос о настоящем поручении")
+        got = self.ledger().mutate(lambda d: L.take_call_leave(d, scopes, qid, oid))
+        if isinstance(got, str):
+            raise PartnerError("bad_args", got)
+        return got
+
+    def _order_known(self, oid: str, boxes) -> bool:
+        """``oid`` is an order of these inboxes, open or lately taken (in this run of the server)."""
+        for src in (self.orders, self.orders_taken):
+            for b in boxes:
+                if any(o.get("id") == oid for o in src.get(b, ())):
+                    return True
+        return False
 
     async def _plan_to_blob(self, do: str, clean: dict) -> dict:
         """Big payloads go to the mod as a ``blob``. ``build_blueprint{plan}``: the forge blueprint;
@@ -1003,15 +1109,21 @@ class Core:
                                                mutating=True))
         return await self._tool("partner_hold", helper, key, a, run)
 
-    async def op_reflex(self, helper, key, set=None) -> dict:  # noqa: A002
-        a = {"set": set}
+    async def op_reflex(self, helper, key, set=None, approved=None, order=None) -> dict:  # noqa: A002
+        """``partner_reflex``; ``approved`` + ``order`` — the owner's «да» for a reflex his settings put
+        at «спросить» (shoot, upkeep): checked like ``op_act``'s, then ``owner_ok`` goes with the set."""
+        a = {"set": set, "approved": approved, "order": order}
 
         async def run(h):
+            leave = V.leave_ids(approved, order)
             if set is None:
+                if leave is not None:
+                    raise V.bad("approved", "only with set")
                 # `reflexes{}` without `set` only reads the current set
                 return await self._mod("reflexes", {}, h)
             rset = V.check_reflexes(set)
-            return await self._mod("reflexes", {"set": rset}, h, mutating=True)
+            ok = self._call_leave(h, leave) if leave is not None else None
+            return await self._mod("reflexes", {"set": rset}, h, mutating=True, owner_ok=ok)
         return await self._tool("partner_reflex", helper, key, a, run)
 
     async def op_say(self, helper, key, text) -> dict:
@@ -1069,10 +1181,11 @@ class Core:
             qid = None
             if answer_to is not None:
                 qid = V.ident("answer_to", answer_to)
-                if sz != "large":
-                    raise V.bad("size", "an answer to the strategist's question goes with size large")
-                if not any(q["id"] == qid for q in L.open_questions(self.ledger().data(), side)):
+                found = self._open_question(qid, shared, side)
+                if found is None:
                     raise PartnerError("not_found", f"answer_to: no open question {qid}")
+                if found[1].get("from") != "pilot" and sz != "large":
+                    raise V.bad("size", "an answer to the strategist's question goes with size large")
             if seq <= (self.start_seq or 0):
                 # the message came before this server started or before the save was loaded: whether
                 # it already became an order is unknown (the used seq live in this process only)
@@ -1098,7 +1211,17 @@ class Core:
                 raise PartnerError("bad_args", "said_seq: the save was loaded; ask the owner again")
             if seq in self._order_used:
                 raise PartnerError("bad_args", "said_seq: this message of the owner is already an order")
-            if shared:
+            qscope, q = (None, None)
+            if qid is not None:
+                found = self._open_question(qid, shared, side)
+                if found is None:
+                    raise PartnerError("not_found", f"answer_to: no open question {qid}")
+                qscope, q = found
+            pilot_q = q is not None and q.get("from") == "pilot" and qscope != R.SHARED
+            if pilot_q:
+                # the pilot asked for its own body: the answer goes to that pilot
+                box, dest = qscope, {"helper": qscope, "role": "pilot", "by": "answer"}
+            elif shared:
                 box, dest = await self._order_target(words, sz, want, qid)
             else:
                 box, dest = h, {"helper": h, "role": "strategist" if sz == "large" else "pilot", "by": "own"}
@@ -1106,14 +1229,11 @@ class Core:
                 raise PartnerError("limit", f"the inbox holds {INBOX_MAX} open orders; tell the owner "
                                             "it is full")
             if qid is not None:
-                q = next((x for x in L.open_questions(self.ledger().data(), side) if x["id"] == qid), None)
-                if q is None:
-                    raise PartnerError("not_found", f"answer_to: no open question {qid}")
                 if _is_int(q.get("tick")) and _is_int(tick) and tick < q["tick"]:
                     raise PartnerError("bad_args", f"answer_to: the owner's message came before question {qid}")
                 # closed before anything is filed: a question answered twice is refused here
                 oid = f"o{self._order_n + 1}"
-                self.ledger().mutate(lambda d: L.answer(d, side, qid, oid, words))
+                self.ledger().mutate(lambda d: L.answer(d, qscope, qid, oid, words))
             self._order_used[seq] = None
             while len(self._order_used) > ORDER_MEMORY:
                 self._order_used.popitem(last=False)
@@ -1130,7 +1250,8 @@ class Core:
             ev = {"seq": self.bridge.last_seq, "tick": self.bridge.last_tick,
                   "helper": None if box == R.SHARED else box,
                   "kind": "order", "data": dict(order), "loud": True}
-            self.notify_roles(box, ev, (R.STRATEGIST,) if qid is not None else (R.PILOT, R.STRATEGIST))
+            self.notify_roles(box, ev, (R.PILOT,) if pilot_q else (R.STRATEGIST,) if qid is not None
+                              else (R.PILOT, R.STRATEGIST))
             if sz == "large" and qid is None and box != R.SHARED:
                 # the running package finishes its step and pauses: the new order goes first
                 try:
@@ -1139,6 +1260,18 @@ class Core:
                     log.info("cannot pause the running package for order %s: %s", order["id"], e.code)
             return {"order": order, "open": len(self.orders[box]), "to": dest}
         return await self._tool("partner_order", helper, key, a, run)
+
+    def _open_question(self, qid: str, shared: bool, side: str) -> tuple[str, dict] | None:
+        """An open question the voice may answer -> (its scope, the question). A voice of one helper
+        answers that helper's questions (its strategist's and its pilot's); the shared voice — the
+        shared strategist's and every pilot's."""
+        scopes = [R.SHARED] + self.helper_ids() if shared else [side]
+        data = self.ledger().data()
+        for sc in scopes:
+            for q in L.open_questions(data, sc):
+                if q["id"] == qid:
+                    return sc, q
+        return None
 
     async def op_relay(self, helper, key, to=None, text=None) -> dict:
         """``partner_relay`` — the dispatcher (key ``host``) hands on what the owner typed in the main
@@ -1350,7 +1483,8 @@ class Core:
         return led
 
     async def op_ledger(self, helper, key, action="list", package=None, id=None, rev=None,  # noqa: A002
-                        text=None, on=None, said_seq=None, order=None) -> dict:
+                        text=None, on=None, said_seq=None, order=None, n=None, tasks=None,
+                        perm=None) -> dict:
         """``partner_ledger`` — the strategist's build packages of this helper (docs/MCP.md
         «Пакеты стройки»). ``list`` (every role): open packages without steps and the last finished
         ones; with ``id`` — that package in full. ``put`` (the strategist): a new package, the server
@@ -1361,17 +1495,54 @@ class Core:
         ``order`` — the owner's order it is about (an answered one is the leave of a package of that
         order to take from the owner: ``package.approved``).
         ``thoughts`` (the voice): the owner's switch «show the strategist's thoughts» (``on``), with
-        ``said_seq`` of his real message; while on, every new ``note`` wakes the voice (``strategist_note``)."""
+        ``said_seq`` of his real message; while on, every new ``note`` wakes the voice (``strategist_note``).
+        ``ask`` of the pilot: a question for its own body (``from:"pilot"``), the leave of its calls.
+        ``perm`` (with ``ask``): the permission keys the question asks for; the owner's «да» lifts only
+        these (for a call: ledger.CALL_LEAVE_USES calls within ledger.APPROVED_MAX_AGE); the voice
+        reads them to the owner with the question.
+        ``scale`` (the voice): the owner's «запусти / добавь / убери N помощников» — ``n`` (clamped to
+        1..5) and ``tasks`` [{to?, text}]; only within 2 minutes of a message of the owner."""
         a = {"action": action, "package": package, "id": id, "rev": rev, "text": text, "on": on,
-             "said_seq": said_seq, "order": order}
+             "said_seq": said_seq, "order": order, "n": n, "tasks": tasks, "perm": perm}
 
         async def run(h):
-            act = V.enum("list", "put", "cancel", "resume", "note", "ask", "thoughts")("action", action)
+            act = V.enum("list", "put", "cancel", "resume", "note", "ask", "thoughts", "scale")("action", action)
+            if perm is not None and act != "ask":
+                raise V.bad("perm", "only with action=ask")
+            if act != "scale":
+                for f, v in (("n", n), ("tasks", tasks)):
+                    if v is not None:
+                        raise V.bad(f, "only with action=scale")
             led = self.ledger()
             # notes, questions and the thoughts switch belong to the scope: one set for the shared
             # strategist and voice (roles.SHARED), else the helper's own
             side = self._scope(h)
             shared = self._shared()
+            if act == "scale":
+                for f, v in (("package", package), ("id", id), ("rev", rev), ("text", text), ("on", on),
+                             ("said_seq", said_seq), ("order", order)):
+                    if v is not None:
+                        raise V.bad(f, "not with action=scale")
+                if n is None:
+                    raise V.bad("n", "required: how many helpers the owner wants (1..5)")
+                cnt, clamped = V.rescale_n("n", n)
+                tl = V.rescale_tasks("tasks", tasks)
+                said = await self._recent_owner_said()
+                if said is None:
+                    raise PartnerError("bad_args", "scale: only on a message of the owner of the last 2 "
+                                                   "minutes («запусти / добавь / убери N помощников»)")
+                if said in self._scale_used:
+                    raise PartnerError("bad_args", "scale: this message of the owner already asked for a "
+                                                   "restart; wait for his next one")
+                self._scale_used[said] = None
+                while len(self._scale_used) > ORDER_MEMORY:
+                    self._scale_used.popitem(last=False)
+                r = self._set_rescale(cnt, tl, "chat", said)
+                out = {"rescale": {"n": r["n"], "tasks": r["tasks"], "from": "chat"},
+                       "helpers_now": len(self.helper_ids())}
+                if clamped:
+                    out["clamped"] = True
+                return self._stamp(out)
             if act == "thoughts":
                 for f, v in (("package", package), ("id", id), ("rev", rev), ("text", text)):
                     if v is not None:
@@ -1399,19 +1570,28 @@ class Core:
                 tick = self.bridge.last_tick
                 if act == "note":
                     t = V.check_line("text", text, L.NOTE_MAX)
-                    n = led.mutate(lambda d: L.set_note(d, side, t, tick))
-                    if L.thoughts_on(led.data(), side):
+                    nt = led.mutate(lambda d: L.set_note(d, side, t, tick))
+                    if L.thoughts_on(led.data(), side, self._thoughts_default()):
                         self.packages.note_event(side, t)
-                    return self._stamp({"note": n})
+                    return self._stamp({"note": nt})
                 t = V.check_line("text", text, L.QUESTION_MAX)
                 oid = None
                 if order is not None:
                     if not isinstance(order, str) or not V.ORDER_ID_RE.match(order):
                         raise V.bad("order", "must be an order id from partner_inbox (o<N>)")
                     oid = order
-                q = led.mutate(lambda d: L.ask(d, side, t, tick, oid))
-                self.packages.notify(side, "strategist_question", {"id": q["id"], "text": q["text"]},
-                                     roles=(R.VOICE,))
+                asker = "pilot" if self._role() == R.PILOT else None
+                keys = S.perm_keys("perm", perm) if perm is not None else None
+                if keys:
+                    # the owner hears what his «да» allows: the keys go into the question's text
+                    t = t + S.ask_suffix(keys)
+                q = led.mutate(lambda d: L.ask(d, side, t, tick, oid, asker, keys))
+                info = {"id": q["id"], "text": q["text"]}
+                if keys:
+                    info["perm"] = keys
+                if asker:
+                    info.update({"from": asker, "helper": h})
+                self.packages.notify(side, "strategist_question", info, roles=(R.VOICE,))
                 return self._stamp({"question": q,
                                     "open": len(L.open_questions(led.data(), side))})
             if text is not None:
@@ -1442,10 +1622,15 @@ class Core:
                 if package is None:
                     raise V.bad("package", "required for action=put")
                 clean = V.check_package(package)
+                denied = S.denied_step(await self.settings(), clean["steps"])
+                if denied is not None:
+                    i, do, k = denied
+                    raise PartnerError(OWNER_FORBIDS, f"steps[{i}] ({do}): " + S.forbids_text(k)
+                                       + "; убери этот шаг или скажи хозяину", {"perm": k})
                 if "approved" in clean:
                     # the owner's leave to take from him: an answered question about this order
                     otick = self._order_tick(clean["order"])
-                    why = L.leave_problem(led.data(), side, clean, otick)
+                    why = L.leave_problem(led.data(), side, clean, otick, max_age=L.PACKAGE_LEAVE_MAX_AGE)
                     if why is not None:
                         raise PartnerError("bad_args", why)
                     clean["leave_scope"] = side
@@ -1478,6 +1663,147 @@ class Core:
             p = led.mutate(resume)
             return self._stamp({"package": p, "rev": led.data()["rev"]})
         return await self._tool("partner_ledger", helper, key, a, run)
+
+    async def _recent_owner_said(self) -> int | None:
+        """Seq of the owner's last message (player_said, owner:true) of the last
+        SCALE_SAID_MAX_AGE ticks in this timeline, read from the mod; None — there is none."""
+        top = self.bridge.last_seq if _is_int(self.bridge.last_seq) else 0
+        cur = max(self.start_seq or 0, top - EVENTS_LIMIT)
+        best = None
+        now_tick = self.bridge.last_tick
+        for _ in range(3):
+            data = await self._mod("events", {"since": cur, "limit": EVENTS_LIMIT}, None)
+            evs = [e for e in _as_list(data.get("events")) if isinstance(e, dict) and _is_int(e.get("seq"))
+                   and e["seq"] > cur]
+            if _is_int(data.get("tick")):
+                now_tick = data["tick"]
+            for ev in evs:
+                cur = max(cur, ev["seq"])
+                d = ev.get("data")
+                if (ev.get("kind") == "player_said" and isinstance(d, dict) and d.get("owner") is True
+                        and ev["seq"] > (self.start_seq or 0)):
+                    best = ev
+            if not data.get("more") or not evs:
+                break
+        if best is None:
+            return None
+        if _is_int(self.bridge.last_tick) and (not _is_int(now_tick) or self.bridge.last_tick > now_tick):
+            now_tick = self.bridge.last_tick
+        if _is_int(now_tick) and _is_int(best.get("tick")) and now_tick - best["tick"] > SCALE_SAID_MAX_AGE:
+            return None
+        return best["seq"]
+
+    def _set_rescale(self, n: int, tasks: list, src: str, seq: int | None) -> dict:
+        """Record the owner's request to restart on ``n`` helpers and wake every role: each finishes
+        its shift; the dispatcher (key host) restarts them (partner_rescale)."""
+        tick = self.bridge.last_tick
+        r = self.ledger().mutate(lambda d: L.set_rescale(d, n, tasks, src, tick, seq))
+        ev = {"seq": self.bridge.last_seq, "tick": tick, "helper": None, "kind": "rescale", "loud": True,
+              "data": {"n": r["n"], "tasks": r["tasks"], "from": src}}
+        for k in list(self.cursors):
+            if k[1] in R.ROLES:
+                self._notice(k, json.loads(json.dumps(ev)))
+        return r
+
+    async def op_rescale(self, helper, key, action="get") -> dict:
+        """``partner_rescale`` (the dispatcher, key host): ``get`` — the owner's open request to
+        restart the roles on ``n`` helpers (``rescale`` null — none); ``done`` — the restart is
+        made, the request goes (every role's partner_brief stops showing it)."""
+        a = {"action": action}
+
+        async def run(h):
+            act = V.enum("get", "done")("action", action)
+            led = self.ledger()
+            if act == "get":
+                r = L.rescale_of(led.data())
+            else:
+                r = led.mutate(L.clear_rescale)
+            out: dict = {"rescale": None if r is None else
+                         {k: r.get(k) for k in ("n", "tasks", "from", "tick")},
+                         "helpers_now": len(self.helper_ids())}
+            if act == "done":
+                out["done"] = r is not None
+            return self._stamp(out)
+        return await self._tool("partner_rescale", helper, key, a, run)
+
+    # ================================================================ the owner's window (owner_panel)
+    def _on_panel(self, ev: dict) -> None:
+        """``owner_panel`` (the mod sends it only when the owner himself presses his window): the
+        server acts on it once per event — thoughts and AUTO for every helper, scale as the request
+        to restart; combat, hold and resume only show in partner_brief.work."""
+        seq = ev.get("seq")
+        if ev.get("kind") != "owner_panel" or ev.get("helper") is not None or not _is_int(seq):
+            return
+        if seq <= (self.start_seq or 0) or seq in self._panel_seen:
+            return
+        self._panel_seen[seq] = None
+        while len(self._panel_seen) > PANEL_MEMORY:
+            self._panel_seen.popitem(last=False)
+        p = V.panel_event(ev.get("data"))
+        if p is None:
+            log.info("owner_panel %s: malformed, dropped", seq)
+            return
+        entry = dict(p, at=L.now())
+        try:
+            self._panel_apply(p, seq, entry)
+        except PartnerError as e:
+            entry["refused"] = e.code
+            log.info("owner_panel %s (%s): %s", seq, p["action"], e.code)
+        self._panel_log.append(entry)
+        del self._panel_log[:-PANEL_KEEP]
+
+    def _panel_apply(self, p: dict, seq: int, entry: dict) -> None:
+        act = p["action"]
+        if act == "thoughts":
+            scopes = [R.SHARED] + self.helper_ids()
+
+            def fn(d):
+                for sc in scopes:
+                    L.set_thoughts(d, sc, p["on"])
+            self.ledger().mutate(fn)
+            if not p["on"]:
+                for sc in scopes:
+                    self.packages.drop_pending_note(sc)
+        elif act == "auto":
+            self._panel_auto(p, entry)
+        elif act == "scale":
+            self._set_rescale(p["n"], [], "panel", seq)
+
+    def _panel_auto(self, p: dict, entry: dict) -> None:
+        """The AUTO switch of the window: the press is the owner's own consent (no «да» asked), but
+        his setting perm-auto «нельзя» wins."""
+        save = getattr(self, "_notes_save", None) or savenotes.save_name(self.cfg)
+        cur = savenotes.auto_state(save)
+        if not p["on"]:
+            if cur["on"]:
+                savenotes.op(save, "rules", "remove", n=cur["rule"])
+            return
+        if S.perm(self._settings, "auto") == "deny":
+            entry["why"] = S.forbids_text("auto")
+            raise PartnerError(OWNER_FORBIDS, S.forbids_text("auto"))
+        goal = p.get("goal")
+        text = savenotes.clean_rule(f"AUTO: {goal}" if goal else "AUTO")
+        if cur["on"]:
+            if cur["goal"] == (goal or None):
+                return
+            savenotes.op(save, "rules", "remove", n=cur["rule"])
+        savenotes.op(save, "rules", "add", text, quote="кнопка AUTO в окне помощников")
+
+    async def panel_poll(self) -> None:
+        """Read the owner's presses even when no role waits (the package bridge's loop)."""
+        await self._ensure_started()
+        cur = self._panel_cursor if self._panel_cursor is not None else (self.start_seq or 0)
+        # a page fetched after this call began: the owner's press must not wait for a stale one
+        data = await self.poller.events(R.SHARED, cur, EVENTS_LIMIT, 5.0, after=self.poller.ticket())
+        evs = sorted((e for e in _as_list(data.get("events")) if isinstance(e, dict) and _is_int(e.get("seq"))
+                      and e["seq"] > cur), key=lambda e: e["seq"])
+        for ev in evs:
+            cur = ev["seq"]
+            if ev.get("kind") == "owner_panel":
+                self._on_panel(ev)
+        if not data.get("more") and _is_int(data.get("seq")) and data["seq"] > cur:
+            cur = data["seq"]
+        self._panel_cursor = cur
 
     def _order_tick(self, oid: str) -> int | None:
         """The tick of the owner's order ``oid`` (open or lately taken, in any inbox); None — unknown."""
@@ -1581,6 +1907,8 @@ class Core:
                     if ev["seq"] <= cursor:
                         continue
                     cursor = ev["seq"]
+                    if ev.get("kind") == "owner_panel":
+                        self._on_panel(ev)
                     how = R.keep(role, ev)
                     if how is None:
                         continue        # not this role's event: passed over
@@ -1794,6 +2122,11 @@ class Core:
     async def admin_hello(self) -> dict:
         resp = await self.bridge.request("hello")
         return _admin_result(resp)
+
+    async def admin_settings(self) -> dict:
+        """op ``settings``: the owner's settings of the mod as the mod sends them (launch.py reads
+        ``agents`` from it)."""
+        return _admin_result(await self.bridge.request("settings"))
 
     async def admin_spawn(self, helper: str) -> dict:
         if not isinstance(helper, str) or not HELPER_RE.match(helper):

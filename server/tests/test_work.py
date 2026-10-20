@@ -198,8 +198,8 @@ async def test_question_reaches_the_voice_and_the_answer_the_strategist(core, fa
 
 
 async def test_question_rights_and_limits(core, fake, body, clock):
-    for key in (VKEY, KEY):
-        assert (await refused(core.op_ledger("h1", key, "ask", text="?"))).code == "not_allowed"
+    # the voice asks nothing itself; the pilot asks for its own body (settings «спросить»)
+    assert (await refused(core.op_ledger("h1", VKEY, "ask", text="?"))).code == "not_allowed"
     assert (await refused(core.op_ledger("h1", SKEY, "ask", text="?" * 201))).code == "limit"
     for i in range(L.QUESTIONS_OPEN_MAX):
         await core.op_ledger("h1", SKEY, "ask", text=f"вопрос {i}")

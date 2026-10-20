@@ -16,6 +16,7 @@
 --   (больше сетка, затем больше занятых модулями клеток) тем же `swap_stack`. Зовут pickup трупа
 --   и рефлекс возрождения (scripts/reflexes/death.lua).
 local inv = require("scripts.lib.inventory")
+local perms = require("scripts.core.perms")
 
 local M = {}
 
@@ -263,6 +264,7 @@ end
 --- как `equip`). → {equipped = имя, armor = сводка} │ nil (слот занят, брони нет, игра не дала).
 function M.auto_wear(h)
   if h == nil or not h.valid then return nil end
+  if not perms.combat().auto_armor then return nil end -- настройка мода partner-auto-armor
   local slot = M.slot(h)
   if slot == nil or slot.valid_for_read then return nil end
   local st = M.best_in_pockets(h)

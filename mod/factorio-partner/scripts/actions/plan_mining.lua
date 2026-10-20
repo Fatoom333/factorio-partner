@@ -29,8 +29,16 @@ local adapter = require("scripts.vendor.mpp.partner.adapter")
 local access = require("scripts.perception.access")
 local tiles = require("scripts.perception.tiles")
 
+local perms = require("scripts.core.perms")
+
 local M = {}
 M.name = "plan_mining"
+
+--- Разрешения хозяина (scripts/core/perms.lua): какие ключи задевают эти аргументы.
+function M.perms(a, ctx)
+  if a.dry_run then return {} end
+  return { "perm-build" }
+end
 M.schema = {
   resource = { type = "string", max = 100 },
   area = { type = "area" },

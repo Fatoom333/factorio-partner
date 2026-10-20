@@ -19,6 +19,12 @@ export const meta = {
 //   budget_stop?: true — сторож лимита: петля стратега не начинает новую смену,
 //   max_shifts?: предел смен одной петли (по умолчанию 24, не больше 200)
 //   host?: {key, …} — ключ диспетчера из launch.py: сценарий его агентам не передаёт, только вычищает
+//   strategist_model?: 'sonnet' | 'opus' (по умолчанию 'sonnet'),
+//   rescaling?: true — запуск сделан по запросу перезапуска (brief.rescale ещё не снят): в первой смене роли
+//   его не закрывают
+// Хозяин попросил другое число помощников (brief.rescale): каждая роль кончает смену строкой «СМЕНА: масштаб»
+// (+ «Масштаб: <n>», «Задания: <JSON>»); когда кончили все, сценарий возвращает {rescale:{n,tasks}} и сам
+// смены не перезапускает — диспетчер запускает launch.py заново (README, «Перезапуск на другое число»).
 const cfg = args && typeof args === 'object' ? args : {}
 const ID_RE = /^[a-z0-9_-]{1,16}$/
 const HELPERS_MAX = 16
@@ -26,6 +32,10 @@ const ROLE_NAMES = ['voice', 'pilot', 'strategist']
 const AGENT_TYPES = { voice: 'partner-voice', pilot: 'partner-pilot', strategist: 'partner-strategist' }
 const ROLE_LABELS = { voice: 'голос', pilot: 'пилот', strategist: 'стратег' }
 const PILOT_MODELS = ['sonnet', 'haiku']
+const STRATEGIST_MODELS = ['sonnet', 'opus']
+const HELPERS_RESCALE_MAX = 5
+const TASKS_MAX = 5
+const TASK_TEXT_MAX = 300
 
 function promptOf(entry) {
   return entry && typeof entry === 'object' && typeof entry.prompt === 'string' && entry.prompt ? entry.prompt : null
@@ -71,7 +81,10 @@ if (shared) {
 }
 const pilotModel = cfg.pilot_model == null ? 'sonnet' : cfg.pilot_model
 if (!PILOT_MODELS.includes(pilotModel)) throw new Error("args.pilot_model: 'sonnet' или 'haiku'")
-const MODELS = { voice: 'haiku', pilot: pilotModel, strategist: 'sonnet' }
+const strategistModel = cfg.strategist_model == null ? 'sonnet' : cfg.strategist_model
+if (!STRATEGIST_MODELS.includes(strategistModel)) throw new Error("args.strategist_model: 'sonnet' или 'opus'")
+const MODELS = { voice: 'haiku', pilot: pilotModel, strategist: strategistModel }
+const rescaling = cfg.rescaling === true
 const MAX_SHIFTS = Number.isInteger(cfg.max_shifts) && cfg.max_shifts > 0 ? Math.min(cfg.max_shifts, 200) : 24
 const NOTES_MAX = 1500
 const budgetStop = cfg.budget_stop === true
@@ -93,9 +106,13 @@ const LINK_LOST_RE = /(связ\S*\s+пропал|нет\s+связи|связ[�
 const LINK_RETRIES = 3
 const pilots = loops.filter(l => l.role === 'pilot').length
 let bodiesLost = 0
+let rescale = null        // {n, tasks}: запрос перезапуска, увиденный в brief
 
 function shiftPrompt(prompt, shift, notes, cursor) {
   const lines = [prompt]
+  if (rescaling && shift === 1) {
+    lines.push('', 'Перезапуск на новое число помощников уже идёт: brief.rescale в этой смене не закрывай, он снимется сам.')
+  }
   if (cursor != null) {
     lines.push('', `Курсор событий: ${cursor} — первый partner_wait вызови с since=${cursor}.`)
   }
@@ -108,7 +125,7 @@ function shiftPrompt(prompt, shift, notes, cursor) {
 
 // Последний ответ смены: «СМЕНА: стоп | дальше» (раздел «Конец смены» правил ролей).
 function verdict(text) {
-  const m = /^СМЕНА:\s*(стоп|дальше)/im.exec(text || '')
+  const m = /^СМЕНА:\s*(стоп|дальше|масштаб)/im.exec(text || '')
   return m ? m[1].toLowerCase() : 'дальше'
 }
 
@@ -116,6 +133,30 @@ function verdict(text) {
 function cursorOf(text, prev) {
   const m = /^Курсор:\s*(\d{1,12})\b/im.exec(text || '')
   return m ? Number(m[1]) : prev
+}
+
+// «Масштаб: <n>» и «Задания: <JSON>» из итога смены, закрытой по brief.rescale. Это слова агента, то есть данные:
+// n зажимается в 1..5, из заданий берутся только to и text (строки, text ≤ 300), заданий не больше 5.
+// Диспетчер сверяет их с partner_rescale{action:"get"}.
+function rescaleOf(text) {
+  const m = /^Масштаб:\s*(\d{1,2})\b/im.exec(text || '')
+  if (!m) return null
+  const n = Math.min(Math.max(Number(m[1]), 1), HELPERS_RESCALE_MAX)
+  let tasks = []
+  const t = /^Задания:\s*(\[.*\])\s*$/im.exec(text || '')
+  if (t) {
+    try {
+      const raw = JSON.parse(t[1])
+      if (Array.isArray(raw)) {
+        tasks = raw.filter(x => x && typeof x === 'object' && typeof x.text === 'string' && x.text)
+          .slice(0, TASKS_MAX)
+          .map(x => (typeof x.to === 'string' && ID_RE.test(x.to)
+            ? { to: x.to, text: x.text.slice(0, TASK_TEXT_MAX) }
+            : { text: x.text.slice(0, TASK_TEXT_MAX) }))
+      }
+    } catch (e) { tasks = [] }
+  }
+  return { n, tasks }
 }
 
 function redact(text) {
@@ -176,6 +217,13 @@ async function loop(l) {
     } else {
       linkFails = 0
     }
+    if (verdict(out) === 'масштаб') {
+      // хозяин попросил другое число помощников: смена закрыта, перезапуск решает диспетчер
+      const r = rescaleOf(out)
+      if (r && (!rescale || r.tasks.length > rescale.tasks.length)) rescale = r
+      if (!rescale) rescale = { n: null, tasks: [] }
+      return result(l, shift, 'масштаб', notes)
+    }
     if (verdict(out) === 'стоп') {
       // «стоп» голоса — конец для всех; стоп стратега или пилота кончает только их петлю, если
       // причина не общая (связь, хозяин отпустил); пропало тело — кончается петля этого пилота
@@ -195,7 +243,7 @@ async function run(l) {
   const r = await loop(l)
   if (l.role === 'pilot' && !single) {
     pilotsLeft--
-    if (pilotsLeft <= 0 && !allStop) {
+    if (pilotsLeft <= 0 && !allStop && !rescale) {
       log('пилотов не осталось — голос и стратег заканчивают')
       allStop = true
     }
@@ -203,6 +251,10 @@ async function run(l) {
   return r
 }
 const results = (await parallel(loops.map(l => () => run(l)))).filter(Boolean)
+if (rescale && !allStop) {
+  log('запрос на другое число помощников — смены закрыты, перезапуск за диспетчером')
+  return { rescale, pilot_model: pilotModel, strategist_model: strategistModel, roles: results }
+}
 return single
   ? { helper: single, pilot_model: pilotModel, roles: results }
   : { helpers: all.map(h => h.id), pilot_model: pilotModel, roles: results }

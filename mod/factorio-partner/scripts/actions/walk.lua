@@ -6,8 +6,16 @@
 local owner = require("scripts.core.owner")
 local util = require("scripts.core.util")
 
+local perms = require("scripts.core.perms")
+
 local M = {}
 M.name = "walk"
+
+--- Разрешения хозяина (scripts/core/perms.lua): какие ключи задевают эти аргументы.
+function M.perms(a, ctx)
+  if type(a.to) == "table" and perms.too_far(ctx, a.to) then return { "perm-walk-far" } end
+  return {}
+end
 M.schema = {
   to = { type = { "pos", "string" }, values = { "player" }, required = true },
   radius = { type = "number", min = 0, max = 64, default = 1 },

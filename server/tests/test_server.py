@@ -16,8 +16,10 @@ AGENT_TOOLS = {"partner_brief", "partner_state", "partner_map", "partner_resourc
                "partner_ghosts", "partner_rates", "partner_act", "partner_cancel", "partner_wait",
                "partner_reflex", "partner_say", "partner_plan", "partner_recipes", "partner_find",
                "partner_access", "partner_supply", "partner_lookup", "partner_notes", "partner_status",
-               "partner_hold", "partner_order", "partner_inbox", "partner_ledger", "partner_relay"}
-ADMIN_TOOLS = {"admin_hello", "admin_spawn", "admin_remove", "admin_raw_events", "admin_limit", "admin_attach"}
+               "partner_hold", "partner_order", "partner_inbox", "partner_ledger", "partner_relay",
+               "partner_rescale"}
+ADMIN_TOOLS = {"admin_hello", "admin_spawn", "admin_remove", "admin_raw_events", "admin_limit", "admin_attach",
+               "admin_settings"}
 
 
 def _payload(result):

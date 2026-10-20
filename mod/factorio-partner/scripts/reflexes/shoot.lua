@@ -17,6 +17,8 @@
 -- Честно: только то, что делает игрок кнопками (выбор ствола, стрельба по точке); патроны тратит движок.
 local util = require("scripts.core.util")
 local events = require("scripts.core.events")
+local perms = require("scripts.core.perms")
+local core_reflexes = require("scripts.core.reflexes")
 local C = require("scripts.reflexes.common")
 
 local M = {}
@@ -103,9 +105,29 @@ local function stop(entity, st)
   end
 end
 
+--- Дальность червя (враждебной турели) из игры или 0.
+local function worm_range(name)
+  local ok, r = pcall(function() return prototypes.entity[name].attack_parameters.range end)
+  return (ok and type(r) == "number") and r or 0
+end
+
+--- Цели с учётом perm-attack-nests: «сам» — и гнёзда, и черви; «спросить» — так же, только если рефлекс
+--- включили с разрешением хозяина на гнёзда (core/reflexes.lua nests_leave); «нельзя» — ни гнёзд, ни червей, кроме червя, в радиусе которого тело стоит.
+local function targets(id, entity, params)
+  local mode = perms.get("perm-attack-nests")
+  local nests = mode == "auto" or (mode == "ask" and core_reflexes.nests_leave(id))
+  local list = C.enemies(entity, params.radius, nests and C.SEEN or nil)
+  if nests then return list end
+  local out = {}
+  for _, t in ipairs(list) do
+    if t.type ~= "turret" or t.dist <= worm_range(t.name) then out[#out + 1] = t end
+  end
+  return out
+end
+
 function M.check(id, entity, params, tick)
   local st = C.body_state(id, entity)
-  local list = C.enemies(entity, params.radius)
+  local list = targets(id, entity, params)
   for _, target in ipairs(list) do
     local i, gun = pick_gun(entity, params, target, target.dist)
     if i ~= nil then

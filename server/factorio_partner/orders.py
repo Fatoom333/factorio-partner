@@ -23,6 +23,9 @@ packages for the new order are done — or from the last run of steps that bring
 collect, extract) before it, when there is one (``validate.restart_step``). A new
 package (``put``) always starts from its first step.
 
+A package put with the owner's leave (``order`` + ``approved``, checked again when it goes) runs as a
+plan with ``owner_ok``: its steps the owner's settings put at «спросить» are allowed by that leave.
+
 The bridge changes nothing in the game that an agent could not: it only queues ``plan`` jobs of
 ordinary actions, cancels them and reads — honesty rules of PROTOCOL §6 hold for every step.
 """
@@ -161,6 +164,16 @@ class PackageBridge:
                 raise
             except Exception:  # noqa: BLE001
                 log.exception("package bridge step failed")
+            try:
+                # the owner's settings and his presses in the window, even while no role calls
+                await self.core.settings()
+                await self.core.panel_poll()
+            except asyncio.CancelledError:
+                raise
+            except PartnerError as e:
+                log.info("settings / owner panel: %s", e.code)
+            except Exception:  # noqa: BLE001
+                log.exception("settings / owner panel failed")
             await asyncio.sleep(interval)
 
     def on_reload(self) -> None:
@@ -193,7 +206,7 @@ class PackageBridge:
             if L.now() - self._note_sent.get(h, -1e12) < NOTE_EVERY:
                 continue
             text = self._note_pending.pop(h)
-            if L.thoughts_on(self.ledger().data(), h):
+            if L.thoughts_on(self.ledger().data(), h, self.core._thoughts_default()):
                 self.note_event(h, text)
 
     def remind_questions(self) -> None:
@@ -201,8 +214,10 @@ class PackageBridge:
         voice that has called the server: until then it sees the question in partner_brief)."""
         led = self.ledger()
         qs = led.data().get("questions")
+        # a helper's questions (its strategist's or its pilot's) reach its own voice or the shared one
         names = [h for h, v in qs.items() if isinstance(v, list) and (h == R.SHARED or L.HELPER_RE.match(h))
-                 and (h, R.VOICE) in self.core.cursors] if isinstance(qs, dict) else []
+                 and ((h, R.VOICE) in self.core.cursors or (R.SHARED, R.VOICE) in self.core.cursors)] \
+            if isinstance(qs, dict) else []
         for h in names:
             t = L.now()
             if not any(not q.get("reminded") and isinstance(q.get("at"), (int, float))
@@ -528,12 +543,16 @@ class PackageBridge:
             # the file can be edited by hand: what goes to the mod is checked again, like any act
             leave = bool(p.get("approved")) and bool(p.get("order"))
             steps = V.package_steps("package.steps", p.get("steps"), approved=leave)
-            if V.needs_leave(steps):
-                # the owner's leave is checked again when the package goes, not only at put
+            owner_ok = None
+            if leave:
+                # the owner's leave is checked again when the package goes, not only at put, and
+                # lasts L.PACKAGE_LEAVE_MAX_AGE; it lifts only the keys its question asked for
                 scope = p.get("leave_scope") if p.get("leave_scope") in (h, R.SHARED) else h
-                why = L.leave_problem(self.ledger().data(), scope, p, p.get("order_tick"))
-                if why is not None:
+                data = self.ledger().data()
+                why = L.leave_problem(data, scope, p, p.get("order_tick"), max_age=L.PACKAGE_LEAVE_MAX_AGE)
+                if why is not None and V.needs_leave(steps):
                     raise PartnerError("bad_args", why)
+                owner_ok = L.package_leave_keys(data, scope, p) if why is None else None
             for i, c in enumerate(p.get("verify") or [], 1):
                 V.check_package_check(f"package.verify[{i}]", c)
             on_fail = V.enum("stop", "continue")("package.on_fail", p.get("on_fail", "stop"))
@@ -562,7 +581,9 @@ class PackageBridge:
                 args["blob"] = await self.core._upload_blob(text)
             else:
                 args["steps"] = mod_steps
-            data = await self.core._mod("act", {"do": "plan", "args": args, "replace": False}, h, mutating=True)
+            # owner_ok: the owner's leave, checked above — the mod allows the steps at «спросить»
+            data = await self.core._mod("act", {"do": "plan", "args": args, "replace": False}, h,
+                                        mutating=True, owner_ok=owner_ok)
         except PartnerError as e:
             if e.code == "owner_hold":
                 self._unclaim(p["id"], status=was)

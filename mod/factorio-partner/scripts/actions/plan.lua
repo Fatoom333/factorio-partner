@@ -27,6 +27,7 @@ local blobs = require("scripts.core.blobs")
 local registry = require("scripts.core.registry")
 local reserve = require("scripts.core.reserve")
 local jobs = require("scripts.core.jobs")
+local perms = require("scripts.core.perms")
 local inventory = require("scripts.lib.inventory")
 
 local M = {}
@@ -88,6 +89,9 @@ function M.check_args(a, ctx)
     if s.args ~= nil and type(s.args) ~= "table" then err.raise("bad_args", path .. ".args: expected object") end
     local sargs = schema.validate(mod.schema or {}, s.args or {}, path .. ".args")
     if mod.check_args ~= nil then sargs = mod.check_args(sargs, ctx) end
+    -- разрешения хозяина — на каждый шаг (scripts/core/perms.lua)
+    local pcode, ptext, pdata = perms.check(mod, sargs, ctx)
+    if pcode ~= nil then err.raise(pcode, "шаг " .. i .. ": " .. ptext, pdata) end
     s.args = sargs
   end
   if a.from_step ~= nil and a.from_step > #steps then
@@ -188,6 +192,7 @@ local function begin_next(task, ctx)
   local sub = {
     job = task.job, helper = task.helper, ["do"] = step["do"], args = util.copy(step.args or {}),
     req = task.req, created_tick = task.created_tick, started_tick = ctx.tick, plan_step = task.i,
+    perm_gate = task.perm_gate, owner_ok = task.owner_ok,
   }
   task.cur = sub
   if mod == nil then

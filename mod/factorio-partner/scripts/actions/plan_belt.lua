@@ -44,8 +44,16 @@
 local beltpath = require("scripts.lib.beltpath")
 local vis = require("scripts.core.vis")
 
+local perms = require("scripts.core.perms")
+
 local M = {}
 M.name = "plan_belt"
+
+--- Разрешения хозяина (scripts/core/perms.lua): какие ключи задевают эти аргументы.
+function M.perms(a, ctx)
+  if a.dry_run then return {} end
+  return { "perm-build" }
+end
 M.schema = {
   from = { type = { "pos", "string" }, values = { "patch", "resume" }, required = true },
   to = { type = "pos" },                         -- обязателен, кроме from = "resume"
@@ -1020,6 +1028,11 @@ function M.tick(task, ctx)
     result = search_tick(B, env)
   elseif B.stage == "scan" then
     result = scan_tick(B, env, ctx)
+    if result == nil and B.stage == "place" and not B.dry then
+      -- трата: по предмету на клетку разметки (perm-spend; по задаче: perm_gate и owner_ok)
+      local pcode, ptext, pdata = perms.refusal(perms.add_spend({}, #B.flat), task)
+      if pcode ~= nil then result = failed(pcode, ptext, pdata) end
+    end
   else
     result = place_tick(B, env, ctx)
   end

@@ -9,6 +9,7 @@ M.CODES = {
   not_found = true, not_reachable = true, no_items = true, cannot_place = true,
   not_charted = true, not_visible = true, reserved = true, path_failed = true, stuck = true, no_space = true,
   cancelled = true, owner_hold = true, too_large = true, internal = true,
+  owner_forbids = true, needs_owner_ok = true,
 }
 
 local MAX_TEXT = 300
@@ -36,9 +37,9 @@ function M.clean_text(text)
   return M.utf8_trunc(s, MAX_TEXT)
 end
 
-function M.raise(code, text)
+function M.raise(code, text, data)
   if not M.CODES[code] then code = "internal" end
-  error({ partner_error = true, code = code, text = text or code }, 0)
+  error({ partner_error = true, code = code, text = text or code, data = data }, 0)
 end
 
 function M.is(e) return type(e) == "table" and e.partner_error == true end
@@ -56,11 +57,11 @@ end
 
 function M.module_errors() return module_errors end
 
---- Ошибка (что угодно из pcall) -> code, text.
+--- Ошибка (что угодно из pcall) -> code, text, data (data — необязательные поля ответа, например {perm}).
 function M.normalize(e)
   if M.is(e) then
     local code = M.CODES[e.code] and e.code or "internal"
-    return code, M.clean_text(e.text or code)
+    return code, M.clean_text(e.text or code), type(e.data) == "table" and e.data or nil
   end
   return "internal", M.clean_text(e)
 end

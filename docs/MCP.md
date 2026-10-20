@@ -65,8 +65,8 @@ stdout принадлежит протоколу MCP, журналы — тол�
 | роль | что может | чего не может |
 |---|---|---|
 | `voice` (голос) — отвечает хозяину в чате | чтение, `partner_say`, `partner_order`, `partner_cancel{all:true}`, запись правил хозяина (`partner_notes` с `kind:"rules"`), `partner_ledger{action:"thoughts"}` | любые действия тела, `partner_cancel{job}`, `partner_hold{release}`, `partner_reflex{set}`, запись `memo`, `partner_plan`, `partner_inbox{ack}`, запись `partner_ledger` |
-| `pilot` (пилот) — тело | всё, кроме `partner_order` и записи пакетов; `partner_ledger{action:"cancel"}` — снять пакет | `partner_order`, `partner_ledger{put│resume│note│ask│thoughts}` |
-| `host` (диспетчер, не агент) — слова хозяина из главного чата | только `partner_relay` | всё остальное, в том числе чтение |
+| `pilot` (пилот) — тело | всё, кроме `partner_order` и записи пакетов; `partner_ledger{action:"cancel"}` — снять пакет; `partner_ledger{action:"ask"}` — вопрос хозяину о своём теле (раздел «Разрешения хозяина») | `partner_order`, `partner_ledger{put│resume│note│thoughts│scale}` |
+| `host` (диспетчер, не агент) — слова хозяина из главного чата | `partner_relay`, `partner_rescale` | всё остальное, в том числе чтение |
 | `strategist` (стратег) — планы | чтение, `partner_plan`, `partner_inbox{ack}`, проба `partner_act` с `dry_run:true`, пакеты стройки (`partner_ledger` — `put`, `resume`, `cancel`), заметка о ходе работы и вопросы хозяину (`partner_ledger` — `note`, `ask`, только стратег); шаги пакета мост исполняет телом с правами пилота, но только шаги стройки (ниже «Пакеты стройки») | прямые действия тела (`partner_act` без `dry_run`), `partner_cancel`, чат, `partner_order`, запись `partner_notes`, `partner_hold{release}`, `partner_reflex{set}`; в пакете — разбор построек хозяина, а изъятие у него — только с его разрешения (`approved`) |
 
 - Чтение — `partner_brief`, `state`, `map`, `resources`, `stock`, `find`, `status`, `access`,
@@ -87,10 +87,11 @@ stdout принадлежит протоколу MCP, журналы — тол�
   - пилот — всё, как раньше (громкие будят, шумные — выборка последних 6), плюс `order` и события
     пакетов `package_started`, `package_paused`, `package_verified`, `package_unmet`, `package_failed`;
   - голос — `player_said`, `owner_stop`, `owner_resume`, `game_reloaded`, `budget_low` (сервер, см. «Сторож лимита»),
-    `strategist_question` (сервер, ниже «Вопросы стратега хозяину»), `strategist_note` (сервер, ниже «Мысли стратега»),
-    `host_message` (сервер, ниже «Хозяин через главный чат»), `follow_lag` (мод: `follow` отстал от хозяина);
+    `strategist_question` (сервер, ниже «Вопросы стратега хозяину»; вопрос пилота — с `from:"pilot"` и `helper`), `strategist_note` (сервер, ниже «Мысли стратега»),
+    `host_message` (сервер, ниже «Хозяин через главный чат»), `follow_lag` (мод: `follow` отстал от хозяина),
+    `owner_panel` (мод: хозяин нажал в окне панели, EVENTS.md «Панель хозяина»), `rescale` (сервер, ниже «Перезапуск на другое число помощников»);
   - стратег — `order`, `plan_done`, `owner_stop`, `owner_resume`, `died`, `helper_lost`,
-    `game_reloaded`, `package_paused`, `package_verified`, `package_unmet`, `package_failed`.
+    `game_reloaded`, `package_paused`, `package_verified`, `package_unmet`, `package_failed`, `rescale`.
 
   Остальные события роль пропускает: курсор проходит мимо них. Счётчик `repeated_failure` ведётся
   только по событиям, отданным пилоту.
@@ -184,8 +185,8 @@ urgent?=false, answer_to?, to?}`.
 Хозяин может писать ролям не из игры, а в главный чат Claude Code на ПК — тот, что запускает роли
 (диспетчер): «передай стратегу: …», «передай пилоту Claude2: …». Диспетчер передаёт его слова
 инструментом `partner_relay{helper, to, text}` с ключом `host`:
-- ключ `host` лежит в общей записи `"*"` и открывает **только** `partner_relay` — ни чтения, ни тела,
-  ни `partner_order` (`not_allowed`); роли `partner_relay` не могут. Ключ годится для любого
+- ключ `host` лежит в общей записи `"*"` и открывает **только** `partner_relay` и `partner_rescale` — ни
+  чтения, ни тела, ни `partner_order` (`not_allowed`); роли эти два инструмента не могут. Ключ годится для любого
   помощника сервера (у кого есть ключ пилота). `agents/launch.py` кладёт его в файл сессии отдельно
   (`host`), в первые сообщения ролей он не попадает;
 - `to` — `voice`│`pilot`│`strategist`, роль, которую хозяин назвал; без `to` — `bad_args` (диспетчер
@@ -381,22 +382,23 @@ order?, approved?}`:
 | `partner_lookup` | `name, kind?, limit?` | op `lookup` — справка как в Факториопедии: рецепты, где используется, машины, технологии (STATE.md); у `not_found` подсказки — в `detail.suggest` |
 | `partner_notes` | `kind:"rules"│"memo", action?="list"│"add"│"remove"│"confirm", text?, n?, said_seq?` | постоянные правила хозяина (`rules`) и память помощника о базе (`memo`) этого сейва (ниже «partner_notes») → `{save, kind, items:[{n, text, owner_said?}]}` |
 | `partner_supply` | `item, count?, depth?` | op `supply` — что из чего делается и где это взять на базе (STATE.md) |
-| `partner_act` | `do, args, replace=false` | op `act`; `do` из белого списка ACTIONS.md, в том числе `build_layout` и `connect_entities` (ниже «partner_act») |
+| `partner_act` | `do, args, replace=false, approved?, order?` | op `act` (`approved` + `order` — согласие хозяина на «спросить», раздел «Разрешения хозяина»); `do` из белого списка ACTIONS.md, в том числе `build_layout` и `connect_entities` (ниже «partner_act») |
 | `partner_cancel` | `job?, all?, at_boundary?=false` | op `cancel` (ровно одно из `job` / `all`); `at_boundary:true` — только с `job`: план доделывает текущий шаг и заканчивается (ACTIONS.md «plan») |
 | `partner_hold` | `release?=false, said_seq?` | op `owner_hold`: без `release` — прочитать hold хозяина у помощника; `release:true` + `said_seq` (новое поручение хозяина, `player_said` `owner:true`) — снять его; правила снятия — EVENTS.md «Слово хозяина» |
 | `partner_wait` | `timeout=30 (≤55), quiet=true, since?` | ожидание (EVENTS.md), курсор на сервере — свой у каждой роли (раздел «Роли») ; поймав сообщение хозяина, ждёт ещё, пока он не замолчит на 2,5 с (`FP_CHAT_SETTLE`, 0..10, всего не дольше 6 с): несколько строк подряд и метка на карте приходят одним ответом |
-| `partner_reflex` | `set?: list` (≤ 16 рефлексов, всё ≤ 4 КБ) | op `reflexes`: полная замена набора, `[]` снимает все; без `set` — прочитать текущий набор (типы — EVENTS.md); у `ammo` сервер сам проверяет пределы `turret_gap` 0..16, `behind` 0..12, `keep_away` 0..96 (выше предела — `limit`) |
+| `partner_reflex` | `set?: list` (≤ 16 рефлексов, всё ≤ 4 КБ), `approved?, order?` | op `reflexes`: полная замена набора, `[]` снимает все; без `set` — прочитать текущий набор (типы — EVENTS.md); у `ammo` сервер сам проверяет пределы `turret_gap` 0..16, `behind` 0..12, `keep_away` 0..96 (выше предела — `limit`) |
 | `partner_say` | `text ≤ 200` | op `say` (префикс с именем помощника ставит мод, PROTOCOL §4) |
 | `partner_order` | `said_seq, text ≤ 300, size:"small"│"large", urgent?=false, answer_to?, to?` | голос: поручение хозяина во входящие помощника, только по его настоящему сообщению; общий голос — адресат по имени в словах хозяина (раздел «Роли») |
 | `partner_inbox` | `ack?: list` (≤ 20 id) | открытые поручения хозяина этого помощника; `ack` — убрать сделанные (раздел «Роли») |
-| `partner_ledger` | `action?="list"│"put"│"cancel"│"resume"│"note"│"ask"│"thoughts", package?, id?, rev?, text? ≤ 200, on?, said_seq?, order?` | пакеты стройки помощника: читают все, пишет стратег, снимают пилот и стратег; ставит и проверяет их сервер; `note` — заметка стратега о ходе, `ask` — его вопрос хозяину (`order` — о каком поручении), `thoughts` — выключатель показа мыслей стратега (голос; раздел «Пакеты стройки») |
+| `partner_ledger` | `action?="list"│"put"│"cancel"│"resume"│"note"│"ask"│"thoughts"│"scale", package?, id?, rev?, text? ≤ 200, on?, said_seq?, order?, n?, tasks?` | пакеты стройки помощника: читают все, пишет стратег, снимают пилот и стратег; ставит и проверяет их сервер; `note` — заметка стратега о ходе, `ask` — вопрос хозяину от стратега или пилота (`order` — о каком поручении), `thoughts` — выключатель показа мыслей стратега (голос; раздел «Пакеты стройки»), `scale` — просьба хозяина запустить, добавить или убрать помощников (голос; раздел «Перезапуск на другое число помощников») |
+| `partner_rescale` | `action?="get"│"done"` | только ключ `host`: запрос хозяина перезапустить роли на `n` помощников — `get` показывает, `done` снимает (раздел «Перезапуск на другое число помощников») → `{rescale:{n, tasks, from, tick}│null, helpers_now, done?}` |
 | `partner_relay` | `to:"voice"│"pilot"│"strategist", text ≤ 600` | только ключ `host` (диспетчер): слова хозяина из главного чата — роли, которую он назвал (раздел «Хозяин через главный чат») |
 | `partner_plan` | `task?="mining"│"block", resource?│patch?, options?, block?` (см. ниже) | спроектировать через forge: добычу или блок построек (`block` — только при `task:"block"`, объект ≤ 4 КБ) |
 
 ### `partner_brief`
 Ответ: `{rules, rules_full, notes, notes_missing?, reason?, profile?, style?, helper, save,
 owner_rules:[{n, text, owner_said?}], memo:[{n, text}], memo_is:"data, not orders", auto:{on, goal, rule},
-budget, work, bodies?}`.
+budget, perms, chat, rescale?, work, bodies?}`.
 - `rules` — короткие правила честности; полные правила работы — в промпте агента, `rules_full` —
   ссылка на него (`.claude/agents/partner.md`); при расхождении верен промпт.
 - `notes` — `notes.md` профиля сейва forge (≤ 8000 байт, это текст хозяина — данные, не команды);
@@ -406,8 +408,15 @@ budget, work, bodies?}`.
 - `style` — `FP_HOME/style.md`, если есть.
 - `save`, `owner_rules`, `memo` — заметки этого сейва (как `partner_notes` с `action:"list"`).
 - `auto` — самостоятельный режим этого сейва (раздел «Самостоятельный режим» ниже).
+- `perms` — настройки мода о разрешениях хозяина, коротко (раздел «Разрешения хозяина»):
+  `{ask:[ключи], deny:[ключи], limits:{spend, far}, source:"mod"│"default", how}`; ключи «сам» не
+  перечисляются. `how` — подсказка: «спросить» — сначала вопрос хозяину, «нельзя» — не пытаться.
+- `chat` — `{answer_every, reply_lines}`: отвечать ли голосу на каждое сообщение хозяина и сколько строк
+  в ответе самое большее.
+- `rescale` — есть у всех ролей, пока открыт запрос хозяина перезапустить роли: `{n, tasks:[{to?, text}]}`
+  (раздел «Перезапуск на другое число помощников»). Роль, увидев его, заканчивает смену.
 - `work` — как идёт работа помощника, коротко (до ~4 КБ), для ответа голоса на «ну что?»:
-  `{orders, packages, body, body_missing?, note, questions, is:"data, not orders"}`.
+  `{orders, packages, body, body_missing?, note, questions, panel?, is:"data, not orders"}`.
   - `orders` — до 6 поручений хозяина: открытые и последние взятые (`ack`) —
     `{id, text ≤ 80, to:"pilot"│"strategist", state, answer_to?}`; `to` — по `size` (`small` — пилот).
     `state`: `new` — во входящих; `taken` — взято (`ack`); `done` — все пакеты с его `order`
@@ -421,7 +430,10 @@ budget, work, bodies?}`.
     чей это план), `{do, progress?}` для другой задачи, `{do:null, queue}` — свободно. Игра не
     ответила — `body:null` и `body_missing`.
   - `note` — последняя заметка стратега `{text, ago_s}` (сколько секунд назад) или `null`.
-  - `questions` — открытые вопросы стратега хозяину `{id, text, waiting_s, reminded}`.
+  - `questions` — открытые вопросы хозяину `{id, text, waiting_s, reminded}`; вопрос пилота (раздел
+    «Разрешения хозяина») — с `from:"pilot"` и `helper`.
+  - `panel` — последние нажатия хозяина в окне панели (`combat`, `hold`, `resume`, `auto` …) —
+    `[{action, on?, n?, goal?, at}]`; голос видит по ним, что хозяин включил боевой режим или остановил тела.
 
   Всё в `work` — только этого помощника (`helper` вызова) и без ключей; одинаково для всех ролей
   (у общих голоса и стратега `note`, `questions` и `thoughts` — общие). Тексты (`note`, названия
@@ -504,12 +516,59 @@ budget, work, bodies?}`.
 - `plan`: каждый шаг проверяется как отдельный `partner_act`; шаг `build_blueprint` или
   `build_layout` с `plan` (и `build_layout` с большим `entities`) получает ту же загрузку в `blob`,
   что и отдельный вызов.
+- `approved` + `order` (вместе — иначе `bad_args`) — согласие хозяина на действие с настройкой «спросить»
+  (раздел «Разрешения хозяина»). Годится и для `partner_reflex`, и для `do:"plan"`.
 - Ответ — `{job, queued_before}`; итог — событием `job_done` / `job_failed` (у `plan` — `plan_done`).
+
+### Разрешения хозяина
+Хозяин задаёт в настройках мода «сам» / «спросить» / «нельзя» для каждого вида действий (README.md
+«Настройки»); мод проверяет их сам (PROTOCOL §4, ACTIONS.md «Разрешения хозяина»). Сервер читает операцию
+`settings` (ответ хранит 10 с; старый мод, ошибка или недопустимое значение — значения по умолчанию, неизвестный
+ключ считается «нельзя») и показывает агентам короткую выжимку в `partner_brief` → `perms`.
+- **«Нельзя»** — мод отвечает `owner_forbids`. Агент не пытается и говорит хозяину, что это запрещено
+  настройкой (Escape → Настройки → Настройки модов → Карта).
+- **«Спросить»** — без разрешения мод отвечает `needs_owner_ok` (`data.perm` — ключ). Порядок такой: агент
+  спрашивает хозяина (`partner_ledger{action:"ask", order, perm}`; `perm` — ключ или список до 4 ключей, о
+  которых вопрос; вопрос ставит и стратег, и пилот — для своего тела), сервер дописывает к тексту вопроса, что
+  разрешается, голос передаёт вопрос и ответ; после явного «да» агент повторяет вызов с `approved:"q<N>"` и
+  `order:"o<N>"`. Сервер ставит в конверт `owner_ok:[ключи вопроса]` **только** если по реестру вопрос задан
+  про тот же `order` и с `perm`, ответ пришёл после вопроса и начинается с явного «да», `order` — поручение,
+  поставленное этим сервером для этого тела или в общие входящие, «да» не старше 30 минут и использовано
+  меньше 3 раз (каждый вызов, прошедший проверки сервера, тратит одно). «Да» снимает «спросить» только с
+  ключей вопроса. Если агент кладёт `owner_ok` куда-либо сам (в `args`, в
+  шаги плана, в набор рефлексов, в пакет), сервер отказывает `bad_args`; поле инструмента `owner_ok` до мода
+  не доходит. Ошибки сервера: `owner_forbids`, `needs_owner_ok` (раздел «Ошибки сервера»).
+- **Пакеты.** Шаги, которые просят «нельзя», сервер отказывает при `put` (`owner_forbids`, `{perm}` в `detail`).
+  Пакет с согласием хозяина (`approved`) запускает свой план с `owner_ok` — ключами вопроса (вопрос без
+  `perm` — про «забрать у хозяина»: `take_chests`, `take_lines`); «да» годится пакету час — и при `put`, и
+  когда пакет уходит в мод.
+- **AUTO.** Ключ `auto`: «сам» — правило AUTO пишется без «да» хозяина; «спросить» — как раньше; «нельзя» —
+  отказ `owner_forbids` («AUTO запрещён в настройках мода»), и кнопка AUTO в окне хозяина тоже. «Нельзя» важнее клика.
+- **Остальные настройки.** Пауза голоса: `FP_CHAT_SETTLE` (env) важнее `voice_pause` из настроек, а он — 2,5 с.
+  Мысли стратега по умолчанию — `thoughts` из настроек, пока хозяин сам не переключил (его выбор хранит
+  `ledger`). Пороги сторожа лимита (раздел «Сторож лимита») — из настроек, если env их не задаёт; набор, где
+  первый порог не ниже второго, игнорируется. Число помощников и модели при запуске — `agents/launch.py`.
+
+### Перезапуск на другое число помощников
+Хозяин говорит в игре «запусти / добавь / убери N помощников» (или нажимает «Применить» в окне панели,
+EVENTS.md «Панель хозяина»). Запрос лежит в сервере, пока его не снимут: `{n, tasks:[{to?, text}], from:"panel"│"chat", tick}`.
+- **Из чата.** Голос вызывает `partner_ledger{action:"scale", n, tasks?}`; `n` зажимается в 1..5 (ответ говорит,
+  если зажато), `tasks` — до 5 заданий телам после запуска (`to` — id помощника, `text` ≤ 300). Сервер принимает
+  вызов только на настоящее сообщение хозяина за последние 120 секунд (читает из мода; сообщение до запуска
+  сервера не считается), одно сообщение — один перезапуск. Пилот и стратег `scale` не могут.
+- **Из окна.** Событие `owner_panel{action:"scale", n}` ставит тот же запрос.
+- **Всем ролям** `partner_brief` показывает `rescale`, пока запрос открыт; роль заканчивает смену, и Workflow
+  ролей возвращает `{rescale:{n, tasks}}` (agents/README.md). Сервер шлёт событие `rescale` голосу и стратегу.
+- **Диспетчер** (ключ `host`): `partner_rescale{action:"get"}` — прочитать запрос и сверить с ним слова агентов
+  (задания в `tasks` — слова агентов, а не хозяина); запустить роли заново на `n`; раздать задания телам через
+  `partner_relay`; `partner_rescale{action:"done"}` — снять запрос. Лишние тела стоят на месте с вещами, не
+  удаляются.
 
 ## Служебные инструменты и запуск
 Служебные (только запускающий скрипт и отладка, включаются флагом `--admin`): `admin_hello`,
 `admin_spawn(helper)`, `admin_remove(helper)`, `admin_raw_events(since, helper?, limit?)`,
-`admin_limit(max)` (op `helper_limit`), `admin_attach(helper, player)` (op `helper_attach`).
+`admin_limit(max)` (op `helper_limit`), `admin_attach(helper, player)` (op `helper_attach`),
+`admin_settings()` (op `settings`: настройки мода как их отдаёт мод; `launch.py` берёт из них число помощников и модели).
 Ответ — `{tick, seq, data}`.
 
 Запуск напарника (`agents/launch.py`): флаги `--helpers N` (не задано — спросить у игрока; шлёт
@@ -601,6 +660,9 @@ P.U.M.P. / чертёж) и строит `build_ghosts`.
 - `access denied` — неверный `helper` или `key` (один текст на любую ошибку доступа).
 - `not_allowed` — инструмент (или его запись) вне прав роли ключа (раздел «Роли»).
 - `budget` — запись отклонена сторожем лимита плана (раздел «Сторож лимита»).
+- `owner_forbids` / `needs_owner_ok` — настройки мода запрещают действие или ждут разрешения хозяина
+  (раздел «Разрешения хозяина»); коды те же, что у мода (PROTOCOL §3), сервер отдаёт их и сам — при постановке
+  пакета и при включении AUTO.
 - `transport_timeout` — мод недоступен после 3 повторов; сюда же неверный пароль RCON и ответ
   не-JSON (например, `Unknown command` без мода) — с пояснением в тексте.
 - `game_paused` — только для изменяющих вызовов; чтение отдаёт данные с `warning` (PROTOCOL §5).

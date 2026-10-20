@@ -39,6 +39,7 @@ local registry = require("scripts.core.registry")
 local owner = require("scripts.core.owner")
 local jobs = require("scripts.core.jobs")
 local C = require("scripts.reflexes.common")
+local perms = require("scripts.core.perms")
 
 local M = {}
 M.name = "reflexes.flee"
@@ -273,7 +274,8 @@ function M.consider(id, entity, params, tick, st, health)
   st = st or C.body_state(id, entity)
   if st.flee ~= nil then return false end
   if st.flee_block ~= nil and tick < st.flee_block then return false end
-  if C.health(entity, health) > params.health then return false end
+  -- порог по умолчанию — настройка мода partner-flee-health (%), если рефлекс задан без health
+  if C.health(entity, health) > (params.health or perms.combat().flee_health / 100) then return false end
   local threat = find_threat(entity, params, st, tick)
   if threat == nil then return false end
   local saved = snapshot(id) -- до замены очереди задачей отступления
@@ -451,7 +453,7 @@ M.reflexes = {
     schema = {
       radius = { type = "number", min = 4, max = C.EYES, default = 20 },
       distance = { type = "number", min = 8, max = 64, default = 30 },
-      health = { type = "number", min = 0, max = 1, default = 1 },
+      health = { type = "number", min = 0, max = 1 },
       on_attack = { type = "bool", default = true },
       to = { type = "enum", values = { "away", "spawn", "player" }, default = "away" },
       resume = { type = "bool", default = true },

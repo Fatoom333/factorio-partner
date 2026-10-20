@@ -17,8 +17,15 @@ local inv = require("scripts.lib.inventory")
 local B = require("scripts.lib.build")
 local G = require("scripts.lib.getitems")
 
+local perms = require("scripts.core.perms")
+
 local M = {}
 M.name = "place"
+
+--- Разрешения хозяина (scripts/core/perms.lua): какие ключи задевают эти аргументы.
+function M.perms(a, ctx)
+  return { "perm-build" }
+end
 M.schema = {
   item = { type = "string", required = true, max = 100 },
   pos = { type = "pos", required = true },

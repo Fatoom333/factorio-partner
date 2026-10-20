@@ -33,8 +33,26 @@ local BP = require("scripts.lib.blueprint")
 local layout = require("scripts.lib.layout")
 local place_action = require("scripts.actions.place")
 
+local perms = require("scripts.core.perms")
+
 local M = {}
 M.name = "build_layout"
+
+--- Разрешения хозяина (scripts/core/perms.lua): какие ключи задевают эти аргументы.
+--- Трата — предметы всех построек блока и их insert (аргументы уже развёрнуты из blob).
+function M.perms(a, ctx)
+  if a.dry_run then return {} end
+  local keys = { "perm-build" }
+  local n = 0
+  for _, e in ipairs(a.entities or {}) do
+    n = n + 1
+    for _, c in pairs(e.insert or {}) do
+      if type(c) == "number" then n = n + c end
+    end
+  end
+  if n > perms.limit("spend") then keys[#keys + 1] = "perm-spend" end
+  return keys
+end
 
 M.MAX_ENTITIES = 100
 M.MAX_OFFSET = 64

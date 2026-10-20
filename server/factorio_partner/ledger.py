@@ -51,7 +51,7 @@ QUESTIONS_OPEN_MAX = 5      # open questions per helper
 QUESTIONS_KEEP = 5          # answered questions kept per helper
 ANSWER_SAID_MAX = 200       # characters of the owner's answer kept on the question
 REMIND_AFTER = 10 * 60.0   # s: an open question unanswered this long is reminded once
-_SIDE = ("notes", "questions", "qnext", "thoughts")      # parts of the file that do not move rev
+_SIDE = ("notes", "questions", "qnext", "thoughts", "rescale")   # parts of the file that do not move rev
 
 now = time.time             # wall clock of notes and questions: it outlives a restart (tests patch it)
 
@@ -264,18 +264,18 @@ def set_note(data: dict, helper: str, text: str, tick: int | None) -> dict:
     return dict(n)
 
 
-def thoughts_on(data: dict, helper: str) -> bool:
+def thoughts_on(data: dict, helper: str, default: bool = False) -> bool:
+    """Whether the strategist's thoughts are shown: the owner's own switch when he used it, else
+    ``default`` (the mod's setting partner-thoughts)."""
     v = data.get("thoughts")
-    return isinstance(v, dict) and v.get(helper) is True
+    got = v.get(helper) if isinstance(v, dict) else None
+    return got if isinstance(got, bool) else default
 
 
 def set_thoughts(data: dict, helper: str, on: bool) -> bool:
-    """The owner's switch «show the strategist's thoughts» of a helper (off by default)."""
-    t = _side(data, "thoughts")
-    if on:
-        t[helper] = True
-    else:
-        t.pop(helper, None)
+    """The owner's switch «show the strategist's thoughts» of a helper: kept as he set it (on or
+    off), so that it wins over the default of the mod's settings."""
+    _side(data, "thoughts")[helper] = bool(on)
     return on
 
 
@@ -289,9 +289,12 @@ def open_questions(data: dict, helper: str) -> list[dict]:
     return [q for q in questions_of(data, helper) if q.get("status") == "open"]
 
 
-def ask(data: dict, helper: str, text: str, tick: int | None, order: str | None = None) -> dict:
-    """A new open question of the strategist to the owner (``q<N>``); at most QUESTIONS_OPEN_MAX open.
-    ``order`` — the owner's order the question is about (the leave for a package of that order)."""
+def ask(data: dict, helper: str, text: str, tick: int | None, order: str | None = None,
+        asker: str | None = None, perm: list[str] | None = None) -> dict:
+    """A new open question to the owner (``q<N>``); at most QUESTIONS_OPEN_MAX open.
+    ``order`` — the owner's order the question is about (the leave for a package of that order, or
+    for calls of the pilot); ``asker`` — "pilot" when the pilot asks (the strategist by default);
+    ``perm`` — the permission keys the question asks for (the «да» lifts only these)."""
     if len(open_questions(data, helper)) >= QUESTIONS_OPEN_MAX:
         raise PartnerError("limit", f"at most {QUESTIONS_OPEN_MAX} open questions per helper; wait for "
                                     "the owner's answers")
@@ -300,6 +303,10 @@ def ask(data: dict, helper: str, text: str, tick: int | None, order: str | None 
     q = {"id": f"q{n}", "text": text, "status": "open", "at": now(), "tick": tick}
     if order is not None:
         q["order"] = order
+    if asker is not None:
+        q["from"] = asker
+    if perm:
+        q["perm"] = list(perm)
     qs = _side(data, "questions").setdefault(helper, [])
     qs.append(q)
     _keep_questions(data, helper)
@@ -375,10 +382,12 @@ def said_no(text: Any) -> bool:
     return any(p in t for p in _NO_PHRASES)
 
 
-def leave_problem(data: dict, scope: str, pkg: dict, order_tick: Any) -> str | None:
+def leave_problem(data: dict, scope: str, pkg: dict, order_tick: Any, at: float | None = None,
+                  max_age: float | None = None) -> str | None:
     """Why the package may not take from the owner (None — it may): ``approved`` names a question of
     the strategist (of ``scope``) the owner answered, asked with the package's ``order``, and the
-    answer opens with an explicit «да» (said_yes) and is no refusal."""
+    answer opens with an explicit «да» (said_yes) and is no refusal; with ``max_age`` the answer is
+    not older than that (seconds, at ``at`` or now)."""
     qid, oid = pkg.get("approved"), pkg.get("order")
     if not isinstance(qid, str) or not isinstance(oid, str):
         return "approved: a step takes from the owner — the package needs order and approved (q<N>)"
@@ -394,4 +403,104 @@ def leave_problem(data: dict, scope: str, pkg: dict, order_tick: Any) -> str | N
     if said_no(q.get("said")) or not said_yes(q.get("said")):
         return (f"approved: ответ хозяина на {qid} — не явное «да» ({q.get('said')!r}): забирать нельзя; "
                 "спроси заново")
+    if max_age is not None:
+        t = now() if at is None else at
+        ans = q.get("answered_at")
+        if not isinstance(ans, (int, float)) or t - ans > max_age:
+            return (f"approved: ответ хозяина на {qid} старше {int(max_age // 60)} минут; "
+                    "спроси заново")
     return None
+
+
+PACKAGE_LEAVE_MAX_AGE = 60 * 60.0   # s: the owner's «да» gives leave to a package this long (put and run)
+# a package's question asked without ``perm`` is about taking from the owner (its old meaning)
+PACKAGE_LEAVE_DEFAULT = ("take_chests", "take_lines")
+
+
+def leave_keys(q: dict | None, default: tuple[str, ...] = ()) -> list[str]:
+    """The permission keys the owner's «да» to question ``q`` lifts (``perm`` of the question)."""
+    v = q.get("perm") if isinstance(q, dict) else None
+    if isinstance(v, list) and v and all(isinstance(k, str) for k in v):
+        return list(v)
+    return list(default)
+
+
+def package_leave_keys(data: dict, scope: str, pkg: dict) -> list[str]:
+    """The keys the leave of an approved package lifts: the question's ``perm``, else taking from
+    the owner (PACKAGE_LEAVE_DEFAULT)."""
+    qid = pkg.get("approved")
+    q = next((x for x in questions_of(data, scope) if x["id"] == qid), None)
+    return leave_keys(q, PACKAGE_LEAVE_DEFAULT)
+
+
+def find_question(data: dict, qid: str, scopes) -> tuple[str, dict] | None:
+    """The question ``qid`` in the first of ``scopes`` that holds it -> (scope, question)."""
+    for sc in scopes:
+        for q in questions_of(data, sc):
+            if q["id"] == qid:
+                return sc, q
+    return None
+
+
+APPROVED_MAX_AGE = 30 * 60.0   # s: the owner's «да» to a question gives leave to single calls this long
+CALL_LEAVE_USES = 3            # calls one «да» gives leave to (act, plan, reflexes)
+
+
+def call_leave_problem(data: dict, scopes, qid: str, oid: str, at: float | None = None) -> str | None:
+    """Why a single call (act, plan, reflexes) may not go with the owner's leave (None — it may):
+    the same check as a package's (``leave_problem``: a question asked with that ``order``, answered
+    after it with an explicit «да»), in the caller's own ``scopes``, the answer is not older
+    than APPROVED_MAX_AGE, the question names the permissions it asks for (``perm``) and its leave
+    is not used up (CALL_LEAVE_USES calls)."""
+    found = find_question(data, qid, scopes)
+    if found is None:
+        return f"approved: нет вопроса {qid} (partner_ledger list → questions)"
+    scope, q = found
+    why = leave_problem(data, scope, {"approved": qid, "order": oid}, None, at=at, max_age=APPROVED_MAX_AGE)
+    if why is not None:
+        return why
+    if not leave_keys(q):
+        return (f"approved: вопрос {qid} не называет, что разрешить; спроси заново с perm — ключи "
+                "разрешений из partner_brief.perms.ask (например perm:[\"take_lines\"])")
+    used = q.get("uses")
+    if isinstance(used, int) and not isinstance(used, bool) and used >= CALL_LEAVE_USES:
+        return (f"approved: разрешение по {qid} уже использовано ({CALL_LEAVE_USES} вызова); "
+                "спроси хозяина заново")
+    return None
+
+
+def take_call_leave(data: dict, scopes, qid: str, oid: str, at: float | None = None) -> list[str] | str:
+    """Check the leave of one call (``call_leave_problem``) and use it once: -> the permission keys
+    it lifts, or the reason it may not go (a string; nothing is changed then)."""
+    why = call_leave_problem(data, scopes, qid, oid, at)
+    if why is not None:
+        return why
+    _, q = find_question(data, qid, scopes)
+    used = q.get("uses")
+    q["uses"] = (used if isinstance(used, int) and not isinstance(used, bool) else 0) + 1
+    return leave_keys(q)
+
+
+# ---------------------------------------------------------------- the owner's request to restart
+def rescale_of(data: dict) -> dict | None:
+    """The owner's open request to restart the roles on ``n`` helpers (None — none)."""
+    r = data.get("rescale")
+    if isinstance(r, dict) and isinstance(r.get("n"), int) and not isinstance(r.get("n"), bool):
+        return r
+    return None
+
+
+def set_rescale(data: dict, n: int, tasks: list, src: str, tick: int | None,
+                seq: int | None = None) -> dict:
+    """A new request replaces the old one: the owner's last word counts."""
+    r = {"n": n, "tasks": list(tasks), "from": src, "tick": tick, "at": now()}
+    if seq is not None:
+        r["seq"] = seq
+    data["rescale"] = r
+    return dict(r)
+
+
+def clear_rescale(data: dict) -> dict | None:
+    r = rescale_of(data)
+    data.pop("rescale", None)
+    return r

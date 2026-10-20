@@ -8,8 +8,21 @@ local owner = require("scripts.core.owner")
 local util = require("scripts.core.util")
 local target = require("scripts.core.target")
 
+local perms = require("scripts.core.perms")
+
 local M = {}
 M.name = "approach"
+
+--- Разрешения хозяина (scripts/core/perms.lua): какие ключи задевают эти аргументы.
+function M.perms(a, ctx)
+  local pos = type(a.to) == "table" and a.to or nil
+  if pos == nil and type(a.target) == "table" then
+    local e = a.target.unit_number ~= nil and perms.find(ctx, a.target) or nil
+    pos = e and e.position or a.target.pos
+  end
+  if pos ~= nil and perms.too_far(ctx, pos) then return { "perm-walk-far" } end
+  return {}
+end
 M.schema = {
   target = { type = "target" },
   to = { type = { "pos", "string" }, values = { "player" } },

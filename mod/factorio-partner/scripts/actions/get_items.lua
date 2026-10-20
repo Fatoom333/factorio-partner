@@ -17,8 +17,16 @@
 local inv = require("scripts.lib.inventory")
 local G = require("scripts.lib.getitems")
 
+local perms = require("scripts.core.perms")
+
 local M = {}
 M.name = "get_items"
+
+--- Разрешения хозяина (scripts/core/perms.lua): какие ключи задевают эти аргументы.
+function M.perms(a, ctx)
+  if a.from_lines then return { "perm-take-lines" } end
+  return { "perm-take-chests" }
+end
 M.schema = {
   items = { type = "items", required = true, min_kinds = 1 },
   radius = { type = "number", min = 1, max = 128, default = G.DEFAULT_RADIUS },

@@ -20,8 +20,39 @@ local reserve = require("scripts.core.reserve")
 local target = require("scripts.core.target")
 local inv = require("scripts.lib.inventory")
 
+local perms = require("scripts.core.perms")
+local lines = require("scripts.lib.lines")
+
 local M = {}
 M.name = "extract"
+
+--- Разрешения хозяина (scripts/core/perms.lua) на то, чтобы взять из сущности e.
+--- Только постройки хозяина (perms.owner_built): свои машины и сундуки помощников — без разрешений.
+--- Труп — не склад хозяина; машина (берётся её выход) и сундук, в который кладёт манипулятор или
+--- загрузчик, — выход линии; остальное — свободный сундук.
+function M.entity_keys(e)
+  if e == nil or e.valid == false or e.type == "character" or e.type == "character-corpse" then return {} end
+  if inv.main_inventory(e) == nil or not perms.owner_built(e) then return {} end
+  if inv.data_inventory(e) == nil then return { "perm-take-lines" } end
+  local ok, fed = pcall(function()
+    return e.unit_number ~= nil and lines.fed(e.surface, e.force, e.position, 1)[e.unit_number]
+  end)
+  if ok and fed then return { "perm-take-lines" } end
+  return { "perm-take-chests" }
+end
+
+--- Ключи по аргументам — ранний отказ при постановке; окончательно — в start и перед тем, как
+--- взять (цель решается заново, сундук мог стать выходом линии, пока задача ждала).
+function M.perms(a, ctx)
+  return M.entity_keys(perms.find(ctx, a.target))
+end
+
+--- Отказ разрешений хозяина по задаче (perm_gate и owner_ok) → результат failed │ nil.
+local function perm_failed(task, e)
+  local code, text, data = perms.refusal(M.entity_keys(e), task)
+  if code ~= nil then return inv.failed(code, text, data) end
+  return nil
+end
 M.schema = {
   target = { type = "target", required = true },
   items = { type = "items", min_kinds = 1 },
@@ -51,6 +82,8 @@ function M.start(task, ctx)
   if inv.main_inventory(t) == nil then
     return inv.failed("no_items", "target has no inventory to take from")
   end
+  local refused = perm_failed(task, t)
+  if refused ~= nil then return refused end
   task.target = t
   return nil
 end
@@ -115,6 +148,8 @@ function M.tick(task, ctx)
   if r == nil then return nil end
   if r ~= true then return r end
 
+  local refused = perm_failed(task, t)
+  if refused ~= nil then return refused end
   local src = inv.main_inventory(t)
   local extracted, missing, flags = M.take(task, ctx, src, task.args.items)
   local detail = { extracted = extracted }

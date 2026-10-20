@@ -33,8 +33,38 @@ local B = require("scripts.lib.build")
 local util = require("scripts.core.util")
 local G = require("scripts.lib.getitems")
 
+local perms = require("scripts.core.perms")
+
 local M = {}
 M.name = "build_ghosts"
+
+--- Разрешения хозяина (scripts/core/perms.lua): какие ключи задевают эти аргументы.
+--- Трата (perm-spend) — по предмету на каждый призрак своей силы в области (постройки и плитки);
+--- окончательно — в start, по призракам, что стоят там, когда задача началась.
+function M.perms(a, ctx)
+  local keys = { "perm-build" }
+  local h = ctx and ctx.entity
+  if h ~= nil and h.valid then
+    local ok, n = pcall(M.ghost_count, h, M.area_of(a, h))
+    if ok then perms.add_spend(keys, n) end
+  end
+  return keys
+end
+
+--- Область задачи: area или квадрат radius (по умолчанию DEFAULT_RADIUS) вокруг тела.
+function M.area_of(a, h)
+  if a.area ~= nil then return a.area end
+  local p = util.xy(h.position)
+  local r = a.radius or M.DEFAULT_RADIUS
+  return { left_top = { x = p.x - r, y = p.y - r }, right_bottom = { x = p.x + r, y = p.y + r } }
+end
+
+--- Призраки своей силы (построек и плиток) в области.
+function M.ghost_count(h, area)
+  return h.surface.count_entities_filtered{
+    area = { area.left_top, area.right_bottom }, force = h.force, type = { "entity-ghost", "tile-ghost" },
+  }
+end
 M.schema = {
   area = { type = "area" },
   radius = { type = "number", min = 1, max = 64 },
@@ -48,15 +78,10 @@ function M.start(task, ctx)
   if a.area ~= nil and a.radius ~= nil then
     return B.failed("bad_args", "args: use either area or radius")
   end
-  local area = a.area
-  if area == nil then
-    local p = util.xy(ctx.entity.position)
-    local r = a.radius or M.DEFAULT_RADIUS
-    area = {
-      left_top = { x = p.x - r, y = p.y - r },
-      right_bottom = { x = p.x + r, y = p.y + r },
-    }
-  end
+  local area = M.area_of(a, ctx.entity)
+  -- трата по призракам, что стоят в области сейчас (perm-spend; по задаче: perm_gate и owner_ok)
+  local pcode, ptext, pdata = perms.refusal(perms.add_spend({}, M.ghost_count(ctx.entity, area)), task)
+  if pcode ~= nil then return B.failed(pcode, ptext, pdata) end
   B.hold_area(ctx, area)
   return B.ghosts_start(task, ctx, area, a.mode)
 end

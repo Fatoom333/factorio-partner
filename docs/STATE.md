@@ -322,6 +322,27 @@ resource?, note?}`:
   пятна), `other_surface` (ничего нужного на этой поверхности нет).
 - Ответ сервера больше 24 КБ → `response too large` с подсказкой уменьшить `depth`.
 
+## `settings` () — настройки мода хозяина
+Без аргументов (любой аргумент — `bad_args`) и без помощника; только чтение. Хозяин меняет их в игре
+(Настройки → Настройки модов → Карта); значения в ответе уже проверены и приведены к границам.
+```
+{perms:{take_chests, take_lines, take_inputs, build, superforced, deconstruct_own, deconstruct_owner,
+        set_recipe, chop, smelt, spend, shoot, turrets, upkeep, attack_nests, walk_far, leave_planet, auto},
+ limits:{spend, far},
+ agents:{helpers, pilot_model, strategist_model, thoughts, voice_pause,
+         budget:{strategist, voice_only, weekly}},
+ combat:{flee_health, auto_armor, turret_standoff, turret_gap},
+ chat:{answer_every, reply_lines}}
+```
+- `perms` — `"auto"` (сам) │ `"ask"` (спросить) │ `"deny"` (нельзя); ключи — как настройки `partner-perm-…`
+  без префикса, дефисы заменены на `_`. Что каждая значит — README.md «Настройки».
+- `limits.spend` — сколько предметов может потратить одна задача стройки без вопроса (по умолчанию 200);
+  `limits.far` — на сколько клеток от хозяина можно уходить без вопроса (300).
+- `agents`, `chat` мод не применяет: их читают сервер (`partner_brief`, пороги сторожа лимита, пауза голоса) и
+  `agents/launch.py` (число помощников и модели).
+- `combat` применяет мод: порог отступления `flee` в % здоровья (40), автоброня (да), стоять ли турелям за
+  линией и зазор до них (да, 3).
+
 ## `lookup` (h?, `name`, `kind?`, `limit?=20` (1..50)) — справка «как в Факториопедии»
 Помощник не знает игру наизусть, а моды добавляют своё. Факториопедия — окно для игрока, мод
 прочитать его не может, но она показывает данные самой игры — их мод читает напрямую. «Что это вообще

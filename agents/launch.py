@@ -16,7 +16,9 @@
 
 Режим ролей (``--roles``): пилот (``partner-pilot``) на каждое тело, один голос (``partner-voice``) и
 один стратег (``partner-strategist``) на всех помощников; у каждого агента свой ключ и своё первое
-сообщение (``--pilot-model`` — модель пилотов, ``sonnet`` или ``haiku``). Ключи голоса и стратега лежат в
+сообщение (``--pilot-model`` — модель пилотов, ``sonnet`` или ``haiku``; ``--strategist-model`` — стратега,
+``sonnet`` или ``opus``). Не заданные флагами число помощников и модели берутся из настроек мода (операция
+``settings``, раздел ``agents``; помощников — от 1 до 5), нет и их — спрашивает / ``sonnet``. Ключи голоса и стратега лежат в
 общей записи ``"*"`` файла ``helpers.json`` и годятся для любого помощника сервера, но только в своей
 роли; ключ пилота — только для его тела. Там же ключ диспетчера ``host`` — для главного чата, который
 запускает роли и передаёт им слова хозяина (``partner_relay``); он лежит в файле сессии отдельно
@@ -58,6 +60,8 @@ STRATEGIST_KNOWLEDGE = ("factory-math.md", "forge-blocks.md")
 ROLE_AGENTS = {"voice": ("partner-voice", "haiku"), "pilot": ("partner-pilot", "sonnet"),
                "strategist": ("partner-strategist", "sonnet")}
 PILOT_MODELS = ("sonnet", "haiku")
+STRATEGIST_MODELS = ("sonnet", "opus")
+SETTINGS_HELPERS_MAX = 5              # настройка мода partner-helpers: 1..5
 
 
 class LaunchError(Exception):
@@ -442,12 +446,53 @@ def parse_pilot_model(value: Any) -> str:
     return model
 
 
+def parse_strategist_model(value: Any) -> str:
+    model = str(value).strip().lower()
+    if model not in STRATEGIST_MODELS:
+        raise LaunchError("модель стратега (--strategist-model): " + " или ".join(STRATEGIST_MODELS))
+    return model
+
+
+async def read_settings(core) -> dict:
+    """Раздел ``agents`` операции мода ``settings`` (число помощников и модели ролей из настроек мода).
+
+    Читает служебная функция ядра ``admin_settings`` — тот же путь в мод, что у остальных ``admin_*``.
+    Нет функции, мод не ответил или ответ не тот — пусто: запуск идёт на значениях по умолчанию."""
+    fn = getattr(core, "admin_settings", None)
+    if fn is None:
+        return {}
+    try:
+        data = await _admin(fn())
+    except Exception:  # noqa: BLE001 — настройки необязательны: мод недоступен — берём умолчания
+        return {}
+    agents = data.get("agents")
+    return agents if isinstance(agents, dict) else {}
+
+
+def settings_defaults(agents: dict) -> dict:
+    """Из раздела ``agents`` настроек мода — то, что годится: число помощников зажато в 1..5,
+    модели — только из разрешённых; остальное отбрасывается."""
+    out: dict = {}
+    n = agents.get("helpers")
+    if isinstance(n, int) and not isinstance(n, bool):
+        out["helpers"] = min(max(n, 1), SETTINGS_HELPERS_MAX)
+    pilot = str(agents.get("pilot_model") or "").strip().lower()
+    if pilot in PILOT_MODELS:
+        out["pilot_model"] = pilot
+    strategist = str(agents.get("strategist_model") or "").strip().lower()
+    if strategist in STRATEGIST_MODELS:
+        out["strategist_model"] = strategist
+    return out
+
+
 def role_agent(role: str, hid: str, key: str, mcp_files: dict[str, Path], body: str,
                player: str | None, total: int, module_errors: int, pilot_model: str,
-               knowledge: str = "", helpers: list[str] | None = None) -> dict:
+               knowledge: str = "", helpers: list[str] | None = None,
+               strategist_model: str = "sonnet") -> dict:
     """Один агент роли: {agent, model, mcp_config, prompt}. В prompt — ключ этой роли."""
     agent, model = ROLE_AGENTS[role]
-    return {"agent": agent, "model": pilot_model if role == "pilot" else model,
+    model = pilot_model if role == "pilot" else strategist_model if role == "strategist" else model
+    return {"agent": agent, "model": model,
             "mcp_config": str(mcp_files[role]),
             "prompt": role_message(role, hid, key, body, player, total, module_errors,
                                    knowledge if role == "strategist" else "", helpers)}
@@ -456,10 +501,11 @@ def role_agent(role: str, hid: str, key: str, mcp_files: dict[str, Path], body: 
 async def launch(cfg, n: int, body: str, players: list[str], *, core,
                  env: dict[str, str], python: str, say: Callable[[str], None],
                  ids: list[str] | None = None, roles: bool = False,
-                 pilot_model: str = "sonnet") -> dict:
+                 pilot_model: str = "sonnet", strategist_model: str = "sonnet") -> dict:
     """``n`` — сколько помощников разрешил игрок (``helper_limit``); тела — ``ids`` (по умолчанию h1…hN).
     ``roles`` — режим трёх ролей (ключи всех ролей, агенты ``partner-voice``/``-pilot``/``-strategist``)."""
     pilot_model = parse_pilot_model(pilot_model)
+    strategist_model = parse_strategist_model(strategist_model)
     ids = list(ids) if ids else helper_ids(n)
     role_keys = ensure_role_keys(cfg.helpers_file, ids) if roles else None
     keys = dict(role_keys["pilots"]) if role_keys else ensure_keys(cfg.helpers_file, ids)
@@ -489,10 +535,11 @@ async def launch(cfg, n: int, body: str, players: list[str], *, core,
         knowledge = strategist_knowledge()
         session["mode"] = "roles"
         session["pilot_model"] = pilot_model
+        session["strategist_model"] = strategist_model
         # голос и стратег — по одному на всех помощников; helper в их сообщении — первое тело
         for role in SHARED_ROLES:
             session[role] = role_agent(role, ids[0], role_keys[role], mcp_files, body, None, n,
-                                       mod["module_errors"], pilot_model, knowledge, ids)
+                                       mod["module_errors"], pilot_model, knowledge, ids, strategist_model)
             summary.append({"helper": SHARED, "role": role,
                             **{k: v for k, v in session[role].items() if k != "prompt"}})
         # ключ диспетчера — главному чату, который запускает роли: только partner_relay, ни одной
@@ -515,7 +562,8 @@ async def launch(cfg, n: int, body: str, players: list[str], *, core,
 
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(prog="launch.py", description="Запуск напарника factorio-partner")
-    ap.add_argument("--helpers", help="сколько помощников (1..16); не задано — спросит")
+    ap.add_argument("--helpers", help="сколько помощников (1..16); не задано — число из настроек мода "
+                                      "(partner-helpers), нет и его — спросит")
     ap.add_argument("--body", help="character — тело без игрока; player — персонаж второго клиента")
     ap.add_argument("--helper", action="append", metavar="ID",
                     help="id помощника (можно несколько раз); не задано — h1…hN")
@@ -524,8 +572,12 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--players", help="то же одним флагом: имена игроков через запятую")
     ap.add_argument("--roles", action="store_true",
                     help="режим ролей: пилот на каждого помощника, голос и стратег — по одному на всех")
-    ap.add_argument("--pilot-model", default="sonnet", metavar="MODEL",
-                    help="модель пилотов в режиме ролей: sonnet (по умолчанию) или haiku")
+    ap.add_argument("--pilot-model", default=None, metavar="MODEL",
+                    help="модель пилотов в режиме ролей: sonnet или haiku; не задано — из настроек мода, "
+                         "иначе sonnet")
+    ap.add_argument("--strategist-model", default=None, metavar="MODEL",
+                    help="модель стратега в режиме ролей: sonnet или opus; не задано — из настроек мода, "
+                         "иначе sonnet")
     return ap
 
 
@@ -539,9 +591,6 @@ def main(argv: list[str] | None = None) -> int:
         print(text)
 
     try:
-        n, body, players = ask_missing(ns, input if sys.stdin.isatty() else None)
-        ids = parse_ids(ns.helper)
-        pilot_model = parse_pilot_model(ns.pilot_model)
         try:
             from factorio_partner.config import Config
             from factorio_partner.core import Core
@@ -558,9 +607,21 @@ def main(argv: list[str] | None = None) -> int:
         async def run() -> dict:
             core = Core(cfg)
             try:
+                # флаги важнее настроек мода: в мод за настройками ходим, только если чего-то не задано
+                ids = parse_ids(ns.helper)
+                want_helpers = ns.helpers is None and not ids
+                need = want_helpers or ns.pilot_model is None or ns.strategist_model is None
+                from_mod = settings_defaults(await read_settings(core)) if need else {}
+                if want_helpers and "helpers" in from_mod:
+                    ns.helpers = str(from_mod["helpers"])
+                n, body, players = ask_missing(ns, input if sys.stdin.isatty() else None)
+                pilot_model = parse_pilot_model(ns.pilot_model or from_mod.get("pilot_model") or "sonnet")
+                strategist_model = parse_strategist_model(
+                    ns.strategist_model or from_mod.get("strategist_model") or "sonnet")
                 return await launch(cfg, n, body, players, core=core, env=dict(os.environ),
                                     python=sys.executable, say=say, ids=ids,
-                                    roles=ns.roles, pilot_model=pilot_model)
+                                    roles=ns.roles, pilot_model=pilot_model,
+                                    strategist_model=strategist_model)
             finally:
                 await core.close()
 

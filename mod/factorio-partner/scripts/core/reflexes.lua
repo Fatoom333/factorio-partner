@@ -12,6 +12,7 @@
 local err = require("scripts.core.err")
 local schema = require("scripts.core.schema")
 local registry = require("scripts.core.registry")
+local perms = require("scripts.core.perms")
 
 local M = {}
 
@@ -19,6 +20,9 @@ M.MAX_SET = 16
 M.CHECK_EVERY = 10
 
 M.types = {} -- type -> {schema, check}
+
+-- Разрешение на включение рефлекса (scripts/core/perms.lua): только новый в наборе.
+M.PERM = { shoot = "perm-shoot", ammo = "perm-turrets", upkeep = "perm-upkeep" }
 
 function M.register(mod)
   for t, def in pairs(mod.reflexes or {}) do
@@ -34,10 +38,43 @@ local SET_SCHEMA = {
   set = { type = "list", max = M.MAX_SET, of = { type = "any" } },
 }
 
+--- Копия набора для ответа и для повторной отправки: type и поля схем рефлексов (служебные поля
+--- старых сейвов не уходят и не ломают проверку схемы).
+function M.public(set)
+  local out = {}
+  for i, r in ipairs(set or {}) do
+    local def = M.types[r.type]
+    local fields = def and def.schema or nil
+    local c = {}
+    for k, v in pairs(r) do
+      if k == "type" or (fields ~= nil and fields[k] ~= nil) or (fields == nil and k ~= "nests_ok") then
+        c[k] = v
+      end
+    end
+    out[i] = c
+  end
+  return out
+end
+
+local function leave_of(helper)
+  local t = type(storage.reflex_leave) == "table" and storage.reflex_leave[helper] or nil
+  return type(t) == "table" and t or nil
+end
+
+--- Хозяин разрешил этому помощнику стрелять по гнёздам (perm-attack-nests на «спросить»): разрешение
+--- дано при включении shoot и живёт, пока shoot в наборе. Хранится отдельно от параметров рефлекса.
+function M.nests_leave(helper)
+  local t = leave_of(helper)
+  return t ~= nil and t.shoot_nests == true
+end
+
 function M.op_reflexes(args, ctx)
   local a = schema.validate(SET_SCHEMA, args)
-  if a.set == nil then return { set = M.get(ctx.helper_id) or {} } end
+  if a.set == nil then return { set = M.public(M.get(ctx.helper_id)) } end
+  local before = {}
+  for _, r in ipairs(M.get(ctx.helper_id) or {}) do before[r.type] = r end
   local out = {}
+  local nests = nil
   for i, r in ipairs(a.set) do
     local path = "args.set[" .. i .. "]"
     if type(r) ~= "table" or type(r.type) ~= "string" then err.raise("bad_args", path .. ".type: required") end
@@ -49,15 +86,25 @@ function M.op_reflexes(args, ctx)
     end
     local v = schema.validate(def.schema or {}, params, path)
     v.type = r.type
+    local old = before[r.type]
+    if old == nil and M.PERM[r.type] then perms.demand({ M.PERM[r.type] }, ctx) end
+    -- shoot: стрельба по гнёздам при «спросить» — только если хозяин разрешил именно её
+    -- (owner_ok с attack-nests); разрешение держится, пока shoot остаётся в наборе
+    if r.type == "shoot" then
+      nests = perms.allowed(ctx, "perm-attack-nests") or (old ~= nil and M.nests_leave(ctx.helper_id))
+    end
     out[i] = v
   end
   storage.reflexes[ctx.helper_id] = out
-  return { set = out }
+  if type(storage.reflex_leave) ~= "table" then storage.reflex_leave = {} end
+  storage.reflex_leave[ctx.helper_id] = nests and { shoot_nests = true } or nil
+  return { set = M.public(out) }
 end
 
 --- Забыть набор рефлексов помощника (только helper_remove).
 function M.forget(helper)
   if type(storage.reflexes) == "table" then storage.reflexes[helper] = nil end
+  if type(storage.reflex_leave) == "table" then storage.reflex_leave[helper] = nil end
 end
 
 --- Набор рефлексов помощника (копия не делается — только для чтения) или nil.

@@ -28,8 +28,16 @@ local G = require("scripts.lib.getitems")
 local vis = require("scripts.core.vis")
 local err = require("scripts.core.err")
 
+local perms = require("scripts.core.perms")
+
 local M = {}
 M.name = "connect_entities"
+
+--- Разрешения хозяина (scripts/core/perms.lua): какие ключи задевают эти аргументы.
+function M.perms(a, ctx)
+  if a.dry_run or a.build == false then return {} end
+  return { "perm-build" }
+end
 
 local ENDPOINT = {
   type = "object",
@@ -194,6 +202,16 @@ local function fail_with(cn, code, text, extra)
   local d = detail_of(cn)
   for k, v in pairs(extra or {}) do d[k] = v end
   return failed(code, text, d)
+end
+
+--- Трата пути (perm-spend; по задаче: perm_gate и owner_ok) → failed │ nil. Только стройка.
+local function spend_refused(task, cn)
+  if not cn.build then return nil end
+  local n = 0
+  for _, c in pairs(cn.need or {}) do n = n + c end
+  local code, text, data = perms.refusal(perms.add_spend({}, n), task)
+  if code ~= nil then return fail_with(cn, code, text, data) end
+  return nil
 end
 
 local function end_failed(code, which, p)
@@ -460,6 +478,8 @@ function M.start(task, ctx)
       task.progress_tick = ctx.tick
       cn.missing = C.missing(h, cn.need)
       if not cn.build then return done(cn) end
+      local refused = spend_refused(task, cn)
+      if refused ~= nil then return refused end
       if next(cn.missing) ~= nil then
         if not a.auto_supply then
           return fail_with(cn, "no_items", "not enough items to build the remembered path")
@@ -812,6 +832,8 @@ local function check_tick(cn, env, ctx, task)
   cn.box, cn.parts = boxes_of(cn)
   cn.missing = C.missing(ctx.entity, cn.need)
   if cn.dry then return done(cn) end
+  local refused = spend_refused(task, cn)
+  if refused ~= nil then return refused end
   if cn.box.x1 ~= nil then B.check_free(ctx, as_area(cn.box)) end
   if cn.build and next(cn.missing) ~= nil then
     if not task.args.auto_supply then

@@ -18,7 +18,7 @@ S.suite("reflex_flee", {
   { "схема flee и watch: значения по умолчанию, границы, лишние поля", function()
       H.setup()
       S.eq(H.set{ { type = "flee" }, { type = "watch" } }, {
-        { type = "flee", radius = 20, distance = 30, health = 1, on_attack = true, to = "away", resume = true, resume_health = 0.8 },
+        { type = "flee", radius = 20, distance = 30, on_attack = true, to = "away", resume = true, resume_health = 0.8 },
         { type = "watch", radius = 32, every_s = 10 },
       })
       S.eq(H.set{ { type = "flee", radius = 8, distance = 64, health = 0.3, on_attack = false, to = "spawn" } }[1].to, "spawn")
@@ -443,7 +443,7 @@ S.suite("reflex_flee", {
       H.enemy({ x = -8, y = 0 })
       B.tick(50)
       S.eq(storage.reflexes.h1, {
-        { type = "flee", radius = 20, distance = 30, health = 1, on_attack = true, to = "away", resume = true, resume_health = 0.8 },
+        { type = "flee", radius = 20, distance = 30, on_attack = true, to = "away", resume = true, resume_health = 0.8 },
         { type = "watch", radius = 32, every_s = 10 },
       })
       S.ok(storage.reflex_state.h1.flee.job, "идёт отступление")

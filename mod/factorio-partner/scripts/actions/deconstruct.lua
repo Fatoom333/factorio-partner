@@ -19,8 +19,40 @@ local util = require("scripts.core.util")
 local inv = require("scripts.lib.inventory")
 local B = require("scripts.lib.build")
 
+local perms = require("scripts.core.perms")
+
 local M = {}
 M.name = "deconstruct"
+
+--- Разрешения хозяина на разбор сущности e (scripts/core/perms.lua dig_keys).
+M.entity_keys = perms.dig_keys
+
+--- Ключи, которые задевают эти аргументы, — для раннего отказа при постановке. Окончательная
+--- проверка — в start по тем сущностям, что будут разбираться на самом деле (за время в очереди
+--- в области могло появиться новое).
+function M.perms(a, ctx)
+  local keys = {}
+  if a.target ~= nil then
+    local e = perms.find(ctx, a.target)
+    if e ~= nil then M.entity_keys(e, keys) end
+  elseif a.area ~= nil then
+    local h = ctx and ctx.entity
+    if h ~= nil and h.valid then
+      local ok, list = pcall(function()
+        return h.surface.find_entities_filtered{
+          area = { a.area.left_top, a.area.right_bottom }, force = { h.force.name, "neutral" }, name = a.filter,
+        }
+      end)
+      if ok and type(list) == "table" then
+        for i, e in ipairs(list) do
+          if i > M.MAX_ENTITIES then break end
+          if e.valid and e ~= h then M.entity_keys(e, keys) end
+        end
+      end
+    end
+  end
+  return keys
+end
 M.schema = {
   target = { type = "target" },
   area = { type = "area" },
@@ -89,6 +121,13 @@ function M.start(task, ctx)
         queue[#queue + 1] = { e = e, name = e.name, pos = util.xy(e.position) }
       end
     end
+  end
+  -- разрешения хозяина на то, что разбирается на самом деле (по задаче: perm_gate и owner_ok)
+  local keys = {}
+  for _, it in ipairs(queue) do M.entity_keys(it.e, keys) end
+  local pcode, ptext, pdata = perms.refusal(keys, task)
+  if pcode ~= nil then
+    return B.failed(pcode, ptext, pdata)
   end
   task.queue = queue
   task.removed = 0

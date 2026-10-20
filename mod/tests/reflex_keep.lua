@@ -25,7 +25,7 @@ end
 S.suite("reflex_keep", {
   { "умолчания: flee.to = away, on_attack = true; ответ reflexes — набор как он хранится", function()
       H.setup()
-      S.eq(H.set{ { type = "flee" } }, { { type = "flee", radius = 20, distance = 30, health = 1, on_attack = true, to = "away", resume = true, resume_health = 0.8 } })
+      S.eq(H.set{ { type = "flee" } }, { { type = "flee", radius = 20, distance = 30, on_attack = true, to = "away", resume = true, resume_health = 0.8 } })
       S.eq(H.set(SET), STORED)
       S.eq(storage.reflexes.h1, STORED)
       S.eq(require("scripts.core.reflexes").get("h1"), STORED)

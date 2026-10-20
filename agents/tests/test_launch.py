@@ -21,7 +21,8 @@ import launch
 class FakeBridge:
     """Мост сервера: помнит запросы, отвечает по таблице ``errors`` или успехом."""
 
-    def __init__(self, hello=None, errors=None, helper_list=None):
+    def __init__(self, hello=None, errors=None, helper_list=None, agents=None):
+        self.agents = agents or {}
         self.calls: list[tuple[str, dict, str | None]] = []
         self.hello = {"proto": 1, "owner": "Owner", "helpers": [], "module_errors": 0, **(hello or {})}
         self.errors = errors or {}
@@ -43,6 +44,7 @@ class FakeBridge:
             return {"v": 1, "ok": False, "error": {"code": code, "text": "отказ"}}
         data = {"hello": self.hello,
                 "helper_list": {"helpers": self.helper_list},
+                "settings": {"agents": self.agents},
                 "helper_limit": {"max": (args or {}).get("max"), "alive": 0},
                 "helper_spawn": {"helper": helper, "unit_number": 7, "surface": "nauvis", "pos": {"x": 1, "y": 2}},
                 "helper_attach": {"helper": helper, "surface": "nauvis", "pos": {"x": 3, "y": 4}}}[op]
@@ -352,10 +354,78 @@ def test_main_refuses_non_loopback_rcon(tmp_path, monkeypatch, capsys):
     assert not (tmp_path / "home").exists()
 
 
-def test_main_without_answers_exits_with_question(monkeypatch, capsys):
+class SettingsCore(Core):
+    """Ядро с функцией чтения настроек мода (операция `settings`)."""
+
+    async def admin_settings(self):
+        from factorio_partner.core import _admin_result
+        return _admin_result(await self.bridge.request("settings"))
+
+
+def main_with_mod(tmp_path, monkeypatch, argv, bridge, core_cls=SettingsCore):
+    """Запуск launch.main с настоящим Config из окружения и ядром над фейковым мостом."""
+    pytest.importorskip("factorio_partner")
     monkeypatch.setattr("sys.stdin", SimpleNamespace(isatty=lambda: False))
-    assert launch.main([]) == 2
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    pw = tmp_path / "rcon.pw"
+    pw.write_text("secret", encoding="utf-8")
+    monkeypatch.setenv("FP_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("FP_RCON_PASSWORD_FILE", str(pw))
+    monkeypatch.delenv("FP_RCON_HOST", raising=False)
+    import factorio_partner.core as core_module
+    monkeypatch.setattr(core_module, "Core", lambda cfg: core_cls(cfg, bridge))
+    code = launch.main(argv)
+    session = tmp_path / "home" / "launch" / "session.json"
+    return code, json.loads(session.read_text(encoding="utf-8")) if session.exists() else None
+
+
+def test_main_without_answers_exits_with_question(tmp_path, monkeypatch, capsys):
+    """Ни флагов, ни настроек мода (старый мод, ядро без функции) — спросить некого: отказ."""
+    code, _ = main_with_mod(tmp_path, monkeypatch, [], FakeBridge(), core_cls=Core)
+    assert code == 2
     assert "спроси игрока" in capsys.readouterr().err
+
+
+def test_settings_give_helpers_and_models_when_flags_are_missing(tmp_path, monkeypatch):
+    bridge = FakeBridge(agents={"helpers": 3, "pilot_model": "haiku", "strategist_model": "opus"})
+    code, session = main_with_mod(tmp_path, monkeypatch, ["--body", "character", "--roles"], bridge)
+    assert code == 0
+    assert bridge.ops[:2] == ["settings", "hello"] and ("helper_limit", {"max": 3}, None) in bridge.calls
+    assert [h["id"] for h in session["helpers"]] == ["h1", "h2", "h3"]
+    assert session["pilot_model"] == "haiku" and session["strategist_model"] == "opus"
+    assert session["strategist"]["model"] == "opus" and session["helpers"][0]["roles"]["pilot"]["model"] == "haiku"
+
+
+def test_flags_win_over_settings_and_skip_the_read(tmp_path, monkeypatch):
+    bridge = FakeBridge(agents={"helpers": 3, "pilot_model": "haiku", "strategist_model": "opus"})
+    code, session = main_with_mod(
+        tmp_path, monkeypatch, ["--helpers", "2", "--body", "character", "--roles", "--pilot-model", "sonnet",
+                                "--strategist-model", "sonnet"], bridge)
+    assert code == 0 and "settings" not in bridge.ops
+    assert len(session["helpers"]) == 2
+    assert session["pilot_model"] == "sonnet" and session["strategist_model"] == "sonnet"
+    # один флаг задан, другой нет: читаем только недостающее, остальное остаётся за флагом
+    code, session = main_with_mod(
+        tmp_path / "b", monkeypatch, ["--helpers", "2", "--body", "character", "--roles", "--pilot-model", "sonnet"],
+        FakeBridge(agents={"helpers": 4, "pilot_model": "haiku", "strategist_model": "opus"}))
+    assert session["pilot_model"] == "sonnet" and session["strategist_model"] == "opus" and len(session["helpers"]) == 2
+
+
+@pytest.mark.parametrize("value,expected", [(0, 1), (-4, 1), (9, 5), (5, 5), (2, 2)])
+def test_settings_helpers_are_clamped_to_1_5(value, expected):
+    assert launch.settings_defaults({"helpers": value})["helpers"] == expected
+
+
+def test_bad_settings_are_ignored():
+    assert launch.settings_defaults({"helpers": "3", "pilot_model": "opus", "strategist_model": "haiku"}) == {}
+    assert launch.settings_defaults({"helpers": True}) == {}
+
+
+def test_unreadable_settings_fall_back_to_defaults(tmp_path, monkeypatch):
+    bridge = FakeBridge(errors={"settings": "unknown_op"})
+    code, session = main_with_mod(tmp_path, monkeypatch, ["--helpers", "1", "--body", "character", "--roles"], bridge)
+    assert code == 0 and "settings" in bridge.ops
+    assert session["pilot_model"] == "sonnet" and session["strategist_model"] == "sonnet"
 
 
 # ---- режим ролей ---------------------------------------------------------------------
@@ -488,7 +558,14 @@ def test_pilot_model_is_checked():
         launch.parse_pilot_model("opus")
     ap = launch.build_parser()
     assert ap.parse_args(["--roles", "--pilot-model", "haiku"]).roles is True
-    assert ap.parse_args([]).roles is False and ap.parse_args([]).pilot_model == "sonnet"
+    assert ap.parse_args([]).roles is False and ap.parse_args([]).pilot_model is None
+
+
+def test_strategist_model_is_checked():
+    assert launch.parse_strategist_model(" Opus ") == "opus"
+    with pytest.raises(launch.LaunchError):
+        launch.parse_strategist_model("haiku")
+    assert launch.build_parser().parse_args(["--strategist-model", "opus"]).strategist_model == "opus"
 
 
 def test_role_message_refuses_an_unknown_role():

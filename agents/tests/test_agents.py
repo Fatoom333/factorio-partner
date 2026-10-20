@@ -58,7 +58,7 @@ def test_contract_parsers_see_the_tables():
     assert lint.mcp_tools()["partner_wait"] == {"timeout", "quiet", "since"}
     assert lint.mcp_tools()["partner_brief"] == set()
     codes = lint.error_codes()
-    assert len(codes) == 23 and "no_space" in codes and "owner_hold" in codes and "internal" in codes
+    assert len(codes) == 25 and "owner_forbids" in codes and "needs_owner_ok" in codes and "no_space" in codes and "owner_hold" in codes and "internal" in codes
     assert {"job_failed", "player_said", "game_reloaded", "helper_lost"} <= set(lint.loud_events())
     reflexes = lint.reflex_types()
     assert reflexes["flee"]["radius"] == (4.0, 32.0) and reflexes["watch"]["every_s"] == (1.0, 600.0)
@@ -465,3 +465,15 @@ def test_roles_script_may_use_the_role_agent_types(tmp_path):
     assert lint.lint_files([js]) == []
     js.write_text("export const meta = { name: 'x' }\nagent({ agentType: 'general-purpose' })\n", encoding="utf-8")
     assert any("типа partner" in p for p in lint.lint_files([js]))
+
+
+def test_role_files_close_the_shift_on_rescale_and_know_the_permissions():
+    """Все три роли заканчивают смену строкой «масштаб»; голос знает «добавь/убери N», пилот и стратег — ask/deny."""
+    agents_dir = Path(__file__).resolve().parents[2] / ".claude" / "agents"
+    text = {r: " ".join((agents_dir / f"partner-{r}.md").read_text(encoding="utf-8").split()) for r in ("voice", "pilot", "strategist")}
+    for body in text.values():
+        assert "СМЕНА: стоп | дальше | масштаб" in body and "`rescale`" in body
+        assert "Настройки модов → Карта" in body
+    assert 'action:"scale"' in text["voice"] and "reply_lines" in text["voice"] and "answer_every" in text["voice"]
+    for role in ("pilot", "strategist"):
+        assert "needs_owner_ok" in text[role] and "owner_forbids" in text[role] and "approved" in text[role]

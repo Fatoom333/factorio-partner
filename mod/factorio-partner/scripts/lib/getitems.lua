@@ -21,6 +21,7 @@
 --      stop(task, ctx); result — как у действий ({status, code?, text?, detail}).
 local util = require("scripts.core.util")
 local inv = require("scripts.lib.inventory")
+local perms = require("scripts.core.perms")
 local reserve = require("scripts.core.reserve")
 local lines = require("scripts.lib.lines")
 local recipes_p = require("scripts.perception.recipes")
@@ -210,8 +211,9 @@ end
 --- Свободные печи своей силы рядом: видимые, открытые чанки, берут категорию, пустые, без манипуляторов
 --- хозяина, без чужого топлива, не заняты другим помощником. Круг поиска — вокруг center (точка, где
 --- задачу дали: тело по дороге уходит копать руду или топливо), без center — вокруг тела.
+--- own_only — только печи помощников (плавка в печах хозяина запрещена или ждёт его разрешения, perm-smelt).
 --- → список по возрастанию расстояния от центра.
-local function free_furnaces(ctx, radius, category, fueled, center)
+local function free_furnaces(ctx, radius, category, fueled, center, own_only)
   local h = ctx.entity
   local at = center or util.xy(h.position)
   local out = {}
@@ -222,7 +224,8 @@ local function free_furnaces(ctx, radius, category, fueled, center)
       local src, res = inv_of(e, "furnace_source"), inv_of(e, "furnace_result")
       if ok and type(cats) == "table" and cats[category] and src and res and src.is_empty() and res.is_empty()
           and not (e.unit_number ~= nil and reserve.machine_holder(ctx.helper_id, e.unit_number) ~= nil)
-          and not foreign_fuel(e, fueled) and not owner_linked(h, e) then
+          and not foreign_fuel(e, fueled) and not owner_linked(h, e)
+          and not (own_only and perms.owner_built(e)) then
         out[#out + 1] = { e = e, d = util.dist(at, util.xy(e.position)) }
       end
     end
@@ -346,7 +349,7 @@ end
 local function furnaces_for(S, category)
   local f = S.furn[category]
   if f == nil then
-    f = free_furnaces(S.ctx, S.radius, category, S.fueled, S.origin)
+    f = free_furnaces(S.ctx, S.radius, category, S.fueled, S.origin, S.smelt_block ~= nil)
     S.furn[category] = f
   end
   return f
@@ -363,8 +366,14 @@ local function via(S, item, n, depth, m)
   local rec = m.rec
   local crafts = math.ceil(n / rec.yield - 1e-9)
   if m.kind == "smelt" then
+    -- печи хозяина при запрете или без его разрешения не берутся, свои печи помощников — всегда
     local fs = furnaces_for(S, rec.category)
-    if #fs == 0 then return "no_furnace" end
+    if #fs == 0 then
+      if S.smelt_block and #free_furnaces(S.ctx, S.radius, rec.category, S.fueled, S.origin) > 0 then
+        return S.smelt_block -- есть только печи хозяина: причина = код отказа
+      end
+      return "no_furnace"
+    end
     local burner = false
     for i = 1, math.min(#fs, M.MAX_FURNACES) do
       if is_burner(fs[i]) then burner = true end
@@ -465,6 +474,7 @@ local function make_plan(g, task, ctx)
   local main = h.get_main_inventory()
   local S = {
     h = h, ctx = ctx, idx = idx_of(g, ctx), blocked = g.blocked, reasons = g.reasons, radius = g.radius,
+    smelt_block = g.smelt_block,
     mineable = g.mineable, furn = {}, fueled = g.fueled, origin = g.origin, budget = { n = 0, max = M.MAX_CALLS }, choice = {},
     pocket = inv.counts(main), stock = {}, collect = {},
     steps = {}, short = {}, visiting = {}, nlog = 0, lt = {}, lk = {}, lo = {},
@@ -513,7 +523,7 @@ smelt.name = "smelt"
 --- t.args = {recipe, item, count (крафтов), yield, time, category, ingredient, amount, radius, fueled, origin}
 function smelt.start(t, ctx)
   local a = t.args
-  local fs = free_furnaces(ctx, a.radius, a.category, a.fueled, a.origin)
+  local fs = free_furnaces(ctx, a.radius, a.category, a.fueled, a.origin, a.own_only == true)
   local list = {}
   for i = 1, #fs do
     if #list >= M.MAX_FURNACES then break end
@@ -729,7 +739,7 @@ local function start_step(g, task, ctx, step)
     local ing = rec.ingr[1]
     args = { recipe = step.recipe, item = step.item, count = step.count, yield = step.yield, time = rec.time,
       category = rec.category, ingredient = ing.name, amount = ing.amount, radius = g.radius, fueled = g.fueled,
-      origin = g.origin }
+      origin = g.origin, own_only = g.smelt_block ~= nil or nil }
   end
   c.t = new_child(task, ctx, kind, args)
   local ok, res = pcall(MODS[kind].start, c.t, ctx)
@@ -854,6 +864,8 @@ function M.begin(task, ctx, want, opts)
     -- печи ищутся вокруг точки, где задачу дали: шаг «копать» уводит тело от печи
     origin = util.xy(h.position),
   }
+  -- плавка в печах хозяина: perm-smelt (по задаче: perm_gate и owner_ok), в g хранится код отказа
+  g.smelt_block = perms.refusal({ "perm-smelt" }, task)
   for name, n in pairs(want) do add(g.from.inventory, name, math.min(n, g.start[name] or 0)) end
   task.supply = g
   return nil

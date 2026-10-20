@@ -16,6 +16,7 @@ local reflexes = require("scripts.core.reflexes")
 local dispatch = require("scripts.core.dispatch")
 local ops = require("scripts.core.ops")
 local wait = require("scripts.core.wait")
+local perms = require("scripts.core.perms")
 
 local M = {}
 
@@ -117,6 +118,7 @@ function M.init()
   dispatch.register_op("events", events.op_events)
   dispatch.register_op("reflexes", reflexes.op_reflexes)
   dispatch.register_op("blob_put", blobs.op_put)
+  dispatch.register_op("settings", function(args, ctx) return perms.op_settings(args, ctx) end)
 
   -- что делать с задачами и резервами, когда тело пропадает
   registry.hooks.before_remove = function(id)

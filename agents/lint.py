@@ -50,7 +50,7 @@ PENDING_TOOLS: set[str] = set()
 # пилот без голоса и стратега) они не нужны — поручений ему никто не кладёт
 MULTI_ROLE_TOOLS = {"partner_order", "partner_inbox", "partner_ledger"}
 # инструменты диспетчера (ключ host, главный чат), не агентов: ни один агент их не получает
-HOST_TOOLS = {"partner_relay"}
+HOST_TOOLS = {"partner_relay", "partner_rescale"}
 # аргументы partner_plan описаны в MCP.md отдельным разделом, а не в таблице
 PLAN_ARGS = {"task", "resource", "patch", "options"}
 # MCP.md: для build_blueprint вместо blob можно plan; mirror — аргумент мода, которым применяется

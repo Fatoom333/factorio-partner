@@ -560,6 +560,7 @@ def check_reflexes(rset: Any) -> list:
     # types and their fields are the mod's business (schema in M.reflexes).
     if len(rset) > MAX_REFLEXES:
         raise PartnerError("limit", f"set: at most {MAX_REFLEXES} reflexes")
+    no_owner_ok("set", rset)
     for i, r in enumerate(rset):
         if not isinstance(r, dict):
             raise bad(f"set[{i}]", "must be an object")
@@ -945,6 +946,7 @@ def check_package(v: Any) -> dict:
     caller checks (core.Core.check_leave)."""
     if not isinstance(v, dict):
         raise bad("package", "must be an object")
+    no_owner_ok("package", v)
     if json_size(v) > PACKAGE_MAX:
         raise PartnerError("limit", f"package: larger than {PACKAGE_MAX} bytes of JSON")
     for k in v:
@@ -979,4 +981,106 @@ def check_package(v: Any) -> dict:
         if "order" not in out:
             raise bad("package.approved", "goes with order: the owner's order (o<N>) the leave is for")
         out["approved"] = v["approved"]
+    return out
+
+
+# ---- the owner's leave on a call and the settings of the mod ---------------------------
+
+OWNER_OK = "owner_ok"               # the owner's leave for «спросить»: the server alone sets it
+
+
+def no_owner_ok(field: str, v: Any, depth: int = 0) -> None:
+    """``owner_ok`` anywhere in what an agent sent is refused: the server sets it itself, after it has
+    checked the owner's answer (``approved`` + ``order``)."""
+    if depth > 8:
+        return
+    if isinstance(v, dict):
+        for k, x in v.items():
+            if k == OWNER_OK:
+                raise bad(f"{field}.{OWNER_OK}", "only the server sets it, after the owner's «да»: pass "
+                                                 "approved (q<N>) and order (o<N>) instead")
+            no_owner_ok(f"{field}.{k}", x, depth + 1)
+    elif isinstance(v, list):
+        for i, x in enumerate(v[:PLAN_STEPS_MAX]):
+            no_owner_ok(f"{field}[{i}]", x, depth + 1)
+
+
+def leave_ids(approved: Any, order: Any) -> tuple[str, str] | None:
+    """``approved`` + ``order`` of a call: both or neither. -> (q<N>, o<N>) or None."""
+    if approved is None and order is None:
+        return None
+    if approved is None or order is None:
+        raise bad("approved" if approved is None else "order",
+                  "approved (q<N>, the answered question) goes with order (o<N>, the owner's order)")
+    if not isinstance(approved, str) or not QUESTION_ID_RE.match(approved):
+        raise bad("approved", "must be the id of a question the owner answered (q<N>)")
+    if not isinstance(order, str) or not ORDER_ID_RE.match(order):
+        raise bad("order", "must be an order id from partner_inbox (o<N>)")
+    return approved, order
+
+
+RESCALE_MAX = 5                     # helpers one server starts (the setting partner-helpers: 1..5)
+RESCALE_TASKS_MAX = 5
+RESCALE_TASK_MAX = 200
+
+
+def rescale_n(field: str, v: Any) -> tuple[int, bool]:
+    """How many helpers the owner wants: an integer, clamped to 1..RESCALE_MAX -> (n, clamped)."""
+    if isinstance(v, bool) or not isinstance(v, (int, float)) or (isinstance(v, float) and
+                                                                 (not math.isfinite(v) or not v.is_integer())):
+        raise bad(field, f"must be an integer 1..{RESCALE_MAX}")
+    n = int(v)
+    c = min(max(n, 1), RESCALE_MAX)
+    return c, c != n
+
+
+def rescale_tasks(field: str, v: Any) -> list:
+    """``tasks``: what each body is to do after the restart: [{to?, text}] (to — a helper id)."""
+    if v is None:
+        return []
+    if not isinstance(v, list):
+        raise bad(field, "must be a list of {to?, text}")
+    if len(v) > RESCALE_TASKS_MAX:
+        raise PartnerError("limit", f"{field}: at most {RESCALE_TASKS_MAX} tasks")
+    out = []
+    for i, t in enumerate(v):
+        f = f"{field}[{i}]"
+        if not isinstance(t, dict):
+            raise bad(f, "must be an object {to?, text}")
+        for k in t:
+            if k not in ("to", "text"):
+                raise bad(f"{f}.{k}", "unknown field; allowed: to, text")
+        task = {"text": _line(f"{f}.text", t.get("text"), RESCALE_TASK_MAX)}
+        if t.get("to") is not None:
+            if not isinstance(t["to"], str) or not re.match(r"^[a-z0-9_-]{1,16}$", t["to"]):
+                raise bad(f"{f}.to", "must be a helper id (h<N>)")
+            task["to"] = t["to"]
+        out.append(task)
+    return out
+
+
+PANEL_ACTIONS = ("scale", "thoughts", "auto", "combat", "hold", "resume")
+PANEL_GOAL_MAX = 100
+
+
+def panel_event(data: Any) -> dict | None:
+    """``owner_panel`` from the mod (the owner pressed a button of his window) -> its checked fields,
+    or None for a malformed one (it is dropped)."""
+    if not isinstance(data, dict) or data.get("action") not in PANEL_ACTIONS:
+        return None
+    act = data["action"]
+    out: dict = {"action": act}
+    if act == "scale":
+        try:
+            out["n"], _ = rescale_n("n", data.get("n"))
+        except PartnerError:
+            return None
+    elif act in ("thoughts", "auto", "combat"):
+        if not isinstance(data.get("on"), bool):
+            return None
+        out["on"] = data["on"]
+        goal = data.get("goal")
+        if act == "auto" and isinstance(goal, str) and goal.strip():
+            g = " ".join(goal.split())[:PANEL_GOAL_MAX]
+            out["goal"] = g.replace("«", '"').replace("»", '"')
     return out

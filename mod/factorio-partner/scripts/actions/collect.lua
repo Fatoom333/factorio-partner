@@ -22,8 +22,16 @@ local extract = require("scripts.actions.extract")
 local C = require("scripts.perception.state").common
 local lines = require("scripts.lib.lines")
 
+local perms = require("scripts.core.perms")
+
 local M = {}
 M.name = "collect"
+
+--- Разрешения хозяина (scripts/core/perms.lua): какие ключи задевают эти аргументы.
+function M.perms(a, ctx)
+  if a.from_lines then return { "perm-take-lines" } end
+  return { "perm-take-chests" }
+end
 M.schema = {
   items = { type = "items", required = true, min_kinds = 1 },
   center = { type = "pos" },

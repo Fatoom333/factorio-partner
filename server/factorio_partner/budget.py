@@ -15,6 +15,10 @@ Levels (``Budget.level``):
 - ``strategist_off`` — at or above ``warn`` (default 70 %): the strategist leaves the auto mode;
 - ``voice_only`` — at or above ``stop`` (default 85 %), or the weekly figure at or above
   ``week_stop`` (default 90 %): only the mod and the voice are left;
+The thresholds come from ``FP_BUDGET_WARN`` / ``FP_BUDGET_STOP`` / ``FP_BUDGET_WEEK_STOP`` when set;
+else from the mod's settings (``agents.budget``: strategist, voice_only, weekly — ``apply_settings``);
+else the defaults below.
+
 - ``unknown`` — no file, an unreadable or malformed one, or data older than ``max_age`` (default
   10 minutes). Unknown limits nothing: a missing figure must not stop the helper.
 """
@@ -60,7 +64,7 @@ def _first(d: Mapping, names: tuple[str, ...]) -> Any:
     return None
 
 
-def _env_num(env: Mapping[str, str], name: str, default: float, lo: float, hi: float) -> float:
+def _env_num(env: Mapping[str, str], name: str, default: float | None, lo: float, hi: float) -> float | None:
     raw = (env.get(name) or "").strip()
     if not raw:
         return default
@@ -74,22 +78,48 @@ def _env_num(env: Mapping[str, str], name: str, default: float, lo: float, hi: f
 
 
 class Budget:
-    def __init__(self, path: Path | None = None, *, warn: float = DEFAULT_WARN,
-                 stop: float = DEFAULT_STOP, week_stop: float = DEFAULT_WEEK_STOP,
+    def __init__(self, path: Path | None = None, *, warn: float | None = None,
+                 stop: float | None = None, week_stop: float | None = None,
                  max_age: float = DEFAULT_MAX_AGE, now: Callable[[], float] = time.time):
+        # a threshold given here (or by the environment) is fixed: the mod's settings do not move it
+        self.fixed = {n for n, v in (("warn", warn), ("stop", stop), ("week_stop", week_stop)) if v is not None}
+        warn = DEFAULT_WARN if warn is None else warn
+        stop = DEFAULT_STOP if stop is None else stop
+        week_stop = DEFAULT_WEEK_STOP if week_stop is None else week_stop
         if not 0 < warn < stop <= 100:
             raise ConfigError("budget thresholds need 0 < warn < stop <= 100")
         self.path = path
         self.warn, self.stop, self.week_stop, self.max_age = warn, stop, week_stop, max_age
         self.now = now
 
+    def apply_settings(self, budget: Mapping[str, Any] | None) -> bool:
+        """Thresholds from the mod's settings (``agents.budget``) for those not fixed by the
+        environment. A set that breaks 0 < warn < stop <= 100 changes nothing. True — applied."""
+        if not isinstance(budget, Mapping):
+            return False
+        want = {"warn": budget.get("strategist"), "stop": budget.get("voice_only"),
+                "week_stop": budget.get("weekly")}
+        new = {"warn": self.warn, "stop": self.stop, "week_stop": self.week_stop}
+        for k, v in want.items():
+            if k in self.fixed:
+                continue
+            p = _pct(v) if k != "week_stop" else (float(v) if isinstance(v, (int, float))
+                                                  and not isinstance(v, bool) and math.isfinite(v)
+                                                  and 1 <= v <= 101 else None)
+            if p is not None:
+                new[k] = p
+        if not 0 < new["warn"] < new["stop"] <= 100:
+            return False
+        self.warn, self.stop, self.week_stop = new["warn"], new["stop"], new["week_stop"]
+        return True
+
     @classmethod
     def from_env(cls, env: Mapping[str, str], now: Callable[[], float] = time.time) -> "Budget":
         raw = (env.get("FP_BUDGET_FILE") or "").strip()
         return cls(Path(raw).expanduser() if raw else None,
-                   warn=_env_num(env, "FP_BUDGET_WARN", DEFAULT_WARN, 1, 100),
-                   stop=_env_num(env, "FP_BUDGET_STOP", DEFAULT_STOP, 1, 100),
-                   week_stop=_env_num(env, "FP_BUDGET_WEEK_STOP", DEFAULT_WEEK_STOP, 1, 101),
+                   warn=_env_num(env, "FP_BUDGET_WARN", None, 1, 100),
+                   stop=_env_num(env, "FP_BUDGET_STOP", None, 1, 100),
+                   week_stop=_env_num(env, "FP_BUDGET_WEEK_STOP", None, 1, 101),
                    max_age=_env_num(env, "FP_BUDGET_MAX_AGE", DEFAULT_MAX_AGE, 1, 86400),
                    now=now)
 

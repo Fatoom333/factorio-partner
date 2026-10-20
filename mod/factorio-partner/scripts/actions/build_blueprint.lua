@@ -55,8 +55,39 @@ local B = require("scripts.lib.build")
 local G = require("scripts.lib.getitems")
 local BP = require("scripts.lib.blueprint")
 
+local perms = require("scripts.core.perms")
+
 local M = {}
 M.name = "build_blueprint"
+
+--- Сколько предметов уйдёт на сущности и плитки чертежа: по одному на каждую и все запросы
+--- предметов (BlueprintEntity.items: id + items.in_inventory[].count).
+function M.spend_of(entities, tiles)
+  local n = 0
+  for _, e in ipairs(entities or {}) do
+    n = n + 1
+    if type(e) == "table" and type(e.items) == "table" then
+      for _, req in ipairs(e.items) do
+        local places = type(req) == "table" and type(req.items) == "table" and req.items.in_inventory or nil
+        if type(places) == "table" then
+          for _, pl in ipairs(places) do
+            n = n + ((type(pl) == "table" and type(pl.count) == "number") and pl.count or 1)
+          end
+        end
+      end
+    end
+  end
+  return n + #(tiles or {})
+end
+
+--- Разрешения хозяина (scripts/core/perms.lua): какие ключи задевают эти аргументы.
+--- Трату (perm-spend) по аргументам не узнать — чертёж ещё в blob: её проверяет start по тому,
+--- что ставится на самом деле (по задаче: perm_gate и owner_ok), до первого призрака.
+function M.perms(a, ctx)
+  if a.dry_run then return {} end
+  if a.force == "superforced" then return { "perm-build", "perm-superforced" } end
+  return { "perm-build" }
+end
 M.schema = {
   blob = { type = "string", required = true, max = 32, pattern = "^[a-z0-9%-]+$" },
   anchor = { type = "pos", required = true },
@@ -228,6 +259,11 @@ function M.start(task, ctx)
     end
     local entities = count > 0 and st.get_blueprint_entities() or {}
     if type(entities) ~= "table" then entities = {} end
+    if not a.dry_run then
+      -- трата по тому чертежу, что ставится на самом деле (perm-spend; по задаче: perm_gate и owner_ok)
+      local pcode, ptext, pdata = perms.refusal(perms.add_spend({}, M.spend_of(entities, bp_tiles)), task)
+      if pcode ~= nil then return { refused = B.failed(pcode, ptext, pdata) } end
+    end
     if a.mirror and not can_mirror(entities) then
       err.raise("bad_args", "args.mirror: a blueprint with rails, train stops or storage tanks is not mirrored")
     end
@@ -256,6 +292,7 @@ function M.start(task, ctx)
     return place(task, ctx, st, plan, tplan, area, pre)
   end)
 
+  if out.refused then return out.refused end
   local s = out.summary
   task.bp = s
   if out.liquid then

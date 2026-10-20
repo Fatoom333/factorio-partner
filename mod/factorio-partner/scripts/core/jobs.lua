@@ -26,6 +26,7 @@
 local err = require("scripts.core.err")
 local util = require("scripts.core.util")
 local schema = require("scripts.core.schema")
+local perms = require("scripts.core.perms")
 local events = require("scripts.core.events")
 local registry = require("scripts.core.registry")
 local reserve = require("scripts.core.reserve")
@@ -353,6 +354,8 @@ function M.op_act(args, ctx)
   if targs ~= nil and type(targs) ~= "table" then err.raise("bad_args", "args.args: expected object") end
   targs = schema.validate(mod.schema or {}, targs or {}, "args.args")
   if mod.check_args ~= nil then targs = mod.check_args(targs, ctx) end
+  -- разрешения хозяина (scripts/core/perms.lua): нельзя — отказ всегда, спросить — нужен owner_ok
+  perms.enforce(mod, targs, ctx)
   if a.replace and name == "wait" then
     err.raise("bad_args", "args.replace: wait never replaces the queue")
   end
@@ -383,6 +386,8 @@ function M.op_act(args, ctx)
   local task = {
     job = jobs.next_job, helper = helper, ["do"] = name, args = targs, req = ctx.request_id,
     created_tick = game.tick, after = after,
+    perm_gate = ctx.perm_gate == true or nil,
+    owner_ok = (ctx.perm_gate == true and type(ctx.owner_ok) == "table" and util.plain(ctx.owner_ok)) or nil,
   }
   jobs.next_job = jobs.next_job + 1
   table.insert(q.queue, pos, task)
