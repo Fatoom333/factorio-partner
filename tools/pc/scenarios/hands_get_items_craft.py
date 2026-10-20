@@ -332,8 +332,10 @@ def part_craft(client, result, reasons, ctx):
         reasons.append(f"craft: detail.from.crafted без {item}: {src}")
     if middle_from == "crafted" and crafted.get(middle, 0) <= 0:
         reasons.append(f"craft: detail.from.crafted без промежуточного {middle}: {src}")
-    if middle_from == "storage" and (src.get("storage") or {}).get(middle, 0) <= 0:
-        reasons.append(f"craft: промежуточный {middle} лежал на складе, но не в detail.from.storage: {src}")
+    # промежуточный на складе может лежать в выходе линии хозяина: без from_lines его оттуда не берут,
+    # и тогда честно крафтят — это тоже годится
+    if middle_from == "storage" and (src.get("storage") or {}).get(middle, 0) <= 0             and crafted.get(middle, 0) <= 0:
+        reasons.append(f"craft: промежуточный {middle} лежал на складе, но не в detail.from.storage и не скрафчен: {src}")
     if (src.get("storage") or {}).get(item):
         reasons.append(f"craft: {item} взят со склада, хотя его там не было: {src}")
 
