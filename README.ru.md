@@ -14,7 +14,7 @@
 - [Что умеет](#что-умеет)
 - [Настройки](#настройки)
   - [Панель хозяина](#панель-хозяина)
-- [Быстрый старт вручную](#быстрый-старт-вручную)
+- [Быстрый старт вручную](#быстрый-старт)
   - [Роли в других агентах](#роли-в-других-агентах-codex-cli-gemini-cli-opencode-cursor)
   - [Слова хозяина в чате](#слова-хозяина-в-чате)
 - [Структура репозитория](#структура-репозитория)
@@ -29,26 +29,31 @@
 
 ```text
 Установи мне factorio-partner (https://github.com/Fatoom333/factorio-partner) на этот компьютер.
-Действуй по его README, раздел «Быстрый старт вручную». Шаги:
-1. Склонируй репозиторий в текущую папку и перейди на тег последнего релиза
-   (https://github.com/Fatoom333/factorio-partner/releases/latest).
+Действуй по шагам ниже; если что-то неясно — README в ветке main (раздел «Быстрый старт»).
+1. Найди последний релиз (https://github.com/Fatoom333/factorio-partner/releases/latest), склонируй
+   репозиторий в текущую папку и перейди на тег этого релиза.
 2. Найди папку данных Factorio (Windows: %APPDATA%\Factorio, Linux: ~/.factorio,
-   macOS: ~/Library/Application Support/factorio; если её там нет — спроси меня).
+   macOS: ~/Library/Application Support/factorio; у Steam та же; если её там нет — спроси меня).
    Скачай factorio-partner_<версия>.zip из этого релиза в её папку mods (не распаковывай).
-   Если есть mods/mod-list.json — проверь, что factorio-partner там с "enabled": true.
+   mods/mod-list.json руками не правь: игра сама включит новый мод. Только если там уже есть
+   factorio-partner с "enabled": false — поставь true через разбор JSON (не как текст).
 3. Создай виртуальное окружение Python 3.11+ вне папки репозитория и поставь в него сервер:
-   <python из venv> -m pip install -e "<репозиторий>/server". Только в это окружение, в систему ничего.
-4. RCON: придумай случайный пароль, сохрани его одной строкой в файл вне репозитория (например рядом с
-   venv) и не показывай его в чате. Перед правкой config/config.ini игры спроси меня: игра должна быть
-   закрыта; сначала сделай копию файла; в разделе [other] задай local-rcon-socket=127.0.0.1:27015 и
-   local-rcon-password=<этот пароль>.
-5. Добавь MCP-сервер с именем "partner" в конфиг ЭТОГО клиента в его формате: command = <python из venv>,
-   args = ["-m", "factorio_partner.server"] (никогда не --admin), env: FP_HOME (папка данных вне
-   репозитория), FP_RCON_HOST=127.0.0.1, FP_RCON_PORT=27015, FP_RCON_PASSWORD_FILE=<файл пароля>.
+   <python из venv> -m pip install -e "<репозиторий>/server" (в Windows это <venv>\Scripts\python.exe).
+   Только в это окружение, в систему ничего.
+4. RCON: придумай случайный пароль из букв и цифр, сохрани его одной строкой в файл вне репозитория
+   (например рядом с venv) и не показывай его в чате. Перед правкой <папка данных>/config/config.ini
+   спроси меня: игра должна быть закрыта; сначала сделай копию файла. В разделе [other] эти строки обычно
+   закомментированы («; local-rcon-socket=...») — замени их, не добавляй вторые:
+   local-rcon-socket=127.0.0.1:27015 и local-rcon-password=<этот пароль>.
+5. Задай переменные окружения для следующего шага: FP_HOME (папка данных вне репозитория),
+   FP_RCON_HOST=127.0.0.1, FP_RCON_PORT=27015, FP_RCON_PASSWORD_FILE=<файл пароля>.
 6. Скажи мне запустить Factorio, загрузить сейв через «Мультиплеер → Хост сохранённой игры» и написать
    «готово». Потом запусти <python из venv> <репозиторий>/agents/launch.py --helpers 1 --body character
-   --client <этот клиент> (claude, codex, gemini, opencode или cursor) и делай, что он напишет; для одного
-   агента без ролей — правила из .claude/agents/partner.md и промпт из FP_HOME/launch/session.json.
+   --client <этот клиент> (claude, codex, gemini, opencode или cursor). Он запишет MCP-сервер «partner» для
+   этого клиента в FP_HOME/launch/ (никогда не добавляй --admin) и первые сообщения. Добавь сервер в
+   конфиг этого клиента и запусти помощника, как скажет запуск: Claude Code без ролей —
+   claude --agent partner --mcp-config "<FP_HOME>/launch/mcp.json", первым сообщением helpers[0].prompt
+   из FP_HOME/launch/session.json; другие клиенты — роли из first-message.md.
 Не выполняй консольные команды Factorio, не клади пароль и ключи помощников в репозиторий и в чат.
 В конце коротко скажи, что сделал и где лежит каждый файл.
 ```
@@ -154,7 +159,7 @@
 переключатель «Боевой режим» (стрельба и заправка турелей всем телам, если они не запрещены в настройках).
 Подробности — [EVENTS](docs/EVENTS.md) «Панель хозяина».
 
-## Быстрый старт вручную
+## Быстрый старт
 
 Нужно: Factorio 2.0.x (проверено на 2.0.77 со Space Age; сам мод зависит только от `base >= 2.0.0`),
 Python 3.11+, агент с поддержкой MCP (любой клиент, который умеет запускать MCP-сервер по stdio; для Claude
@@ -169,14 +174,15 @@ Code есть расширенная настройка, п. 5), возможн�
    python tools/pc/pack.py mod --src mod/factorio-partner --out <папка для результата>
    ```
 2. **RCON.** Слушать должен `127.0.0.1`. Для игры, которую вы хостите из меню («Мультиплеер → Хост
-   сохранённой игры»), в `config.ini` задайте `local-rcon-socket=127.0.0.1:27015` и
-   `local-rcon-password=<пароль>` (или в скрытых настройках: Ctrl+Alt в главном меню, «Настройки», раздел
+   сохранённой игры»), в `<папка данных>/config/config.ini`, раздел `[other]` (строки обычно уже есть,
+   закомментированные `;`, — замените их; игра должна быть закрыта), задайте `local-rcon-socket=127.0.0.1:27015` и
+   `local-rcon-password=<пароль>` (пароль из букв и цифр; или в скрытых настройках: Ctrl+Alt в главном меню, «Настройки», раздел
    «The rest»). Выделенный сервер: `--rcon-port`, `--rcon-bind`, `--rcon-password`. В одиночной игре RCON нет.
    Пароль положите в файл вне репозитория: одна строка; серверу нужен только путь к файлу.
 3. **Сервер.**
    ```
    python -m venv <папка venv>
-   <venv>/bin/python -m pip install -e "server[dev]"        # Windows: <venv>\Scripts\python
+   <venv>/bin/python -m pip install -e server        # Windows: <venv>\Scripts\python; "server[dev]" — ещё и для тестов
    ```
    Зависимости (`server/pyproject.toml`): `mcp>=1.12,<2`, `factorio-rcon-py[async]>=2.1,<3`. Пакет ставит две
    команды: `factorio-partner-mcp` (MCP-сервер) и `factorio-partner-cli` (JSON на входе и выходе, для

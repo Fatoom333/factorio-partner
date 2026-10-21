@@ -15,7 +15,7 @@ also ships richer role files for Claude Code.
   - [Honesty rules](#honesty-rules)
 - [Features](#features)
 - [Requirements](#requirements)
-- [Quick start (by hand)](#quick-start-by-hand)
+- [Quick start (by hand)](#quick-start)
   - [1. Install the mod](#1-install-the-mod)
   - [2. Enable RCON](#2-enable-rcon)
   - [3. Install the server](#3-install-the-server)
@@ -37,27 +37,31 @@ the prompt below. The agent downloads everything and sets it up; it asks you bef
 
 ```text
 Set up factorio-partner (https://github.com/Fatoom333/factorio-partner) on this computer for me.
-Follow its README, section "Quick start (by hand)". Steps:
-1. Clone the repository into the current folder and check out the latest release tag
-   (https://github.com/Fatoom333/factorio-partner/releases/latest).
+Follow these steps; the README on the main branch ("Quick start") is the reference if something is unclear.
+1. Find the latest release (https://github.com/Fatoom333/factorio-partner/releases/latest), clone the
+   repository into the current folder and check out that release tag.
 2. Find the Factorio user data folder (Windows: %APPDATA%\Factorio, Linux: ~/.factorio,
-   macOS: ~/Library/Application Support/factorio; if it is elsewhere, ask me).
+   macOS: ~/Library/Application Support/factorio; Steam uses the same place; if it is not there, ask me).
    Download factorio-partner_<version>.zip from that release into its mods folder (do not unpack it).
-   If mods/mod-list.json exists, make sure factorio-partner is listed with "enabled": true.
+   Do not edit mods/mod-list.json by hand: the game enables a new mod itself. Only if it already lists
+   factorio-partner with "enabled": false, set it to true with a JSON parser (never as plain text).
 3. Create a Python 3.11+ virtual environment outside the repository folder and install the server into it:
-   <venv python> -m pip install -e "<repo>/server". Use only that venv; install nothing system-wide.
-4. RCON: generate a random password, save it alone in a one-line file outside the repository
-   (for example next to the venv), and never print it in the chat. Then ask me before editing the game's
-   config/config.ini: the game must be closed; back the file up first; set
-   local-rcon-socket=127.0.0.1:27015 and local-rcon-password=<that password> in the [other] section.
-5. Create the MCP server entry named "partner" for THIS client in its own config format, with
-   command = <venv python>, args = ["-m", "factorio_partner.server"] (never --admin) and env FP_HOME
-   (a data folder outside the repository), FP_RCON_HOST=127.0.0.1, FP_RCON_PORT=27015,
-   FP_RCON_PASSWORD_FILE=<the password file>.
-6. Tell me to start Factorio, load my save via "Multiplayer -> Host saved game" and say "ready".
-   Then run <venv python> <repo>/agents/launch.py --helpers 1 --body character --client <this client>
-   (claude, codex, gemini, opencode or cursor) and follow what it prints; for one agent without roles use
-   the rules from .claude/agents/partner.md and the prompt from FP_HOME/launch/session.json.
+   <venv python> -m pip install -e "<repo>/server" (on Windows <venv python> is <venv>\Scripts\python.exe).
+   Use only that venv; install nothing system-wide.
+4. RCON: generate a random password of letters and digits, save it alone in a one-line file outside the
+   repository (for example next to the venv) and never print it in the chat. Then ask me before editing
+   <data folder>/config/config.ini: the game must be closed; back the file up first. In the [other]
+   section the lines are usually commented out ("; local-rcon-socket=..."); replace them, do not add
+   duplicates: local-rcon-socket=127.0.0.1:27015 and local-rcon-password=<that password>.
+5. Set these environment variables for the next step: FP_HOME (a data folder outside the repository),
+   FP_RCON_HOST=127.0.0.1, FP_RCON_PORT=27015, FP_RCON_PASSWORD_FILE=<the password file>.
+6. Tell me to start Factorio, load my save via "Multiplayer -> Host saved game" and say "ready". Then run
+   <venv python> <repo>/agents/launch.py --helpers 1 --body character --client <this client>
+   (claude, codex, gemini, opencode or cursor). It writes the MCP server entry "partner" for that client
+   into FP_HOME/launch/ (never add --admin to it) and the first messages. Add that entry to this client's
+   MCP config and start the helper as the launcher says: Claude Code without roles —
+   claude --agent partner --mcp-config "<FP_HOME>/launch/mcp.json" with helpers[0].prompt from
+   FP_HOME/launch/session.json as the first message; other clients — the roles from first-message.md.
 Do not run Factorio console commands, do not put the password or helper keys into the repository or the chat.
 At the end, tell me in short what you did and where each file is.
 ```
@@ -120,7 +124,7 @@ enemy, respawn) run inside the mod, so the agent can "sleep" between events.
 - An MCP-capable agent (any client that can launch a stdio MCP server). Claude Code gets a richer setup (below).
 - A way to turn on RCON: hosting the save from the main menu (multiplayer host) or a dedicated server.
 
-## Quick start (by hand)
+## Quick start
 
 ### 1. Install the mod
 Download `factorio-partner_<version>.zip` from the latest
@@ -140,7 +144,8 @@ It prints the path to the zip. Enable the mod in the game's mod list.
 
 ### 2. Enable RCON
 RCON must listen on `127.0.0.1`. For a save you host from the menu ("Multiplayer → Host saved game"), set in
-`config.ini` (or in the hidden settings: Ctrl+Alt in the main menu, then "Settings", section "The rest"):
+`<user data folder>/config/config.ini`, section `[other]` (the lines are usually there commented out with `;` —
+replace them; the game must be closed), or in the hidden settings: Ctrl+Alt in the main menu, then "Settings", section "The rest". Use letters and digits for the password:
 
 ```
 local-rcon-socket=127.0.0.1:27015
@@ -153,7 +158,7 @@ no RCON. Keep the password in a one-line file outside the repository; the server
 ### 3. Install the server
 ```
 python -m venv <venv folder>
-<venv>/bin/python -m pip install -e "server[dev]"        # Windows: <venv>\Scripts\python
+<venv>/bin/python -m pip install -e server        # Windows: <venv>\Scripts\python; "server[dev]" adds test tools
 ```
 Dependencies (from `server/pyproject.toml`): `mcp>=1.12,<2` and `factorio-rcon-py[async]>=2.1,<3`. The package
 also installs two commands, `factorio-partner-mcp` (the MCP server) and `factorio-partner-cli` (JSON in/out for
