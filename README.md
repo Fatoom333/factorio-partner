@@ -9,6 +9,62 @@ also ships richer role files for Claude Code.
 
 > Detailed docs (`docs/`) are in Russian. This README is the English entry point.
 
+## Contents
+- [Install with an agent (one prompt)](#install-with-an-agent-one-prompt)
+- [How it works](#how-it-works)
+  - [Honesty rules](#honesty-rules)
+- [Features](#features)
+- [Requirements](#requirements)
+- [Quick start (by hand)](#quick-start-by-hand)
+  - [1. Install the mod](#1-install-the-mod)
+  - [2. Enable RCON](#2-enable-rcon)
+  - [3. Install the server](#3-install-the-server)
+  - [4. Connect an MCP client (any agent)](#4-connect-an-mcp-client-any-agent)
+  - [5. Claude Code add-on (roles, workflows)](#5-claude-code-add-on-roles-workflows)
+  - [6. Roles in other agents](#6-roles-in-other-agents-codex-cli-gemini-cli-opencode-cursor)
+- [Mod settings](#mod-settings)
+  - [Owner words in chat](#owner-words-in-chat)
+  - [Owner panel](#owner-panel)
+- [Project layout](#project-layout)
+- [Testing](#testing)
+- [Documentation (Russian)](#documentation-russian)
+- [License and credits](#license-and-credits)
+
+## Install with an agent (one prompt)
+Open your coding agent (Claude Code, Codex CLI, Gemini CLI, OpenCode, Cursor…) in an empty folder and paste
+the prompt below. The agent downloads everything and sets it up; it asks you before touching the game's
+`config.ini` and never needs the game to be running until the last step.
+
+```text
+Set up factorio-partner (https://github.com/Fatoom333/factorio-partner) on this computer for me.
+Follow its README, section "Quick start (by hand)". Steps:
+1. Clone the repository into the current folder and check out the latest release tag
+   (https://github.com/Fatoom333/factorio-partner/releases/latest).
+2. Find the Factorio user data folder (Windows: %APPDATA%\Factorio, Linux: ~/.factorio,
+   macOS: ~/Library/Application Support/factorio; if it is elsewhere, ask me).
+   Download factorio-partner_<version>.zip from that release into its mods folder (do not unpack it).
+   If mods/mod-list.json exists, make sure factorio-partner is listed with "enabled": true.
+3. Create a Python 3.11+ virtual environment outside the repository folder and install the server into it:
+   <venv python> -m pip install -e "<repo>/server". Use only that venv; install nothing system-wide.
+4. RCON: generate a random password, save it alone in a one-line file outside the repository
+   (for example next to the venv), and never print it in the chat. Then ask me before editing the game's
+   config/config.ini: the game must be closed; back the file up first; set
+   local-rcon-socket=127.0.0.1:27015 and local-rcon-password=<that password> in the [other] section.
+5. Create the MCP server entry named "partner" for THIS client in its own config format, with
+   command = <venv python>, args = ["-m", "factorio_partner.server"] (never --admin) and env FP_HOME
+   (a data folder outside the repository), FP_RCON_HOST=127.0.0.1, FP_RCON_PORT=27015,
+   FP_RCON_PASSWORD_FILE=<the password file>.
+6. Tell me to start Factorio, load my save via "Multiplayer -> Host saved game" and say "ready".
+   Then run <venv python> <repo>/agents/launch.py --helpers 1 --body character --client <this client>
+   (claude, codex, gemini, opencode or cursor) and follow what it prints; for one agent without roles use
+   the rules from .claude/agents/partner.md and the prompt from FP_HOME/launch/session.json.
+Do not run Factorio console commands, do not put the password or helper keys into the repository or the chat.
+At the end, tell me in short what you did and where each file is.
+```
+
+After it finishes you only give orders in the game chat ("come here", "set up mining on this ore patch").
+If something fails, the manual steps below are the reference.
+
 ## How it works
 
 ```
@@ -64,7 +120,7 @@ enemy, respawn) run inside the mod, so the agent can "sleep" between events.
 - An MCP-capable agent (any client that can launch a stdio MCP server). Claude Code gets a richer setup (below).
 - A way to turn on RCON: hosting the save from the main menu (multiplayer host) or a dedicated server.
 
-## Quick start
+## Quick start (by hand)
 
 ### 1. Install the mod
 Download `factorio-partner_<version>.zip` from the latest
