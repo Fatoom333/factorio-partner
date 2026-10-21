@@ -24,6 +24,12 @@
 запускает роли и передаёт им слова хозяина (``partner_relay``); он лежит в файле сессии отдельно
 (``host``) и в первые сообщения ролей не попадает. Без ``--roles`` всё как раньше: один агент
 ``partner`` на помощника.
+
+Другие клиенты (``--client codex|gemini|opencode|cursor``, по умолчанию ``claude``): кроме общего
+``mcp.json`` скрипт пишет конфигурацию MCP в формате клиента (``mcp-<клиент>.json`` или ``.toml``) и
+готовое первое сообщение главному агенту (``first-message.md``): запустить роли подагентами и дать
+каждой её сообщение. Для этих клиентов режим ролей включается сам. Файлы ролей для клиента лежат в
+репозитории (``agents/roles_export.py``). Ключи пишутся только в ``session.json`` и ``first-message.md``.
 """
 from __future__ import annotations
 
@@ -290,6 +296,71 @@ def role_mcp_files(out_dir: Path, config: dict) -> dict[str, Path]:
     return paths
 
 
+CLIENTS = ("claude", "codex", "gemini", "opencode", "cursor")
+CLIENT_MCP_FILE = {"codex": "mcp-codex.toml", "gemini": "mcp-gemini.json",
+                   "opencode": "mcp-opencode.json", "cursor": "mcp-cursor.json"}
+FIRST_MESSAGE_FILE = "first-message.md"
+
+
+def _toml_str(value: str) -> str:
+    return json.dumps(value, ensure_ascii=False)     # базовая строка TOML
+
+
+def client_mcp_text(client: str, config: dict) -> str:
+    """Запись сервера ``partner`` в формате клиента (``config`` — результат ``mcp_config``)."""
+    server = config["mcpServers"][SERVER_NAME]
+    command, args, env = server["command"], server["args"], server["env"]
+    if client == "codex":      # .codex/config.toml или ~/.codex/config.toml
+        lines = [f"[mcp_servers.{SERVER_NAME}]", f"command = {_toml_str(command)}",
+                 "args = [" + ", ".join(_toml_str(a) for a in args) + "]", "",
+                 f"[mcp_servers.{SERVER_NAME}.env]"]
+        lines += [f"{k} = {_toml_str(v)}" for k, v in env.items()]
+        return "\n".join(lines) + "\n"
+    if client == "gemini":     # .gemini/settings.json
+        data = {"experimental": {"enableAgents": True},
+                "mcpServers": {SERVER_NAME: {"command": command, "args": args, "env": env}}}
+    elif client == "opencode":  # opencode.json
+        data = {"$schema": "https://opencode.ai/config.json",
+                "mcp": {SERVER_NAME: {"type": "local", "command": [command, *args],
+                                      "environment": env, "enabled": True}}}
+    elif client == "cursor":   # .cursor/mcp.json
+        data = {"mcpServers": {SERVER_NAME: {"command": command, "args": args, "env": env}}}
+    else:
+        raise LaunchError(f"неизвестный клиент: {client}")
+    return json.dumps(data, ensure_ascii=False, indent=1) + "\n"
+
+
+# как главный агент клиента запускает подагентов (одна фраза в первом сообщении)
+CLIENT_SPAWN = {
+    "codex": "Запусти подагентов Codex параллельно — по имени агента из .codex/agents/.",
+    "gemini": "Вызови агентов Gemini CLI по имени (@имя) — по имени агента из .gemini/agents/.",
+    "opencode": "Запусти подагентов OpenCode (инструмент Task или @имя) — по имени агента из .opencode/agents/.",
+    "cursor": "Запусти фоновых подагентов Cursor — по имени агента из .cursor/agents/.",
+}
+
+
+def client_first_message(client: str, session: dict) -> str:
+    """Первое сообщение главному агенту клиента: какие роли запустить и что сказать каждой."""
+    if client not in CLIENT_SPAWN:
+        raise LaunchError(f"неизвестный клиент: {client}")
+    pilots = [(h["id"], h["roles"]["pilot"]) for h in session["helpers"]]
+    lines = [
+        "Запуск напарника в Factorio. Ты — главный агент: сам телом не действуй и ключи в чат не пиши.",
+        CLIENT_SPAWN[client],
+        f"Нужны роли: partner-voice (один), partner-strategist (один) и partner-pilot "
+        f"(по одному на тело: {', '.join(i for i, _ in pilots)}). Все работают одновременно и долго.",
+        "Каждой роли передай ПЕРВЫМ сообщением её текст ниже целиком, без изменений (в нём её ключ); "
+        "остальное — её правила из файла агента.",
+        "",
+    ]
+    blocks = [("partner-voice", session["voice"]), ("partner-strategist", session["strategist"])]
+    blocks += [(f"partner-pilot, тело {i}", p) for i, p in pilots]
+    for title, entry in blocks:
+        lines += [f"## {title}", "```text", entry["prompt"], "```", ""]
+    lines.append("Когда роль закончила смену, перезапусти её с короткой выжимкой и тем же сообщением.")
+    return "\n".join(lines) + "\n"
+
+
 def strategist_knowledge(directory: Path = KNOWLEDGE_DIR) -> str:
     """Справка стратегу (расчёты и блоки forge) одним текстом; нет файлов — пусто."""
     parts = []
@@ -501,9 +572,13 @@ def role_agent(role: str, hid: str, key: str, mcp_files: dict[str, Path], body: 
 async def launch(cfg, n: int, body: str, players: list[str], *, core,
                  env: dict[str, str], python: str, say: Callable[[str], None],
                  ids: list[str] | None = None, roles: bool = False,
-                 pilot_model: str = "sonnet", strategist_model: str = "sonnet") -> dict:
+                 pilot_model: str = "sonnet", strategist_model: str = "sonnet",
+                 client: str = "claude") -> dict:
     """``n`` — сколько помощников разрешил игрок (``helper_limit``); тела — ``ids`` (по умолчанию h1…hN).
     ``roles`` — режим трёх ролей (ключи всех ролей, агенты ``partner-voice``/``-pilot``/``-strategist``)."""
+    if client not in CLIENTS:
+        raise LaunchError("клиент (--client): " + ", ".join(CLIENTS))
+    roles = roles or client != "claude"        # другим клиентам нужны роли подагентами
     pilot_model = parse_pilot_model(pilot_model)
     strategist_model = parse_strategist_model(strategist_model)
     ids = list(ids) if ids else helper_ids(n)
@@ -555,9 +630,16 @@ async def launch(cfg, n: int, body: str, players: list[str], *, core,
             summary.append({"helper": h["id"], "role": "pilot",
                             **{k: v for k, v in h["roles"]["pilot"].items() if k != "prompt"}})
     _write_private(session_path, json.dumps(session, ensure_ascii=False, indent=1) + "\n")
-    return {"helpers": ids, "body": body, "module_errors": mod["module_errors"],
-            "mcp_config": mcp_path, "session": session_path,
-            "agents": summary}
+    result = {"helpers": ids, "body": body, "module_errors": mod["module_errors"],
+              "mcp_config": mcp_path, "session": session_path,
+              "agents": summary, "client": client}
+    if client != "claude":
+        client_path = out_dir / CLIENT_MCP_FILE[client]
+        _write_private(client_path, client_mcp_text(client, config))
+        message_path = out_dir / FIRST_MESSAGE_FILE
+        _write_private(message_path, client_first_message(client, session))
+        result.update(mcp_config=client_path, first_message=message_path)
+    return result
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -572,6 +654,10 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--players", help="то же одним флагом: имена игроков через запятую")
     ap.add_argument("--roles", action="store_true",
                     help="режим ролей: пилот на каждого помощника, голос и стратег — по одному на всех")
+    ap.add_argument("--client", default="claude", choices=CLIENTS,
+                    help="клиент, в котором запускаются роли: claude (по умолчанию), codex, gemini, opencode "
+                         "или cursor; для не-claude пишется конфигурация MCP клиента и первое сообщение "
+                         "главному агенту, режим ролей включается сам")
     ap.add_argument("--pilot-model", default=None, metavar="MODEL",
                     help="модель пилотов в режиме ролей: sonnet или haiku; не задано — из настроек мода, "
                          "иначе sonnet")
@@ -621,7 +707,7 @@ def main(argv: list[str] | None = None) -> int:
                 return await launch(cfg, n, body, players, core=core, env=dict(os.environ),
                                     python=sys.executable, say=say, ids=ids,
                                     roles=ns.roles, pilot_model=pilot_model,
-                                    strategist_model=strategist_model)
+                                    strategist_model=strategist_model, client=ns.client)
             finally:
                 await core.close()
 
@@ -637,8 +723,12 @@ def main(argv: list[str] | None = None) -> int:
     if result["module_errors"]:
         say(f"Внимание: в моде были ошибки модулей ({result['module_errors']}) — агент скажет об этом в игре.")
     say(f"Конфигурация MCP: {result['mcp_config']}")
+    if result.get("first_message"):
+        say(f"Первое сообщение главному агенту (с ключами, никому не показывать): {result['first_message']}")
     say(f"Файл сессии (с ключами, никому не показывать): {result['session']}")
-    if result["agents"]:
+    if result["agents"] and result.get("first_message"):
+        say(f"Роли ({result['client']}) запускает главный агент подагентами — см. первое сообщение.")
+    elif result["agents"]:
         say("Запустить агентов (первое сообщение каждому — prompt из файла сессии: voice, strategist, "
             "helpers[].roles.pilot):")
         for a in result["agents"]:

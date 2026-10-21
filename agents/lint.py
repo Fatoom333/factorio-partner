@@ -20,6 +20,8 @@ import re
 import sys
 from pathlib import Path
 
+import roles_export
+
 ROOT = Path(__file__).resolve().parent.parent
 AGENT_FILE = ROOT / ".claude" / "agents" / "partner.md"
 # агенты ролей одного помощника (docs/MCP.md «Роли»): файл -> роль
@@ -584,7 +586,8 @@ def lint_all() -> list[str]:
             roles += lint_role(path, ROLE_FILES[path.name])
         else:
             roles.append(f"{path.name}: нет файла агента роли")
-    return lint_agent(extra_md=examples) + order + roles + lint_files(repo_files())
+    return (lint_agent(extra_md=examples) + order + roles + lint_files(repo_files())
+            + roles_export.check())
 
 
 def main() -> int:

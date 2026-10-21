@@ -166,6 +166,16 @@ claude --mcp-config "<FP_HOME>/launch/mcp.json"
 Хозяин пишет в чат игры «отбой» («хватит», «свободен») — агент завершает смену со статусом «стоп». Тело
 остаётся в игре. Убрать тело — служебной операцией `helper_remove` (вещи остаются в трупе).
 
+### Другие клиенты (Codex CLI, Gemini CLI, OpenCode, Cursor)
+Роли для них лежат в `.codex/agents/`, `.gemini/agents/`, `.opencode/agents/`, `.cursor/agents/`. Это копии
+файлов `.claude/agents/partner*.md`, которые собирает `python agents/roles_export.py` (тело то же, frontmatter
+переведён; `--check` и `lint.py` ловят устаревшие копии). `launch.py --client codex|gemini|opencode|cursor`
+включает режим ролей и пишет в `launch/` конфигурацию MCP в формате клиента (`mcp-codex.toml`,
+`mcp-gemini.json`, `mcp-opencode.json`, `mcp-cursor.json`) и `first-message.md` — сообщение главному агенту:
+запустить `partner-voice`, `partner-strategist` и `partner-pilot` на каждое тело подагентами, каждому — его
+первое сообщение с ключом. Файл с ключами, никому не показывать. Шаги по клиентам и оговорки — в
+корневом README, раздел «Roles in other agents».
+
 ## Проверка без игры
 
 ```powershell
