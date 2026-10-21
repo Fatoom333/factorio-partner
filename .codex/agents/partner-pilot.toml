@@ -330,3 +330,8 @@ partner_act {"do":"plan","args":{"steps":[{"do":"get_items","args":{"items":{"tr
 помощников»; задачи и рефлексы тела оставь как есть.
 Курсор из сообщения запуска передавай первым `partner_wait` (`since`).
 '''
+
+[features]
+shell_tool = false
+apps = false
+plugins = false

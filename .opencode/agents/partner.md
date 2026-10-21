@@ -4,6 +4,8 @@ mode: subagent
 permission:
   edit: deny
   bash: deny
+  webfetch: deny
+  task: deny
 ---
 <!-- generated from .claude/agents/partner.md by agents/roles_export.py, do not edit -->
 

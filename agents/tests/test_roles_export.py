@@ -61,7 +61,8 @@ def test_codex_toml_is_valid_and_carries_the_body(files, name):
     text = files[f".codex/agents/{name}.toml"]
     assert text.startswith("# generated from .claude/agents/")
     data = tomllib.loads(text)
-    assert set(data) == {"name", "description", "developer_instructions"}
+    assert set(data) == {"name", "description", "developer_instructions", "features"}
+    assert data["features"] == {"shell_tool": False, "apps": False, "plugins": False}
     assert data["name"] == name and data["description"] == meta["description"]
     assert data["developer_instructions"] == body
 
@@ -89,7 +90,7 @@ def test_client_specific_keys(files):
     g, _, _ = split_md(files[".gemini/agents/partner-pilot.md"])
     assert g["name"] == "partner-pilot" and g["max_turns"] >= 100 and g["timeout_mins"] >= 60
     o, _, _ = split_md(files[".opencode/agents/partner-voice.md"])
-    assert o["mode"] == "subagent" and o["permission"] == {"edit": "deny", "bash": "deny"}
+    assert o["mode"] == "subagent" and o["permission"] == {"edit": "deny", "bash": "deny", "webfetch": "deny", "task": "deny"}
     assert "name" not in o
     c, _, _ = split_md(files[".cursor/agents/partner-strategist.md"])
     assert c["is_background"] is True and c["readonly"] is True and c["model"] == "inherit"
@@ -163,6 +164,7 @@ def test_launch_client_writes_parseable_config_and_first_message(tmp_path, clien
             assert s["env"]["FP_RCON_PASSWORD_FILE"] == "/x/rcon.pw"
         if client == "gemini":
             assert data["experimental"] == {"enableAgents": True}
+            assert {"run_shell_command", "write_file", "web_fetch"} <= set(data["excludeTools"])
     # без служебного режима и без пароля
     assert "--admin" not in text and "admin" not in text.lower().replace("administrator", "")
     data, keys = keys_of(cfg)

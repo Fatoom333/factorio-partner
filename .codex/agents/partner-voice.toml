@@ -323,3 +323,8 @@ N» — ровно N. Меньше 1 и больше 5 не бывает: упё
 Задания: <tasks из rescale одной строкой JSON>   (только при «масштаб», если они есть)
 ```
 '''
+
+[features]
+shell_tool = false
+apps = false
+plugins = false

@@ -361,3 +361,8 @@ package}`; сервер сам ставит его телу, когда оно �
 При `rescale` в `partner_brief` — `СМЕНА: масштаб`; пакеты и вопросы не отменяй, они останутся в `partner_ledger`.
 Выжимка ≤ 1,5 КБ: следующая смена получает её в сообщении запуска.
 '''
+
+[features]
+shell_tool = false
+apps = false
+plugins = false

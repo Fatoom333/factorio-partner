@@ -81,13 +81,15 @@ def render(client: str, source: str, text: str) -> str:
         return (f"# {note}\n"
                 f"name = {_q(name)}\n"
                 f"description = {_q(description)}\n"
-                f"developer_instructions = {_toml_text(body)}\n")
+                f"developer_instructions = {_toml_text(body)}\n"
+                # роли читают чат игры (чужой текст): без оболочки и сторонних инструментов
+                "\n[features]\nshell_tool = false\napps = false\nplugins = false\n")
     if client == "gemini":
         head = [f"name: {_q(name)}", f"description: {_q(description)}",
                 f"max_turns: {GEMINI_MAX_TURNS}", f"timeout_mins: {GEMINI_TIMEOUT_MINS}"]
     elif client == "opencode":
         head = [f"description: {_q(description)}", "mode: subagent",
-                "permission:", "  edit: deny", "  bash: deny"]
+                "permission:", "  edit: deny", "  bash: deny", "  webfetch: deny", "  task: deny"]
     elif client == "cursor":
         head = [f"name: {_q(name)}", f"description: {_q(description)}", "model: inherit",
                 "readonly: true", "is_background: true"]

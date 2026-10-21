@@ -494,3 +494,8 @@ partner_reflex {"set":[{"type":"flee","radius":20,"distance":30,"health":1,"on_a
 Например: «Литейная не открыта: нужна технология foundry, до неё — X и Y, стоит 500 × (колбы A, B)».
 Сам ты ничего не изучаешь и колбы в лаборатории без поручения не носишь: решает хозяин.
 '''
+
+[features]
+shell_tool = false
+apps = false
+plugins = false
